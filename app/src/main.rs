@@ -33,6 +33,7 @@
 //! control window renders `control_view`.
 
 mod doc_field;
+mod icons;
 mod lyrics_doc;
 mod text_field;
 mod ux;
@@ -2718,17 +2719,18 @@ impl Root {
                 cx.notify();
             }))
             // Presentation status, always visible so the operator can see the
-            // shield / text / mode state without hunting for it.
-            .child(btn(ui, cx, "⛢ shield", self.shield, |this, _, _, cx| {
+            // shield / text / mode state without hunting for it. Lane G: plain
+            // words — the unicode prefixes these labels carried were icons.
+            .child(btn(ui, cx, "shield", self.shield, |this, _, _, cx| {
                 this.toggle_shield(cx);
             }))
             .child(btn(ui, cx, "A text", self.text_hidden, |this, _, _, cx| {
                 this.toggle_text(cx);
             }))
-            .child(btn(ui, cx, "⛶ Ctrl+P", self.projector_on, |this, _, _, cx| {
+            .child(btn(ui, cx, "Ctrl+P", self.projector_on, |this, _, _, cx| {
                 this.toggle_projector(cx);
             }))
-            .child(btn(ui, cx, "✎ Edit", !self.viewer_mode, |this, _, _, cx| {
+            .child(btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
                 this.toggle_viewer_mode(cx);
             }))
     }
@@ -4208,10 +4210,10 @@ impl Root {
 /// purple, freeze cyan, project green-arrow, pencil lime — which is why
 /// monochrome text glyphs read as a clone (B-03/B-27).
     fn round_command(
-    _ui: &UI,
+    ui: &UI,
     _strip: &UI,
     cx: &mut Context<Root>,
-    label: &str,
+    icon: &'static str,
     active: bool,
     armed: bool,
     action: &'static str,
@@ -4252,7 +4254,19 @@ impl Root {
         .text_color(ink_on(bg))
         .text_size(px(15.))
         .cursor_pointer()
-        .child(label.to_string())
+        // Lane G: drawn SVG on a neutral chip, so a coloured icon stays
+        // readable on its same-coloured circle (and on light skins).
+        .child(
+            div()
+                .w(px(26.))
+                .h(px(26.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(ui.bg)
+                .child(icons::art(icon)),
+        )
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _, _w, cx| match action {
@@ -4275,8 +4289,7 @@ impl Root {
     /// knows hunting for the next song cannot disturb the live slide.
     fn tool_strip_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let mut kids: Vec<Div> = Vec::new();
-        for (i, (glyph, action)) in tool_strip().into_iter().enumerate() {
-            let text = glyph.to_string();
+        for (i, (icon, action)) in tool_strip().into_iter().enumerate() {
             let active = match action {
                 "base" => self.blank,
                 "text" => self.text_hidden,
@@ -4302,7 +4315,7 @@ impl Root {
                 ui,
                 &strip,
                 cx,
-                &text,
+                icon,
                 active,
                 armed,
                 action,
@@ -4894,9 +4907,11 @@ impl Root {
             );
             // A persistent chip for the four distinct states, so the operator
             // never has to read the projector to know which one is engaged.
+            // Lane G: plain words — the strip beside these chips carries the
+            // drawn icons now, so the chips must not repeat them as glyphs.
             for (on, chip) in [
-                (frozen, "❄ frozen"),
-                (self.shield, "⛢ shield"),
+                (frozen, "frozen"),
+                (self.shield, "shield"),
                 (self.text_hidden, "text hidden"),
                 (self.blank, "base screen"),
             ] {
@@ -4977,7 +4992,9 @@ impl Root {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    // Lane G: serve the drawn icon set to `img()` as embedded assets, so the
+    // strip SVGs render offline from the binary (no fetch, no asset dir).
+    Application::new().with_assets(icons::VpIconAssets).run(|cx: &mut App| {
         bind_field_keys(cx);
         bind_doc_keys(cx);
         // The presentation keymap is data, not bindings: see

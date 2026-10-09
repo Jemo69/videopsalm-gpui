@@ -384,18 +384,18 @@ pub fn font_families() -> [&'static str; 4] {
 /// projection. Alert and stage-view buttons do not belong in this strip: they
 /// live in the ribbon and the projector panel respectively.
 ///
-/// Pairs are (glyph, action id). Glyphs are Unicode stand-ins for the
-/// original's drawn icons -- lane G replaces them with an original icon set;
-/// until then they must stay inside [`FONT_SAFE_GLYPHS`].
+/// Pairs are (icon id, action id). The icons are drawn artwork (lane G,
+/// `icons::svg_for`); the ids are ASCII and resolve through the manifest, so
+/// the strip no longer depends on any font codepoint to read as icons.
 pub fn tool_strip() -> [(&'static str, &'static str); 7] {
     [
-        ("⬇", "next"),
-        ("●", "base"),
-        ("▤", "text"),
-        ("⛢", "shield"),
-        ("❄", "freeze"),
-        ("▣", "project"),
-        ("✎", "mode"),
+        ("cmd-next", "next"),
+        ("cmd-base", "base"),
+        ("cmd-hide-text", "text"),
+        ("cmd-shield", "shield"),
+        ("cmd-freeze", "freeze"),
+        ("cmd-project", "project"),
+        ("cmd-pencil", "mode"),
     ]
 }
 
@@ -776,12 +776,22 @@ mod tests {
 
     #[test]
     fn font_safe_glyphs_cover_every_glyph_the_app_draws() {
-        // Every glyph used by a badge, tool button, or style label must be in
-        // the allow-list, or it renders as an empty box on Linux.
-        let mut used: Vec<char> = Vec::new();
-        for (glyph, _) in tool_strip() {
-            used.extend(glyph.chars());
+        // The strip no longer draws text glyphs: `tool_strip` names drawn
+        // icons (lane G), so its entries must be ASCII icon ids that resolve
+        // to SVG — not entries in the font allow-list below.
+        for (icon, action) in tool_strip() {
+            assert!(
+                icon.is_ascii(),
+                "strip icon {icon:?} ({action}) is not ASCII and would depend on a font glyph"
+            );
+            assert!(
+                crate::icons::svg_for(icon).is_some(),
+                "strip icon {icon:?} ({action}) has no drawn artwork"
+            );
         }
+        // Everything else the app draws as text must be in the allow-list,
+        // or it renders as an empty box on Linux.
+        let mut used: Vec<char> = Vec::new();
         // Badges for all agenda kinds.
         use vp_core::schema::ItemKind::*;
         for kind in [
