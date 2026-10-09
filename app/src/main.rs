@@ -34,6 +34,7 @@
 
 mod doc_field;
 mod lyrics_doc;
+mod style_explorer;
 mod text_field;
 mod ux;
 
@@ -68,7 +69,7 @@ use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
     BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, chapter_count,
     digit_slide_index, filmstrip_label, font_families, kind_badge, route_pres_key, section_name,
-    shortcut_help, slide_verse_id, style_attributes, style_levels, tool_strip, transitions,
+    shortcut_help, slide_verse_id, style_levels, tool_strip, transitions,
     verse_shortcut_target,
 };
 
@@ -349,6 +350,8 @@ struct Root {
     bible_context: bool,
     /// Style explorer visibility (attribute tree with source levels).
     show_style_explorer: bool,
+    cascade: vp_core::cascade::Cascade,
+    explorer: style_explorer::ExplorerUi,
     /// Keyboard reference panel, toggled on `F1`. Off by default — the slide
     /// panel is for slide rows.
     show_shortcuts: bool,
@@ -530,6 +533,8 @@ impl Root {
             bible_hits: Vec::new(),
             bible_context: false,
             show_style_explorer: false,
+            cascade: vp_core::cascade::Cascade::default(),
+            explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
             agenda_dirty: false,
             song_dirty: false,
@@ -650,6 +655,7 @@ impl Root {
             this.apply_layout_prefs(&layout);
             this.status = format!("Layout restored from {}.", LayoutPrefs::FILE);
         }
+        this.seed_cascade_from_style(); // DoD #6 hook: seed the session cascade.
         this
     }
 
@@ -2764,9 +2770,7 @@ impl Root {
                 })
             })
             .collect();
-        // The style explorer hangs off the `Edit` tab, which is where the
-        // original puts it. It became unreachable when the tab row was
-        // corrected from seven invented tabs to the real four.
+        // DoD #6 hook: explorer toggle (panel docks on `Text` — see below).
         tabs.push(btn(
             ui,
             cx,
@@ -2792,10 +2796,8 @@ impl Root {
             .when(self.ribbon == RibbonTab::Message, |d| {
                 d.child(self.live_panel(ui, cx))
             })
-            // The style explorer hangs off the `Edit` tab, which is where the
-            // original puts it (`Ctrl+F1`-era ribbon). It was unreachable once
-            // the tab row became the real four.
-            .when(self.ribbon == RibbonTab::Edit && self.show_style_explorer, |d| {
+            // DoD #6 hook: explorer docks on `Text` (style surface), not `Edit`.
+            .when(self.ribbon == RibbonTab::Text && self.show_style_explorer, |d| {
                 d.child(self.style_explorer(ui, cx))
             })
     }
@@ -2937,88 +2939,10 @@ impl Root {
 
 
 
-    /// Style explorer: the five main attributes (Body, Header, Footer,
-    /// Chords, Background) with their current value and the level that value
-    /// came from, plus a reset per attribute. The original uses this to work
-    /// out why a slide looks the way it does.
+    /// Style explorer tree (DoD #6) — hook: delegates to `style_explorer.rs`,
+    /// superseding the five-row summary (OBSERVATIONS.md §10: per-leaf).
     fn style_explorer(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        let level = self.style_level.clone();
-        let font = self.font_family.clone();
-        let size = if self.bold { "bold" } else { "regular" };
-        let align = match self.align {
-            Align::Left => "left",
-            Align::Center => "center",
-            Align::Right => "right",
-        };
-        let mut rows: Vec<Div> = Vec::new();
-        let mut attrs: Vec<(String, String)> = vec![
-            ("Body".into(), format!("{font} · {size} · {align}")),
-            ("Header".into(), if self.whole_ref_header {
-                "whole reference".into()
-            } else {
-                "per slide".into()
-            }),
-            ("Footer".into(), format!("{} | {}", self.t("next_up"), self.style_level)),
-            ("Chords".into(), if self.show_chords_proj {
-                match self.notation {
-                    ChordNotation::Abc => "A-B-C on projector".into(),
-                    ChordNotation::DoReMi => "Do-Re-Mi on projector".into(),
-                }
-            } else {
-                "hidden".into()
-            }),
-            ("Background".into(), match self.bg_kind {
-                BackgroundKind::Color => "color".into(),
-                BackgroundKind::Image => "image*".into(),
-                BackgroundKind::VideoLoop => "loop*".into(),
-                BackgroundKind::Camera => "camera*".into(),
-            }),
-        ];
-        // Keep only the five documented attributes, in the documented order.
-        attrs.retain(|(name, _)| style_attributes().contains(&name.as_str()));
-        for (name, value) in attrs {
-            let n = name.clone();
-            rows.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .text_size(px(11.))
-                    .child(div().w(px(80.)).text_color(ui.accent).child(name))
-                    .child(div().flex_1().text_color(ui.fg).child(value))
-                    // The level badge is the "where does this come from" dot.
-                    .child(div().text_color(hex("#888888")).child(format!("◉ {level}")))
-                    .child(btn(ui, cx, "reset", false, move |this, _, _, cx| {
-                        this.reset_attribute(&n, cx);
-                    })),
-            );
-        }
-        section(
-            ui,
-            "⊞ style explorer — attribute ▸ value ◉ source level",
-            vec![div().flex().flex_col().gap(px(1.)).children(rows)],
-        )
-    }
-
-    /// Reset one style attribute back to the current level's default.
-    fn reset_attribute(&mut self, name: &str, cx: &mut Context<Self>) {
-        match name {
-            "Body" => {
-                self.bold = false;
-                self.italic = false;
-                self.underline = false;
-                self.font_family = "Sans".into();
-                self.align = Align::Center;
-                self.mirror_font_to_style();
-            }
-            "Header" => self.whole_ref_header = true,
-            "Footer" => {}
-            "Chords" => self.show_chords_proj = false,
-            "Background" => self.bg_kind = BackgroundKind::Color,
-            _ => {}
-        }
-        self.persist_layout_quiet();
-        self.set_status(cx, format!("{name} reset."));
+        self.render_style_explorer(ui, cx)
     }
 
 
