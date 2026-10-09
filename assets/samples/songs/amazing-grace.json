@@ -1,0 +1,35 @@
+{
+  "id": "song-amazing-grace",
+  "title": "Amazing Grace",
+  "verses": [
+    {
+      "id": "V1",
+      "lines": [
+        "Amazing grace how sweet the sound",
+        "That saved a wretch like me",
+        "I once was lost but now am found",
+        "Was blind but now I see"
+      ],
+      "order": 1
+    },
+    {
+      "id": "V2",
+      "lines": [
+        "Twas grace that taught my heart to fear",
+        "And grace my fears relieved",
+        "How precious did that grace appear",
+        "The hour I first believed"
+      ],
+      "order": 2
+    }
+  ],
+  "authors": ["John Newton"],
+  "composer": "Traditional",
+  "ccli": "2762838",
+  "songbookId": "book-main",
+  "color": "#2563EB",
+  "icon": "7",
+  "chords": { "notation": "ABC", "transpose": 0, "overlays": [] },
+  "createdAt": "2026-10-06",
+  "updatedAt": "2026-10-06"
+}

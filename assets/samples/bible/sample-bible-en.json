@@ -1,0 +1,49 @@
+{
+  "translationId": "SAMPLE-EN",
+  "language": "en",
+  "books": [
+    {
+      "name": "John",
+      "chapters": [
+        [],
+        [],
+        [
+          "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life.",
+          "For God sent not his Son into the world to condemn the world; but that the world through him might be saved.",
+          "He that believeth on him is not condemned: but he that believeth not is condemned already, because he hath not believed in the name of the only begotten Son of God."
+        ]
+      ]
+    },
+    {
+      "name": "Psalm",
+      "chapters": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          "The LORD is my shepherd; I shall not want.",
+          "He maketh me to lie down in green pastures: he leadeth me beside the still waters."
+        ]
+      ]
+    }
+  ]
+}

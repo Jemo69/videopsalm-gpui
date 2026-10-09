@@ -1,0 +1,48 @@
+{
+  "translationId": "SAMPLE-FR",
+  "language": "fr",
+  "books": [
+    {
+      "name": "Jean",
+      "chapters": [
+        [],
+        [],
+        [
+          "Car Dieu a tant aimé le monde qu'il a donné son Fils unique, afin que quiconque croit en lui ne périsse point, mais qu'il ait la vie éternelle.",
+          "Dieu, en effet, n'a pas envoyé son Fils dans le monde pour qu'il juge le monde, mais pour que le monde soit sauvé par lui."
+        ]
+      ]
+    },
+    {
+      "name": "Psaume",
+      "chapters": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          "L'Éternel est mon berger: je ne manquerai de rien.",
+          "Il me fait reposer dans de verts pâturages, il me dirige près des eaux paisibles."
+        ]
+      ]
+    }
+  ]
+}

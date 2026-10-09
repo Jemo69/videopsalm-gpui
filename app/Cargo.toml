@@ -1,0 +1,18 @@
+[package]
+name = "videopsalm-gpui"
+version = "0.1.0"
+edition = "2024"
+description = "VideoPsalm clean-room v1: GPUI control window + projector + stage view"
+license = "MIT"
+
+[[bin]]
+name = "videopsalm-gpui"
+path = "src/main.rs"
+
+[dependencies]
+vp-core = { path = "../vp-core" }
+gpui = "0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+unicode-segmentation = "1"
