@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "title": "Sunday Service (sample)",
+  "items": [
+    { "id": "item-01", "kind": "Song", "title": "Amazing Grace", "ref": { "songId": "song-amazing-grace" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-02", "kind": "Song", "title": "Holy Holy Holy", "ref": { "songId": "song-holy-holy" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-03", "kind": "BibleVerses", "title": "John 3:16-18", "ref": { "bibleRef": { "translationId": "SAMPLE-EN", "book": "John", "chapter": 3, "verses": [16, 17, 18], "versification": "EN" } }, "flowType": "manual", "autoAdvanceMs": null, "overrides": { "secondTranslationId": "SAMPLE-FR" } },
+    { "id": "item-04", "kind": "Image", "title": "Welcome background", "ref": { "file": "assets/backgrounds/welcome.png" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-05", "kind": "Video", "title": "Opening loop", "ref": { "file": "assets/media/opening-loop.mp4" }, "flowType": "auto", "autoAdvanceMs": 30000, "overrides": {} },
+    { "id": "item-06", "kind": "Audio", "title": "Offering music", "ref": { "file": "assets/media/offering.mp3" }, "flowType": "auto", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-07", "kind": "Pdf", "title": "Announcements", "ref": { "file": "assets/docs/announcements.pdf" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-08", "kind": "PowerPoint", "title": "Sermon slides (import)", "ref": { "file": "assets/docs/sermon.pptx" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-09", "kind": "YouTube", "title": "Worship video", "ref": { "url": "https://www.youtube.com/watch?v=sample" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-10", "kind": "Clock", "title": "Countdown 5 min", "ref": { "text": "countdown:300" }, "flowType": "auto", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-11", "kind": "Alert", "title": "Welcome alert", "ref": { "text": "Welcome! Please silence your phones." }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} }
+  ],
+  "settings": {
+    "bilingualSuppressEmpty": true,
+    "wholeReferenceHeader": true
+  }
+}

@@ -1,0 +1,17 @@
+[alias]
+# Dev entry point: `cargo dev` == debug run of the GPUI app.
+dev = "run -p videopsalm-gpui"
+
+# Machine-local linker path: libxkbcommon-x11.so.0 exists but the linker
+# name libxkbcommon-x11.so is missing from the system lib dirs; the symlink
+# in ~/.local/lib covers it. Kept here (not in README) so plain `cargo dev`,
+# `cargo run`, `cargo build`, and `cargo test` all work without env setup.
+[build]
+rustflags = ["-L", "/home/jemo/.local/lib"]
+
+# gpui 0.2.2's Wayland client panics (UnsupportedVersion) against the WSLg
+# compositor, so force the X11/XWayland backend for everything cargo runs.
+# force = true is required: WSLg pre-sets WAYLAND_DISPLAY=wayland-0, and a
+# plain [env] entry never overrides a var that already exists.
+[env]
+WAYLAND_DISPLAY = { value = "", force = true }

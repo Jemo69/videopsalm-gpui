@@ -1,0 +1,10 @@
+[workspace]
+members = ["vp-core", "app"]
+resolver = "2"
+
+# Vendored patch: xattr 0.2.3 references libc::ENOATTR, which no longer
+# exists on Linux in current libc releases (glibc returns ENODATA).
+# vendor/xattr is the unmodified crates.io 0.2.3 source plus a 6-line
+# errno fix in src/sys/mod.rs (MIT/Apache-2.0, by Steven Allen).
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
