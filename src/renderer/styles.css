@@ -222,6 +222,13 @@ body[data-shield="1"] #agenda-list li:not(.selected) { opacity: 0.65; }
 #preview-ref { position: absolute; top: 0.4em; right: 0.7em; font-size: 0.75em; opacity: 0.85; color: #fff; background: rgba(0,0,0,0.55); padding: 0.1em 0.5em; border-radius: 4px; }
 #preview-footer { position: absolute; bottom: 0.4em; left: 0; right: 0; text-align: center; font-size: 0.72em; opacity: 0.8; color: #fff; }
 /* VideoPsalm-style preview: black, centered white text */
-#live-preview { background: #000; color: #fff; text-align: center; }
-#live-preview .vp-slide { text-align: center; align-items: center; }
+#live-preview { background: #000; color: #fff; text-align: center; position: relative; }
+#live-preview .vp-slide { text-align: center; align-items: center; position: relative; aspect-ratio: 16/9; overflow: hidden; }
+/* B-07: the preview is the layout editor — frames are absolutely positioned (geometry comes
+   from resolveRectPercent, so preview and projector agree); the overlay + 8 handles live
+   inside .vp-slide, i.e. inside the RIGHT-column preview pane, not floating elsewhere. */
+#frame-bar { display: flex; gap: 0.4em; align-items: center; }
+#frame-bar button[aria-pressed="true"] { outline: 2px solid var(--accent); }
+.vp-rs-outline { position: absolute; border: 1px dashed var(--accent); z-index: 5; touch-action: none; cursor: move; }
+.vp-rs-handle { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; z-index: 6; touch-action: none; }
 .vp-slide.word-hl .vp-body { text-shadow: 0 0 0.35em var(--hl, #ffd54a); }

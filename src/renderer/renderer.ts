@@ -112,6 +112,8 @@ import type { PresAction } from "./presKeys";
 // came to disagree about which strings are valid.
 import { parseBibleRef } from "../core/refParser";
 import type { BibleRef } from "../core/schemas";
+// B-07 hook: preview drag-resize writes normalized rects into the live style.
+import { attachPreviewResize, frameBoxCss, getStyleRect, setStyleRect, type FrameId } from "./preview-resize";
 const FILM_KEYS = [...FILM_DIGITS, "V", "C", "B", "E", "O", "I", "P", "N", "S", "T", "U"];
 const MEDIA_KINDS = ["Image", "Video", "Audio", "Pdf", "PowerPoint", "YouTube", "WebSite"];
 
@@ -695,9 +697,9 @@ function worshipSlide(title: string, bodyText: string, ref: string, bilingual: b
   const slant = prefs.fmtItalic ? "italic" : "normal";
   const decor = prefs.fmtUnderline ? "underline" : "none";
   const bg = backgroundStyle();
-  const head = prefs.headerOn ? `<div class="vp-header">${escapeHtml(fillTemplate(prefs.headerTemplate || "{title}", title, ref))}</div>` : "";
-  const foot = prefs.footerOn ? `<div class="vp-footer">${escapeHtml(fillTemplate(prefs.footerTemplate || "{ref}", title, ref))}</div>` : "";
-  const body = `<div class="vp-body${bilingual ? " bilingual" : ""}">${bodyInner(bodyText, bilingual) || "<p>(empty slide)</p>"}</div>`;
+  const head = prefs.headerOn ? `<div class="vp-header" style="${frameBoxCss(getStyleRect(agenda.settings, "header"), "header")}">${escapeHtml(fillTemplate(prefs.headerTemplate || "{title}", title, ref))}</div>` : "";
+  const foot = prefs.footerOn ? `<div class="vp-footer" style="${frameBoxCss(getStyleRect(agenda.settings, "footer"), "footer")}">${escapeHtml(fillTemplate(prefs.footerTemplate || "{ref}", title, ref))}</div>` : "";
+  const body = `<div class="vp-body${bilingual ? " bilingual" : ""}" style="${frameBoxCss(getStyleRect(agenda.settings, "body"), "body")}">${bodyInner(bodyText, bilingual) || "<p>(empty slide)</p>"}</div>`;
   const hl = prefs.wordHighlight ? " word-hl" : "";
   const trans = prefs.transition && prefs.transition !== "none" ? ` data-transition="${escapeHtml(prefs.transition)}"` : "";
   return `<div class="vp-slide${hl}"${trans} style="${bg.css}font-family:${escapeHtml(font)};font-size:${escapeHtml(String(size))}px;color:${escapeHtml(color)};text-align:${escapeHtml(align)};font-weight:${weight};font-style:${slant};text-decoration:${decor};--hl:${escapeHtml(prefs.highlightColor)}">${bg.video}${head}${body}${foot}</div>`;
@@ -1987,6 +1989,16 @@ function syncPresIndicators(): void {
   document.body.dataset["textHidden"] = textHidden ? "1" : "0";
   document.body.dataset["shield"] = shield ? "1" : "0";
 }
+
+// ---------- B-07 hook: drag a frame edge in the preview; the rect lands in the live style ----------
+// The overlay lives in preview-resize.ts; this is the whole seam: selection state, one
+// re-project, dirty through the existing agendaDirty/paintDirty (no second flag).
+let frameSel: FrameId = "body";
+function reprojectCurrent(): void { const it = selectedItem(); if (it && filmSlides.length && selectedSlide >= 0) void projectItem(it, selectedSlide); else if (it) void projectItem(it); else if (filmSlides.length && selectedSlide >= 0) void projectFilmSlide(selectedSlide); }
+const previewResize = attachPreviewResize({ getRect: (f) => getStyleRect(agenda.settings, f), selected: () => frameSel, commit: (f, r) => { setStyleRect(agenda, f, r); agendaDirty = true; paintDirty(); void vp().setAgenda(agenda); reprojectCurrent(); previewResize.sync(); } });
+el<HTMLButtonElement>("frame-body").addEventListener("click", () => { frameSel = "body"; previewResize.sync(); });
+el<HTMLButtonElement>("frame-header").addEventListener("click", () => { frameSel = "header"; previewResize.sync(); });
+el<HTMLButtonElement>("frame-footer").addEventListener("click", () => { frameSel = "footer"; previewResize.sync(); });
 
 // ---------- init ----------
 syncPresIndicators();

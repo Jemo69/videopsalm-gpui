@@ -418,6 +418,14 @@
       </div>
       </div><!-- /.slides-row -->
       <div class="preview-stack">
+        <!-- B-07: frame selector for preview drag-resize (handles live in #live-preview). -->
+        <div id="frame-bar" role="toolbar" aria-label="Frame to resize in the preview">
+          <span class="hint">Frame:</span>
+          <button type="button" id="frame-body" aria-pressed="true">Body</button>
+          <button type="button" id="frame-header" aria-pressed="false">Header</button>
+          <button type="button" id="frame-footer" aria-pressed="false">Footer</button>
+          <span class="hint">drag edges in the preview</span>
+        </div>
         <div class="preview-wrap">
           <div id="live-preview" class="preview"></div>
           <span id="preview-ref" title="Projected reference"></span>
