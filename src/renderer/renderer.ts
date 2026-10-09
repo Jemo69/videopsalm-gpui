@@ -117,6 +117,8 @@ import type { BibleRef } from "../core/schemas";
 import { kindBadgeSvg, stripIconSvg } from "./icons";
 // B-07 hook: preview drag-resize writes normalized rects into the live style.
 import { attachPreviewResize, frameBoxCss, getStyleRect, setStyleRect, type FrameId } from "./preview-resize";
+// DoD #6 hook: the style explorer tree (chains × levels × attributes).
+import { createExplorerState, inspectedFromStyleLevel, mountStyleExplorer, seedFromPrefs } from "./style-explorer";
 const FILM_KEYS = [...FILM_DIGITS, "V", "C", "B", "E", "O", "I", "P", "N", "S", "T", "U"];
 const MEDIA_KINDS = ["Image", "Video", "Audio", "Pdf", "PowerPoint", "YouTube", "WebSite"];
 
@@ -142,6 +144,16 @@ let bibleSearch: "reference" | "keyword" = "reference";
 let bibleKeywordHits: { book: string; chapter: number; verse: number; text: string }[] = [];
 // Style explorer visibility (attribute tree with source levels).
 let styleExplorer = false;
+// DoD #6 hook: session cascade + tree mounted on the Text tab panel (see style-explorer.ts).
+const explorerState = createExplorerState();
+explorerState.inspected = inspectedFromStyleLevel(prefs.styleLevel);
+explorerState.cascade = seedFromPrefs(explorerState.cascade, { font: prefs.styleFont, size: Number(prefs.styleSize), color: prefs.styleColor });
+const repaintExplorer = mountStyleExplorer(el<HTMLElement>("style-explorer"), explorerState);
+el<HTMLElement>("style-explorer").hidden = !styleExplorer;
+el<HTMLButtonElement>("style-explorer-toggle").addEventListener("click", () => {
+  styleExplorer = !styleExplorer;
+  el<HTMLElement>("style-explorer").hidden = !styleExplorer;
+});
 
 // ---------- bible book list (OT+NT single list, EN+FR names, diacritics-aware) ----------
 interface Book { en: string; fr: string; abbr: string }
@@ -356,7 +368,7 @@ el<HTMLInputElement>("show-number").addEventListener("change", (e) => {
 
 // ---------- format ribbon (mirrors Style controls both ways) ----------
 el<HTMLSelectElement>("style-level").addEventListener("change", (e) => {
-  prefs.styleLevel = (e.target as HTMLSelectElement).value; savePrefs(); updateStyleLevelBadge();
+  prefs.styleLevel = (e.target as HTMLSelectElement).value; savePrefs(); updateStyleLevelBadge(); explorerState.inspected = inspectedFromStyleLevel(prefs.styleLevel); repaintExplorer();
 });
 el<HTMLSelectElement>("bible-verse-style").addEventListener("change", (e) => {
   prefs.bibleVerseStyle = (e.target as HTMLSelectElement).value; savePrefs(); void refreshFilmstrip();
