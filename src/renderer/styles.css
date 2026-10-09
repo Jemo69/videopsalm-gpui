@@ -1,0 +1,227 @@
+/* VideoPsalm Electron v1 — original open styling (no copied skins).
+   4 open themes via body[data-theme]; custom accent via --accent.
+   3-pane layout widths persist via body[data-left-collapsed]/[data-right-collapsed]. */
+:root { --accent: #2a5db0; --left-w: 300px; --right-w: 340px; }
+body[data-theme="light"] { --bg: #ffffff; --fg: #111111; --panel: #f2f2f2; --border: #cccccc; --badge-bg: #e4e4e4; }
+body[data-theme="dark"] { --bg: #141414; --fg: #f0f0f0; --panel: #1f1f1f; --border: #444444; --badge-bg: #2c2c2c; }
+body[data-theme="gray"] { --bg: #3a3f44; --fg: #f0ede4; --panel: #4a5056; --border: #6a7076; --badge-bg: #545a60; }
+body[data-theme="blue"] { --bg: #0b2545; --fg: #eef4ff; --panel: #13315c; --border: #2a5db0; --badge-bg: #1b3f73; }
+body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+
+/* ── top bar + ribbon ── */
+#topbar { display: flex; gap: 0.6em; align-items: center; padding: 0.4em 1em; background: var(--panel); border-bottom: 1px solid var(--border); }
+.spacer { flex: 1; }
+.style-level-badge { font-size: 0.75em; background: var(--badge-bg); border: 1px solid var(--border); border-radius: 10px; padding: 0.15em 0.7em; opacity: 0.9; }
+#ribbon-tabs { display: flex; gap: 0.2em; padding: 0.3em 1em 0; background: var(--panel); }
+#ribbon-tabs button { background: transparent; color: var(--fg); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 0.35em 1em; }
+#ribbon-tabs button.active { background: var(--bg); border-color: var(--border); font-weight: bold; box-shadow: inset 0 2px 0 var(--accent); }
+#ribbon { border-bottom: 1px solid var(--border); background: var(--bg); padding: 0.4em 1em; display: flex; }
+.ribbon-panel { display: none; gap: 1.2em; flex-wrap: wrap; width: 100%; }
+.ribbon-panel.active { display: flex; }
+.ribbon-group { display: flex; gap: 0.4em; align-items: center; flex-wrap: wrap; border-right: 1px solid var(--border); padding-right: 1.2em; position: relative; padding-top: 1em; }
+.ribbon-group:last-child { border-right: none; }
+.ribbon-label { position: absolute; top: -0.1em; left: 0; font-size: 0.7em; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* ── 3-pane layout ── */
+#layout { flex: 1; display: grid; grid-template-columns: var(--left-w) 1fr var(--right-w); gap: 1px; background: var(--border); min-height: 0; }
+#layout > * { background: var(--bg); overflow-y: auto; padding: 0.6em 0.8em; min-height: 0; }
+body[data-left-collapsed="1"] #layout { grid-template-columns: 0 1fr var(--right-w); }
+body[data-left-collapsed="1"] #pane-left { display: none; }
+body[data-right-collapsed="1"] #layout { grid-template-columns: var(--left-w) 1fr 0; }
+body[data-right-collapsed="1"] #pane-right { display: none; }
+body[data-left-collapsed="1"][data-right-collapsed="1"] #layout { grid-template-columns: 0 1fr 0; }
+.pane-head h3, .pane-head h4 { margin: 0.6em 0 0.3em; }
+.pane-head:first-child h3 { margin-top: 0; }
+
+/* ── Viewer mode (Ctrl+E) ──────────────────────────────────────────────────
+   UX-RESEARCH §2.2 / §10.1: this **rewrites the window**, it is not a
+   hide-a-few-panes toggle. Two things matter and both were previously wrong:
+
+   1. The ribbon goes entirely — including its *tab row*, not just the panel
+      body. A leftover tab strip is the giveaway that this is a toggle.
+   2. The **agenda and the library both stay**. Viewer mode is the four areas:
+      agenda top-left, library bottom-left, slides top-right, preview
+      bottom-right. Hiding the whole left column removed two of them — the
+      panel the operator jumps from.
+
+   So only the centre edit column and the song-detail editor are dropped, and
+   the grid collapses to two columns. */
+body[data-viewer="1"] #song-detail,
+body[data-viewer="1"] #ribbon,
+body[data-viewer="1"] #ribbon-format,
+body[data-viewer="1"] #ribbon-format-tabs,
+body[data-viewer="1"] #ribbon-tabs,
+body[data-viewer="1"] #pane-center { display: none; }
+body[data-viewer="1"] #layout { grid-template-columns: var(--left-w) 1fr; }
+
+/* ── shared widgets ── */
+.row { display: flex; gap: 0.5em; align-items: center; margin: 0.5em 0; flex-wrap: wrap; }
+button { background: var(--accent); color: #fff; border: none; padding: 0.35em 0.8em; border-radius: 4px; cursor: pointer; }
+button:hover { filter: brightness(1.15); }
+button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+input, select, textarea { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 0.3em; }
+kbd { background: var(--badge-bg); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 0.4em; font-family: inherit; }
+.preview { border: 1px solid var(--border); background: #000; color: #fff; min-height: 120px; padding: 1em; border-radius: 6px; white-space: pre-wrap; }
+.preview.mini { min-height: 60px; font-size: 0.85em; }
+.hint { opacity: 0.7; font-size: 0.9em; font-weight: normal; }
+#agenda-list li.selected, #song-list li.selected, #media-list li.selected { outline: 2px solid var(--accent); }
+#agenda-list li, #song-list li, #media-list li, #songbook-tree li { cursor: pointer; padding: 0.25em 0.4em; list-style: none; }
+#agenda-list, #song-list, #media-list, #songbook-tree { padding-left: 0; }
+.kind-badge { display: inline-block; font-size: 0.72em; font-weight: bold; border-radius: 8px; padding: 0.1em 0.6em; margin-right: 0.5em; background: var(--badge-bg); border: 1px solid var(--border); }
+.kind-badge.k-Song { background: #1d5c2e; color: #fff; }
+.kind-badge.k-BibleVerses { background: #6b4a00; color: #fff; }
+.kind-badge.k-Image { background: #0e5a6d; color: #fff; }
+.kind-badge.k-Video { background: #6d0e4e; color: #fff; }
+.kind-badge.k-Audio { background: #4a2b8f; color: #fff; }
+.kind-badge.k-Alert { background: #b00020; color: #fff; }
+.kind-badge.k-Clock { background: #333; color: #ffd54a; }
+.song-dot { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; margin-right: 0.4em; vertical-align: baseline; border: 1px solid var(--border); }
+.song-abbr { font-size: 0.78em; opacity: 0.8; border: 1px solid var(--border); border-radius: 4px; padding: 0 0.3em; margin-right: 0.3em; }
+.song-num { font-size: 0.78em; opacity: 0.8; margin-right: 0.3em; }
+.tree li.group { font-weight: bold; }
+
+/* filmstrip */
+#slide-filmstrip { display: flex; gap: 0.5em; flex-wrap: wrap; border: 1px dashed var(--border); border-radius: 6px; padding: 0.5em; min-height: 3em; }
+#slide-filmstrip:focus { outline: 2px solid var(--accent); }
+.film { background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4em 0.6em; max-width: 16em; text-align: left; }
+.film kbd { margin-right: 0.4em; }
+.film.active { outline: 2px solid var(--accent); }
+
+/* worship slide structure (control preview + projector share these classes) */
+.vp-slide { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; background-size: cover; background-position: center; }
+.vp-slide video.vp-bgvideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.vp-header { opacity: 0.85; font-size: 0.55em; margin-bottom: 0.5em; }
+.vp-body { white-space: pre-wrap; line-height: 1.35; }
+.vp-body .chord { color: #ffd54a; font-weight: bold; font-size: 0.8em; }
+.vp-body.bilingual p { margin: 0.15em 0; }
+.vp-body.bilingual p + p { opacity: 0.75; font-size: 0.9em; }
+.vp-footer { opacity: 0.7; font-size: 0.45em; margin-top: 0.6em; }
+
+/* status bar + shortcuts dialog */
+#statusbar { display: flex; gap: 1em; align-items: center; padding: 0.3em 1em; background: var(--panel); border-top: 1px solid var(--border); font-size: 0.85em; }
+#shortcuts-help { position: fixed; right: 1em; bottom: 3em; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1em 1.4em; z-index: 50; max-width: 34em; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+#shortcuts-help table { border-collapse: collapse; }
+#shortcuts-help td { padding: 0.2em 0.6em; border-bottom: 1px solid var(--border); font-size: 0.9em; }
+
+/* Projector (resolution-independent: vmin units) */
+#slide { width: 100vw; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; color: #fff; padding: 5vmin; box-sizing: border-box; font-size: 6vmin; background-size: cover; background-position: center; position: relative; overflow: hidden; }
+#slide.bleed { padding: 0; }
+#slide.bleed .vp-slide { width: 100vw; height: 100vh; padding: 5vmin; box-sizing: border-box; position: relative; overflow: hidden; }
+#slide h1 { font-size: 5vmin; opacity: 0.85; }
+#slide img, #slide video { max-width: 92vw; max-height: 80vh; }
+#alert-overlay { position: fixed; bottom: 6vh; left: 10vw; right: 10vw; background: #b00020; color: #fff; padding: 2vmin; font-size: 4vmin; text-align: center; border-radius: 8px; }
+#clock-overlay { position: fixed; top: 2vh; right: 3vw; color: #fff; font-size: 3.5vmin; background: rgba(0,0,0,0.5); padding: 0.5vmin 2vmin; border-radius: 6px; }
+.link-card { border: 3px dashed #888; padding: 4vmin; border-radius: 12px; }
+
+/* print booklet: screen hides it, print shows only it */
+#print-booklet { display: none; }
+@media print {
+  #topbar, #ribbon-tabs, #ribbon, #ribbon-format-tabs, #ribbon-format, #layout, #statusbar, #shortcuts-help { display: none !important; }
+  body { background: #fff; color: #000; display: block; height: auto; }
+  #print-booklet { display: block; color: #000; }
+  #print-booklet h1 { font-size: 22pt; }
+  #print-booklet h2 { font-size: 14pt; margin-top: 1.2em; border-bottom: 1px solid #000; }
+  #print-booklet pre { white-space: pre-wrap; font-size: 11pt; }
+}
+
+/* ══ VideoPsalm-style control layout (clean-room: layout mimicry only) ══ */
+
+/* ── format ribbon (second row: Text | Background | Edition) ── */
+#ribbon-format-tabs { display: flex; gap: 0.2em; padding: 0.3em 1em 0; background: var(--panel); border-top: 1px solid var(--border); }
+#ribbon-format-tabs button { background: transparent; color: var(--fg); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 0.35em 1em; }
+#ribbon-format-tabs button.active { background: var(--bg); border-color: var(--border); font-weight: bold; box-shadow: inset 0 2px 0 var(--accent); }
+#ribbon-format { border-bottom: 1px solid var(--border); background: var(--bg); padding: 0.4em 1em; display: flex; }
+.format-panel { display: none; gap: 1.2em; flex-wrap: wrap; width: 100%; }
+.format-panel.active { display: flex; }
+.swatches { display: inline-flex; gap: 0.25em; }
+.swatch { width: 1.6em; height: 1.6em; padding: 0; border: 1px solid var(--border); border-radius: 4px; }
+.swatch.selected { outline: 2px solid var(--accent); }
+#fmt-bold.on, #fmt-italic.on, #fmt-underline.on,
+#fmt-align-left.on, #fmt-align-center.on, #fmt-align-right.on,
+.anim.selected, #tool-freeze.on, #tool-blackout.on { outline: 2px solid var(--accent); }
+
+/* ── LEFT column: agenda panel on top, library below ── */
+#pane-left { display: flex; flex-direction: column; }
+#agenda-panel { display: flex; flex-direction: column; min-height: 12em; max-height: 42%; }
+.agenda-wrap { display: flex; flex-direction: row; gap: 0.4em; min-height: 0; flex: 1; }
+#agenda-list { flex: 1; overflow-y: auto; margin: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.3em; min-height: 6em; }
+.agenda-tools { display: flex; flex-direction: column; gap: 0.3em; }
+.agenda-tools button { padding: 0.35em 0.5em; }
+#library-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 0.6em; border-top: 1px solid var(--border); padding-top: 0.4em; }
+.lib-tabs { display: flex; gap: 0.2em; align-items: center; }
+.lib-tabs button { background: transparent; color: var(--fg); border: 1px solid var(--border); border-radius: 6px 6px 0 0; padding: 0.3em 0.8em; }
+.lib-tabs button.active { background: var(--panel); font-weight: bold; box-shadow: inset 0 2px 0 var(--accent); }
+#lib-add { margin-left: auto; background: #1d7a34; color: #fff; border: none; font-weight: bold; }
+.lib-search-row input { width: 100%; box-sizing: border-box; }
+#lib-song-pane, #lib-bible-pane { overflow-y: auto; min-height: 0; }
+#lib-song-pane { display: flex; flex-direction: column; }
+#lib-song-pane[hidden], #lib-bible-pane[hidden] { display: none; }
+#song-list { overflow-y: auto; }
+.trans-badge { display: inline-block; font-size: 0.75em; font-weight: bold; background: #b26a00; color: #fff; border-radius: 4px; padding: 0.2em 0.6em; }
+.bible-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4em; max-height: 14em; overflow: hidden; }
+#bible-book-list { overflow-y: auto; max-height: 13em; margin: 0; padding-left: 0; border: 1px solid var(--border); border-radius: 6px; }
+#bible-book-list li { cursor: pointer; padding: 0.15em 0.4em; list-style: none; }
+#bible-book-list li.selected { outline: 2px solid var(--accent); background: var(--badge-bg); }
+#bible-chapter-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; overflow-y: auto; max-height: 13em; align-content: start; border: 1px solid var(--border); border-radius: 6px; padding: 0.25em; }
+#bible-chapter-grid button { background: var(--panel); color: var(--fg); border: 1px solid var(--border); padding: 0.2em 0; font-size: 0.85em; }
+#bible-chapter-grid button.selected { background: var(--accent); color: #fff; font-weight: bold; }
+
+/* ── MIDDLE column: the editor only ── */
+#pane-center { display: flex; flex-direction: column; }
+#song-detail { display: flex; flex-direction: column; gap: 0.3em; }
+#song-detail h4 { margin: 0; }
+#lyrics-editor, #bible-verse-edit { width: 100%; box-sizing: border-box; resize: vertical; }
+#slide-filmstrip { display: flex; flex-direction: column; gap: 0.35em; overflow-y: auto; border: 1px dashed var(--border); border-radius: 6px; padding: 0.5em; min-height: 6em; flex: 1; }
+.slide-block { display: grid; grid-template-columns: auto auto 1fr; gap: 0.5em; align-items: start; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4em 0.6em; cursor: pointer; text-align: left; width: 100%; box-sizing: border-box; font: inherit; }
+.slide-block .slide-label { font-weight: bold; font-size: 0.8em; border: 1px solid var(--border); border-radius: 4px; padding: 0.1em 0.4em; background: var(--badge-bg); white-space: nowrap; }
+.slide-block .slide-text { white-space: pre-wrap; }
+.slide-block .slide-foot { grid-column: 3; font-size: 0.75em; opacity: 0.65; }
+/* The slide currently ON SCREEN is highlighted blue — that is the single most
+   important visual cue in the panel (UX-RESEARCH 10.3). `.selected` is the
+   keyboard cursor and stays subtler so the two never read as one thing. */
+.slide-block.live { background: #2a5db0; color: #fff; border-color: #2a5db0; box-shadow: inset 3px 0 0 #7fb3ff; }
+.slide-block.live .slide-label { background: rgba(255,255,255,0.28); border-color: #fff; }
+.slide-block.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.slide-block.live.selected { box-shadow: inset 3px 0 0 #7fb3ff, 0 0 0 1px var(--accent); }
+.slide-block.excluded { opacity: 0.45; }
+.slide-block.excluded .slide-text { text-decoration: line-through; }
+/* legacy film buttons (kept as fallback) */
+.film kbd { margin-right: 0.4em; }
+.film.active { outline: 2px solid var(--accent); }
+
+/* ── RIGHT column ──────────────────────────────────────────────────────────
+   `viewer-mode.png`: slides panel top-right, command strip immediately to the
+   right of the slide rows, preview beneath. The strip is therefore a sibling
+   of the filmstrip in a row — not a column beside the preview, which is where
+   it used to be. */
+.preview-col { display: flex; flex-direction: column; gap: 0.4em; height: 100%; min-height: 0; }
+.slides-row { display: flex; flex-direction: row; gap: 0.5em; align-items: stretch; min-height: 0; flex: 1; }
+.slides-row #slide-filmstrip { flex: 1; min-width: 0; }
+#tool-strip { display: flex; flex-direction: column; gap: 0.35em; align-self: flex-start; }
+#tool-strip button { background: var(--panel); color: var(--fg); border: 1px solid var(--border); font-size: 1.15em; padding: 0.35em 0.45em; }
+/* The gap before the pencil: it changes the MODE, not the projection, and
+   the original spaces it for the same reason. */
+#tool-strip .tool-gap { display: block; height: 14px; border-bottom: 1px solid var(--border); margin: 4px 2px; }
+
+/* An engaged presentation command reads as lit, so the operator can see the
+   state without clicking anything. */
+#tool-strip button.on { background: var(--accent); color: var(--bg); outline: 2px solid var(--accent); }
+/* The shield specifically goes RED — that colour is load-bearing: it is how
+   you know at a glance that browsing cannot disturb the live slide. */
+#tool-strip button#tool-shield.on { background: #dc2626; border-color: #dc2626; color: #fff; }
+#tool-strip button:hover { filter: brightness(1.25); }
+/* Songbooks excluded from instant find gray out and recede. */
+#songbook-tree li.group.excluded { color: var(--muted); opacity: 0.6; }
+.book-exclude { margin-left: 0.4em; background: none; border: 0; color: inherit; cursor: pointer; font-size: 1em; }
+/* Hidden text: the background keeps playing, the words do not show. */
+body[data-text-hidden="1"] .vp-slide { background-image: none; }
+body[data-shield="1"] #agenda-list li:not(.selected) { opacity: 0.65; }
+.preview-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.preview-wrap { position: relative; }
+.preview-wrap .preview { min-height: 220px; }
+#preview-ref { position: absolute; top: 0.4em; right: 0.7em; font-size: 0.75em; opacity: 0.85; color: #fff; background: rgba(0,0,0,0.55); padding: 0.1em 0.5em; border-radius: 4px; }
+#preview-footer { position: absolute; bottom: 0.4em; left: 0; right: 0; text-align: center; font-size: 0.72em; opacity: 0.8; color: #fff; }
+/* VideoPsalm-style preview: black, centered white text */
+#live-preview { background: #000; color: #fff; text-align: center; }
+#live-preview .vp-slide { text-align: center; align-items: center; }
+.vp-slide.word-hl .vp-body { text-shadow: 0 0 0.35em var(--hl, #ffd54a); }

@@ -1,0 +1,28 @@
+{
+  "name": "videopsalm-electron",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VideoPsalm 1.29 clean-room reimplementation (Electron target). Offline-first worship presenter.",
+  "main": "dist/src/main.js",
+  "scripts": {
+    "install:app": "npm install",
+    "build": "tsc -p tsconfig.json && npm run copy:html",
+    "copy:html": "mkdir -p dist/src/renderer && cp src/renderer/*.html dist/src/renderer/ && cp src/renderer/*.css dist/src/renderer/ 2>/dev/null; true",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "start": "npm run build && dbus-run-session -- npx electron dist/src/main.js --disable-gpu --disable-software-rasterizer",
+    "start:control-only": "npm run build && dbus-run-session -- npx electron dist/src/main.js --control-only --disable-gpu --disable-software-rasterizer",
+    "dev": "npm run build && dbus-run-session -- npx electron dist/src/main.js --dev --disable-gpu --disable-software-rasterizer"
+  },
+  "dependencies": {
+    "sql.js": "^1.10.2"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^33.0.0",
+    "typescript": "^5.6.0"
+  }
+}
