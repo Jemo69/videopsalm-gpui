@@ -112,6 +112,9 @@ import type { PresAction } from "./presKeys";
 // came to disagree about which strings are valid.
 import { parseBibleRef } from "../core/refParser";
 import type { BibleRef } from "../core/schemas";
+// Lane G drawn icons (no unicode stand-ins): strip + kind badges render
+// inlined SVG from icons.ts, byte-identical to assets/icons/*.svg.
+import { kindBadgeSvg, stripIconSvg } from "./icons";
 const FILM_KEYS = [...FILM_DIGITS, "V", "C", "B", "E", "O", "I", "P", "N", "S", "T", "U"];
 const MEDIA_KINDS = ["Image", "Video", "Audio", "Pdf", "PowerPoint", "YouTube", "WebSite"];
 
@@ -189,12 +192,8 @@ const CHAPTERS = [50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13,
   28, 16, 24, 21, 28, 16, 16, 13, 6, 6, 4, 4, 5, 3, 6, 4, 3, 1, 13, 5, 5, 3, 5, 1, 1, 1, 22];
 const OT_COUNT = 39;
 
-// Text/unicode kind glyphs (no copied artwork).
-const KIND_ICONS: Record<string, string> = {
-  Song: "♪", BibleVerses: "📖", Image: "▦", Video: "▶", Audio: "♫", Pdf: "▤",
-  PowerPoint: "▧", Excel: "▤", Word: "▤", YouTube: "▶", WebSite: "⌁",
-  CCLI: "©", Alert: "⚠", Clock: "◷",
-};
+// Agenda/media kind badges: drawn SVG via icons.ts (lane G). The unicode
+// stand-ins this replaces read as a clone (UX-RESEARCH 3.3 / 10.3).
 
 // ---------- ribbon tabs (app + format rows) ----------
 document.querySelectorAll("#ribbon-tabs button").forEach((b) =>
@@ -456,7 +455,15 @@ async function refreshAgenda(): Promise<void> {
     badge.className = `kind-badge k-${it.kind}`;
     badge.textContent = it.kind;
     li.appendChild(badge);
-    li.appendChild(document.createTextNode(`${KIND_ICONS[it.kind] ?? "•"} ${it.title}`));
+    // Lane G: drawn kind badge (trusted markup) + plain-text title (user data
+    // stays a text node so titles cannot inject markup).
+    const icon = document.createElement("span");
+    icon.className = "kind-icon";
+    icon.innerHTML = kindBadgeSvg(it.kind);
+    const svg = icon.querySelector("svg");
+    if (svg) { svg.setAttribute("width", "18"); svg.setAttribute("height", "18"); }
+    li.appendChild(icon);
+    li.appendChild(document.createTextNode(` ${it.title}`));
     li.title = `[${it.kind}] ${it.title} — double-click / Enter projects`;
     li.dataset["id"] = it.id;
     li.tabIndex = 0;
@@ -634,7 +641,13 @@ function renderMediaList(): void {
     badge.className = `kind-badge k-${it.kind}`;
     badge.textContent = it.kind;
     li.appendChild(badge);
-    li.appendChild(document.createTextNode(`${KIND_ICONS[it.kind] ?? "•"} ${it.title}`));
+    const icon = document.createElement("span");
+    icon.className = "kind-icon";
+    icon.innerHTML = kindBadgeSvg(it.kind);
+    const svg = icon.querySelector("svg");
+    if (svg) { svg.setAttribute("width", "18"); svg.setAttribute("height", "18"); }
+    li.appendChild(icon);
+    li.appendChild(document.createTextNode(` ${it.title}`));
     if (it.id === selectedItemId) li.classList.add("selected");
     li.addEventListener("click", () => {
       if (shieldBlocks("the agenda")) return;
@@ -864,6 +877,17 @@ el<HTMLButtonElement>("alert-hide").addEventListener("click", async () => {
   el<HTMLElement>("status-alert").textContent = "(hidden)";
 });
 el<HTMLButtonElement>("tool-edit").addEventListener("click", () => toggleViewerMode());
+// Lane G: the strip renders drawn icons (icons.ts), not unicode glyphs.
+// Buttons keep their ids, titles, order and the pre-pencil gap (see
+// tests/commandStrip.test.ts); only the artwork inside changes.
+for (const [id, action] of [
+  ["tool-next", "next"], ["tool-blackout", "base"], ["tool-text", "text"],
+  ["tool-shield", "shield"], ["tool-freeze", "freeze"],
+  ["tool-project", "project"], ["tool-edit", "edit"],
+] as [string, string][]) {
+  const b = document.getElementById(id);
+  if (b) b.innerHTML = stripIconSvg(action);
+}
 function togglePlayPause(): void {
   const media = el<HTMLElement>("live-preview").querySelector("video:not(.vp-bgvideo), audio");
   if (media) {
