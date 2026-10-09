@@ -25,7 +25,7 @@ interface Prefs {
   headerOn: boolean; headerTemplate: string; footerOn: boolean; footerTemplate: string;
   bgKind: string; bgColor: string; bgFile: string;
   leftCollapsed: boolean; rightCollapsed: boolean; viewerMode: boolean;
-  songGroup: string; mediaFilter: string;
+  songGroup: string; mediaFilter: string; galleryKeepOpen: boolean; galleryCollapsed: boolean;
   favs: string[];
   // VideoPsalm-style format state (all persist; transition stored as style.transition)
   styleLevel: string; bibleVerseStyle: string;
@@ -42,7 +42,7 @@ function defaultPrefs(): Prefs {
     headerOn: true, headerTemplate: "{title}", footerOn: false, footerTemplate: "{ref}",
     bgKind: "color", bgColor: "#000000", bgFile: "",
     leftCollapsed: false, rightCollapsed: false, viewerMode: false,
-    songGroup: "all", mediaFilter: "",
+    songGroup: "all", mediaFilter: "", galleryKeepOpen: false, galleryCollapsed: false,
     favs: ["John 3:16-18", "Psalms 23:1-3"],
     styleLevel: "base", bibleVerseStyle: "numbered",
     fmtBold: false, fmtItalic: false, fmtUnderline: false,
@@ -119,6 +119,11 @@ import { kindBadgeSvg, stripIconSvg } from "./icons";
 import { attachPreviewResize, frameBoxCss, getStyleRect, setStyleRect, type FrameId } from "./preview-resize";
 // DoD #6 hook: the style explorer tree (chains × levels × attributes).
 import { createExplorerState, inspectedFromStyleLevel, mountStyleExplorer, seedFromPrefs } from "./style-explorer";
+// B-32 galleries + transport: wiring only (UI in media-gallery.ts).
+import { mountMediaGalleries, brightnessFilter, wireRangeLoop } from "./media-gallery";
+import type { Cascade } from "../core/cascade";
+import type { CutRange, Transport } from "./media-gallery";
+import { emptyCascade } from "../core/cascade";
 const FILM_KEYS = [...FILM_DIGITS, "V", "C", "B", "E", "O", "I", "P", "N", "S", "T", "U"];
 const MEDIA_KINDS = ["Image", "Video", "Audio", "Pdf", "PowerPoint", "YouTube", "WebSite"];
 
@@ -494,6 +499,8 @@ async function refreshAgenda(): Promise<void> {
     list.appendChild(li);
   }
   renderMediaList();
+  // B-32: agenda reloads replace the gallery source list — repaint the grids.
+  document.getElementById("media-galleries")?.dispatchEvent(new Event("vp:media-changed"));
   if (selectedItemId && !agenda.items.some((x) => x.id === selectedItemId)) selectedItemId = null;
 }
 function refreshAgendaListSelection(): void {
@@ -702,12 +709,17 @@ function bodyInner(bodyText: string, bilingual: boolean): string {
   return paras.map(renderPara).join("");
 }
 function backgroundStyle(): { css: string; video: string } {
+  // B-32 luminosity: wrapper-level CSS brightness (approximation — the vendor
+  // grades the media only, but background-image cannot be filtered apart from
+  // the text above it; stated, not hidden).
+  const filt = brightnessFilter(agendaCascade(), prefs.bgKind);
+  const fe = filt ? `filter:${filt};` : "";
   if (prefs.bgKind === "image" && prefs.bgFile) {
-    return { css: `background-image:url("file://${escapeHtml(prefs.bgFile)}");background-color:${escapeHtml(prefs.bgColor)};`, video: "" };
+    return { css: `background-image:url("file://${escapeHtml(prefs.bgFile)}");background-color:${escapeHtml(prefs.bgColor)};${fe}`, video: "" };
   }
   if (prefs.bgKind === "videoLoop" && prefs.bgFile) {
     return {
-      css: `background-color:${escapeHtml(prefs.bgColor)};`,
+      css: `background-color:${escapeHtml(prefs.bgColor)};${fe}`,
       video: `<video class="vp-bgvideo" src="file://${escapeHtml(prefs.bgFile)}" autoplay muted loop></video>`,
     };
   }
@@ -792,6 +804,8 @@ async function pushPreview(title: string, html: string, next: string, footer: st
   el<HTMLButtonElement>("tool-blackout").classList.remove("on");
   await vp().project({ title, html }, next);
   el<HTMLElement>("live-preview").innerHTML = html;
+  // B-32: enforce the selected item's in/out cut range on preview media.
+  wireRangeLoop(el<HTMLElement>("live-preview"), previewRange());
 }
 async function projectItem(it: AgendaItem, slideIndex?: number): Promise<void> {
   const body = await itemBodyText(it);
@@ -1709,7 +1723,8 @@ el<HTMLButtonElement>("shortcuts-close").addEventListener("click", () => {
 });
 
 // ---------- keyboard ----------
-// F5 play/pause · I/O media range (stub) · X next PPTX · F6 slide panel ·
+// F5 play/pause · media cut range (typed field in the gallery transport row,
+// enforced on preview media) · X next PPTX · F6 slide panel ·
 // Ctrl+S save · Alt+S songs · 1..0/V/C/B/E/O slides · Ctrl+*/Shift+* & Ctrl+//Shift+/ range.
 function isEditing(target: EventTarget | null): boolean {
   const t = target as HTMLElement | null;
@@ -2035,6 +2050,47 @@ const previewResize = attachPreviewResize({ getRect: (f) => getStyleRect(agenda.
 el<HTMLButtonElement>("frame-body").addEventListener("click", () => { frameSel = "body"; previewResize.sync(); });
 el<HTMLButtonElement>("frame-header").addEventListener("click", () => { frameSel = "header"; previewResize.sync(); });
 el<HTMLButtonElement>("frame-footer").addEventListener("click", () => { frameSel = "footer"; previewResize.sync(); });
+// ===== B-32 galleries + transport: wiring only (UI in media-gallery.ts) =====
+const cutRanges = new Map<string, CutRange>();
+function agendaCascade(): Cascade {
+  return ((agenda.settings as Record<string, unknown> | undefined)?.["cascade"] as Cascade | undefined) ?? emptyCascade();
+}
+function previewRange(): CutRange {
+  return cutRanges.get(selectedItemId ?? "") ?? { startMs: null, endMs: null, scope: "song" };
+}
+let stopArmed = true; // no media yet, or just stopped: label reads "stopped"
+function currentTransport(): Transport {
+  const m = el<HTMLElement>("live-preview").querySelector("video:not(.vp-bgvideo), audio") as HTMLMediaElement | null;
+  if (!m || stopArmed) return "stopped";
+  return m.paused ? "paused" : "playing";
+}
+function galleryTransport(action: "play" | "pause" | "stop" | "toggle"): void {
+  const m = el<HTMLElement>("live-preview").querySelector("video:not(.vp-bgvideo), audio") as HTMLMediaElement | null;
+  if (!m) { setHint("Transport: no playable media in the current slide."); return; }
+  if (action === "stop") { m.pause(); stopArmed = true; try { m.currentTime = 0; } catch { /* not ready */ } setHint("⏹ Media stopped."); return; }
+  stopArmed = false;
+  if (action === "play" || (action === "toggle" && m.paused)) { void m.play().catch(() => undefined); }
+  else { m.pause(); }
+}
+function mountMediaGalleriesNow(): void {
+  const root = document.getElementById("media-galleries");
+  if (!root) return;
+  mountMediaGalleries(root, {
+    getItems: () => agenda.items.map((it) => ({ id: it.id, title: it.title, kind: it.kind, file: it.ref?.file })),
+    addItem: (kind, title, file) => { agenda.items.push({ id: `item-${Date.now().toString(36)}`, kind, title, ref: { file }, flowType: "Manual" }); agendaDirty = true; paintDirty(); void vp().setAgenda(agenda); void refreshAgenda(); },
+    removeItem: (id) => { agenda.items = agenda.items.filter((x) => x.id !== id); agendaDirty = true; paintDirty(); void vp().setAgenda(agenda); void refreshAgenda(); },
+    getBg: () => ({ kind: prefs.bgKind, file: prefs.bgFile }),
+    setBg: (kind, file) => { prefs.bgKind = kind; prefs.bgFile = file; savePrefs(); syncFormatControls(); void refreshFilmstrip(); },
+    getCascade: agendaCascade,
+    setCascade: (c) => { agenda.settings = { ...(agenda.settings ?? {}), cascade: c }; void vp().setAgenda(agenda); },
+    getKeepOpen: () => prefs.galleryKeepOpen, setKeepOpen: (b) => { prefs.galleryKeepOpen = b; savePrefs(); },
+    getCollapsed: () => prefs.galleryCollapsed, setCollapsed: (b) => { prefs.galleryCollapsed = b; savePrefs(); },
+    getTransport: currentTransport, doTransport: galleryTransport,
+    getRange: previewRange, setRange: (r) => { if (selectedItemId) cutRanges.set(selectedItemId, r); },
+    afterChange: () => { void refreshFilmstrip(); },
+    hint: setHint,
+  });
+}
 
 // ---------- init ----------
 syncPresIndicators();
@@ -2042,6 +2098,7 @@ applyPrefsToDom();
 populateBibleBooks();
 renderFavSelect();
 syncTestamentToBook();
+mountMediaGalleriesNow();
 void refreshAgenda();
 void runSongSearch();
 void (async () => {

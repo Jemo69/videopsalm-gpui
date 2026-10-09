@@ -154,9 +154,12 @@
       <button id="pptx-import">Import .pptx</button>
       <button id="pptx-next" title="X: next PowerPoint slide">Next slide (X)</button>
     </div>
+    <!-- B-32 galleries mount (UI in media-gallery.ts; transport + cut range live here too).
+         Replaces the old "Media range (stub)" row: play/pause/stop, I/O in-out range with
+         verse/song scope, image/video galleries with Luminosité + keep-open pin. -->
     <div class="ribbon-group">
-      <span class="ribbon-label">Media range (stub)</span>
-      <span class="hint">I / O set range — stub in v1 (SPEC §3). Full trimming out of scope.</span>
+      <span class="ribbon-label">Galleries + transport (B-32)</span>
+      <div id="media-galleries"></div>
     </div>
   </section>
   <!-- STYLE -->
