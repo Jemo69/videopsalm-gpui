@@ -35,6 +35,7 @@
 mod doc_field;
 mod icons;
 mod lyrics_doc;
+mod preview_resize;
 mod text_field;
 mod ux;
 
@@ -65,6 +66,7 @@ use vp_core::themes::{self, Theme};
 use vp_core::verse_splitter::SplitOptions;
 
 use doc_field::{DocChanged, DocField, bind_doc_keys};
+use preview_resize::{DragGhost, FrameDrag, FrameId};
 use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
     BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, chapter_count,
@@ -358,6 +360,16 @@ struct Root {
     /// UX-RESEARCH §3.1 / §10.9: `*Agenda` when unsaved, cleared on save. The
     /// original shows the same `*` on a songbook row that has local edits.
     agenda_dirty: bool,
+    /// B-07: which style frame the preview drag-handles are on
+    /// (body/header/footer, selected from the preview's frame row).
+    frame_sel: FrameId,
+    /// B-07: the in-progress preview drag (handle + start rect + press
+    /// anchor). `None` outside a drag; release only clears this — the rect
+    /// is already committed, so a missed release cannot corrupt anything.
+    frame_drag: Option<FrameDrag>,
+    /// B-07: the invisible drag ghost. Starting a platform drag needs a view
+    /// to carry, and a resize must not show a floating chip.
+    drag_ghost: gpui::Entity<DragGhost>,
     /// The current song has unsaved lyrics.
     song_dirty: bool,
     /// Lyrics-editor sub-tab: `0` = Lyrics, `1` = Files, `2` = Chords.
@@ -475,6 +487,8 @@ impl Root {
         });
         let pptx_field = cx.new(|cx| TextField::new("slides.pptx path...", cx));
         let clock_field = cx.new(|cx| TextField::new("300", cx));
+        // B-07: the invisible preview-drag ghost (a resize shows no chip).
+        let drag_ghost = cx.new(|_| DragGhost);
 
         let mut this = Root {
             focus: cx.focus_handle(),
@@ -533,6 +547,9 @@ impl Root {
             show_style_explorer: false,
             show_shortcuts: false,
             agenda_dirty: false,
+            frame_sel: FrameId::Body,
+            frame_drag: None,
+            drag_ghost: drag_ghost.clone(),
             song_dirty: false,
             song_tab: 0,
             song_misc: false,
@@ -4095,7 +4112,6 @@ impl Root {
     /// RIGHT large preview: black surface, centered white text, top-right
     /// ref header, bottom translation/author footer line per slide.
     fn preview_big_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        let _ = cx;
         let slides = self.live_slides();
         let n = slides.len();
         let cur = self.live_slide.min(n.saturating_sub(1));
@@ -4199,7 +4215,9 @@ impl Root {
                     .text_size(px(13.))
                     .child(format!("{} ◈ {} {count}", self.t("preview"), self.style_level)),
             )
-            .child(body)
+            // B-07: the preview is the layout editor — frame selector + drag
+            // handles wrap the slide body (RIGHT column, below slides+strip).
+            .child(self.preview_surface(ui, cx, body))
     }
 
     /// One **round** presentation command button.
