@@ -134,6 +134,20 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 .format-panel { display: none; gap: 1.2em; flex-wrap: wrap; width: 100%; }
 .format-panel.active { display: flex; }
 .swatches { display: inline-flex; gap: 0.25em; }
+/* ── DoD #6 style explorer: cascade tree docked on the Text tab panel ── */
+.se-panel-group{flex:1 1 100%;align-items:stretch;}
+#style-explorer{font-size:.85em;max-height:16em;overflow-y:auto;min-width:24em;}
+#style-explorer .se-selector{display:flex;gap:.3em;align-items:center;flex-wrap:wrap;margin-bottom:.3em;}
+#style-explorer .se-selector button{background:transparent;color:var(--fg);border:1px solid var(--border);}
+#style-explorer .se-selector button[aria-pressed="true"]{outline:2px solid var(--accent);font-weight:bold;}
+#style-explorer ul{list-style:none;margin:0;padding-left:1.1em;}
+#style-explorer .se-chain>span,#style-explorer .se-level>span{cursor:pointer;}
+#style-explorer .se-path{opacity:.6;font-size:.85em;}
+#style-explorer .se-leaf{display:flex;gap:.6em;align-items:baseline;}
+#style-explorer .se-leaf .se-val{flex:1;font-weight:bold;}
+#style-explorer .se-src{opacity:.75;} #style-explorer .se-inherited{color:var(--accent);font-weight:bold;}
+#style-explorer .se-current{color:var(--accent);font-weight:bold;}
+#style-explorer .se-mini{background:transparent;color:var(--fg);border:1px solid var(--border);padding:0 .4em;font-size:.85em;}
 .swatch { width: 1.6em; height: 1.6em; padding: 0; border: 1px solid var(--border); border-radius: 4px; }
 .swatch.selected { outline: 2px solid var(--accent); }
 #fmt-bold.on, #fmt-italic.on, #fmt-underline.on,

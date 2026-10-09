@@ -233,6 +233,8 @@
           <option value="paragraph">Paragraph</option>
         </select>
       </label>
+      <!-- DoD #6 hook: toggles the style-explorer tree (mounted by renderer.ts into #style-explorer below). -->
+      <button id="style-explorer-toggle" title="Show the style explorer: which level each value came from">⊞ Style explorer</button>
     </div>
     <div class="ribbon-group">
       <span class="ribbon-label">Font</span>
@@ -276,6 +278,11 @@
       <button class="anim" data-transition="slide" title="Slide transition">➡ slide</button>
       <button class="anim" data-transition="zoom" title="Zoom transition">⤢ zoom</button>
     </div>
+    <!-- DoD #6 hook: the explorer tree docks on this Text-tab panel (the style editing surface). -->
+    <div class="ribbon-group se-panel-group">
+      <span class="ribbon-label">Style explorer — chain ▸ level ▸ attribute (value ◉ source)</span>
+      <div id="style-explorer" aria-label="Style explorer: cascade tree"></div>
+    </div>
   </section>
   <section data-format-panel="background" class="format-panel">
     <div class="ribbon-group">
@@ -290,7 +297,7 @@
     </div>
   </section>
   <section data-format-panel="edition" class="format-panel">
-    <div class="ribbon-group">
+      <div class="ribbon-group">
       <span class="ribbon-label">Edition helpers</span>
       <label>Transpose <input id="fmt-transpose" type="number" value="0" min="-11" max="11" style="width:4em" title="Mirrors Style → Chords transpose" /></label>
       <button id="fmt-print" title="Print the agenda booklet">🖨 Print booklet</button>
