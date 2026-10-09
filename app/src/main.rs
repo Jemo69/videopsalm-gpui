@@ -35,18 +35,21 @@
 mod doc_field;
 mod icons;
 mod lyrics_doc;
+mod media_gallery;
 mod preview_resize;
+mod projector_window;
 mod style_explorer;
 mod text_field;
 mod ux;
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
     App, Application, AsyncApp, Bounds, Context, Div, FocusHandle, Focusable, FontWeight,
     KeyBinding, MouseButton, MouseUpEvent, Rgba, ScrollHandle, Subscription, WeakEntity, Window,
-    WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
+    WindowBounds, WindowHandle, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 use vp_core::agenda as agenda_ops;
 use vp_core::bible_data::{BibleLibrary, Translation};
@@ -54,11 +57,13 @@ use vp_core::bible_ref::{
     BOOKS, compact_verses, extend_end, extend_start, format_header, match_book, parse_reference,
     shrink_end, shrink_start,
 };
+use vp_core::cascade::{Cascade, Chain};
+use vp_core::geometry::{FitMode, Viewport, resolve_percent};
 use vp_core::schema::{Align, Versification};
 use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
 use vp_core::i18n::Locale;
 use vp_core::library::{self};
-use vp_core::media::{ExternalPlayer, MediaKind, MediaPlayer};
+use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
 };
@@ -67,7 +72,9 @@ use vp_core::themes::{self, Theme};
 use vp_core::verse_splitter::SplitOptions;
 
 use doc_field::{DocChanged, DocField, bind_doc_keys};
+use media_gallery::GalleryState;
 use preview_resize::{DragGhost, FrameDrag, FrameId};
+use projector_window::{ProjectorSnapshot, ProjectorWindow};
 use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
     BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, chapter_count,
@@ -144,7 +151,7 @@ fn hex(color: &str) -> Rgba {
 }
 
 #[derive(Clone)]
-struct UI {
+pub(crate) struct UI {
     bg: Rgba,
     fg: Rgba,
     panel: Rgba,
@@ -262,7 +269,7 @@ impl UI {
     }
 }
 
-struct Root {
+pub(crate) struct Root {
     focus: FocusHandle,
     mode: Mode,
     theme_id: String,
@@ -324,7 +331,7 @@ struct Root {
     // Open-styling prefs (persisted to videopsalm-layout.json).
     accent_override: Option<String>,
     style_level: String,
-    bg_kind: BackgroundKind,
+    pub(crate) bg_kind: BackgroundKind,
     show_abbrev: bool,
     show_number: bool,
     show_chords_proj: bool,
@@ -353,7 +360,6 @@ struct Root {
     bible_context: bool,
     /// Style explorer visibility (attribute tree with source levels).
     show_style_explorer: bool,
-    cascade: vp_core::cascade::Cascade,
     explorer: style_explorer::ExplorerUi,
     /// Keyboard reference panel, toggled on `F1`. Off by default — the slide
     /// panel is for slide rows.
@@ -389,8 +395,18 @@ struct Root {
     max_lines: usize,
     max_chars: usize,
 
-    media: ExternalPlayer,
+    pub(crate) media: ExternalPlayer,
     pptx_info: String,
+
+    // B-32/B-12 media state (galleries, cascade, assigned background file,
+    // cut scope, open projector window). Rendered by the media_gallery and
+    // projector_window modules; bg_file is session-only (layout prefs in
+    // ux.rs are outside this worktree slice, so it is not persisted).
+    pub(crate) galleries: GalleryState,
+    pub(crate) cascade: Cascade,
+    pub(crate) bg_file: Option<PathBuf>,
+    pub(crate) cut_scope: CutScope,
+    pub(crate) projector_window: Option<WindowHandle<ProjectorWindow>>,
 
     // Scroll handles. GPUI 0.2.2 *does* provide ScrollHandle + overflow
     // scrolling (the README previously claimed it did not, which is why the
@@ -410,6 +426,10 @@ struct Root {
     title_field: gpui::Entity<TextField>,
     media_path_field: gpui::Entity<TextField>,
     media_range_field: gpui::Entity<TextField>,
+    // B-32 gallery fields: import path + per-gallery search boxes.
+    pub(crate) gallery_import_field: gpui::Entity<TextField>,
+    pub(crate) gallery_image_filter: gpui::Entity<TextField>,
+    pub(crate) gallery_video_filter: gpui::Entity<TextField>,
     /// The lyrics document — ONE multi-line editor for the whole song.
     ///
     /// Not a grid of per-verse inputs. The original centre panel is *"a WYSIWYG
@@ -420,7 +440,7 @@ struct Root {
     pptx_field: gpui::Entity<TextField>,
     clock_field: gpui::Entity<TextField>,
 
-    _subs: Vec<Subscription>,
+    pub(crate) _subs: Vec<Subscription>,
 }
 
 impl Focusable for Root {
@@ -478,6 +498,9 @@ impl Root {
         let title_field = cx.new(|cx| TextField::new("Item title...", cx));
         let media_path_field = cx.new(|cx| TextField::new("media file path...", cx));
         let media_range_field = cx.new(|cx| TextField::new("in-out ms, e.g. 1000-5000", cx));
+        let gallery_import_field = cx.new(|cx| TextField::new("/path/to/file.jpg …", cx));
+        let gallery_image_filter = cx.new(|cx| TextField::new("filter images…", cx));
+        let gallery_video_filter = cx.new(|cx| TextField::new("filter videos…", cx));
         // The lyrics document for the initially selected song.
         let first_doc = songs
             .first()
@@ -548,7 +571,6 @@ impl Root {
             bible_hits: Vec::new(),
             bible_context: false,
             show_style_explorer: false,
-            cascade: vp_core::cascade::Cascade::default(),
             explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
             agenda_dirty: false,
@@ -569,6 +591,11 @@ impl Root {
             max_chars: 40,
             media: ExternalPlayer::new(MediaKind::Video),
             pptx_info: String::new(),
+            galleries: GalleryState::default(),
+            cascade: Cascade::default(),
+            bg_file: None,
+            cut_scope: CutScope::default(),
+            projector_window: None,
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
@@ -582,6 +609,9 @@ impl Root {
             title_field: title_field.clone(),
             media_path_field: media_path_field.clone(),
             media_range_field: media_range_field.clone(),
+            gallery_import_field: gallery_import_field.clone(),
+            gallery_image_filter: gallery_image_filter.clone(),
+            gallery_video_filter: gallery_video_filter.clone(),
             lyrics_doc: lyrics_doc.clone(),
             _lyrics_doc_subs: Vec::new(),
             pptx_field: pptx_field.clone(),
@@ -659,6 +689,9 @@ impl Root {
             },
         );
         this._subs.push(sub);
+
+        // B-32 gallery search boxes filter as you type (RESEARCH §8).
+        media_gallery::wire_gallery_fields(&mut this, cx);
 
         // Preload the CENTER title edit + verse range fields from the boot
         // agenda item (John 3:16-18).
@@ -890,7 +923,7 @@ impl Root {
 
 
 
-    fn persist_layout_quiet(&self) {
+    pub(crate) fn persist_layout_quiet(&self) {
         let _ = self.prefs().save_file(LayoutPrefs::FILE);
     }
 
@@ -907,7 +940,7 @@ impl Root {
         themes::theme_by_id(&self.theme_id).unwrap_or(themes::builtin_themes()[1].clone())
     }
 
-    fn ui(&self) -> UI {
+    pub(crate) fn ui(&self) -> UI {
         UI::from_theme(&self.theme(), self.accent_override.as_deref())
     }
 
@@ -1376,7 +1409,138 @@ impl Root {
         }
     }
 
-    fn set_status(&mut self, cx: &mut Context<Self>, msg: impl Into<String>) {
+    /// Owned render input for every projector surface (B-12). The in-window
+    /// projector view, the control preview header and the real second window
+    /// all render from this one snapshot, so the three can never disagree
+    /// about which slide is live or what the background is.
+    ///
+    /// The decision itself (`blank > freeze > live`, hide-text keeps the
+    /// background) is `vp_core::media::projector_frame` — pure and tested;
+    /// this only packs owned data out of the control state.
+    pub(crate) fn projector_snapshot(&self, cx: &App) -> ProjectorSnapshot {
+        let theme = self.theme();
+        let live = self.live_slides();
+        let frozen_len = match self.frozen_slide {
+            Some((Some(i), _)) => self.item_slides(i).len(),
+            _ => live.len(),
+        };
+        let frame = projector_frame(
+            self.blank,
+            self.text_hidden,
+            self.frozen_slide,
+            self.live_item,
+            self.live_slide,
+            live.len(),
+            frozen_len,
+        );
+        let slide = frame
+            .item
+            .and_then(|it| self.item_slides(it).get(frame.slide).cloned());
+        let (header, lines, footer) = match slide {
+            Some(s) => (s.header, s.lines, s.footer),
+            None => (String::new(), Vec::new(), String::new()),
+        };
+        let (luminosity, lum_source) = match self.bg_kind {
+            BackgroundKind::Image | BackgroundKind::VideoLoop => {
+                let chain = if self.bg_kind == BackgroundKind::Image {
+                    Chain::Images
+                } else {
+                    Chain::Videos
+                };
+                let p = vp_core::media::resolve_luminosity(&self.cascade, chain);
+                (p.value, p.source.map(|l| l.literal().to_string()))
+            }
+            // A color background carries no media luminosity; the camera has
+            // no cascade chain (no capture support in v1).
+            _ => (0.0, None),
+        };
+        let style = self.agenda.settings.style.clone().unwrap_or_default();
+        // Standalone agenda media (B-32): a live Image/Video file item
+        // replaces the slide instead of compositing text over a background.
+        let standalone = frame.item.and_then(|it| {
+            self.agenda.items.get(it).and_then(|a| {
+                projector_window::standalone_for(&a.kind, &a.reference)
+            })
+        });
+        ProjectorSnapshot {
+            bg_kind: self.bg_kind,
+            bg_file: self.bg_file.clone(),
+            bg_color: hex(theme.projection_bg),
+            fg_color: hex(theme.projection_fg),
+            luminosity,
+            lum_source,
+            frame,
+            header,
+            lines,
+            footer,
+            standalone,
+            alert_visible: self.alert_visible,
+            alert_text: self.alert_field.read(cx).text(),
+            clock_overlay: self.clock_overlay,
+            clock_text: self.clock_display(),
+            body_pct: resolve_percent(
+                style.body_rect(),
+                Viewport::from_pixels(1920, 1080),
+                FitMode::Fill,
+            ),
+            font_family: self.font_family.clone(),
+            bold: self.bold,
+            italic: self.italic,
+            underline: self.underline,
+            align: self.align,
+            chord: self.proj_chord_line(),
+            accent: self.ui().accent,
+        }
+    }
+
+    /// Open the real second window (B-12). `fullscreen` opens it fullscreen
+    /// on the main display; the handle is kept so the Message tab can flip
+    /// it later and so a second press focuses instead of duplicating.
+    fn open_projector(&mut self, cx: &mut Context<Self>, fullscreen: bool) {
+        if let Some(handle) = self.projector_window {
+            let _ = handle.update(cx, |_, window, _| {
+                window.activate_window();
+                if fullscreen && !window.is_fullscreen() {
+                    window.toggle_fullscreen();
+                }
+            });
+            self.set_status(cx, "Projector window already open — focused.");
+            return;
+        }
+        let root = cx.entity();
+        match projector_window::open_projector_window(cx, root, fullscreen) {
+            Ok(handle) => {
+                self.projector_window = Some(handle);
+                self.projector_on = true;
+                self.persist_layout_quiet();
+                self.set_status(
+                    cx,
+                    if fullscreen {
+                        "Projector window opened fullscreen (second display: drag it over)."
+                    } else {
+                        "Projector window opened — drag it to the second display; fullscreen flips it."
+                    },
+                );
+            }
+            Err(e) => self.set_status(cx, format!("Projector window failed: {e}")),
+        }
+    }
+
+    /// Flip the open projector window in/out of fullscreen (B-12). The
+    /// single-click monitor switcher from 1.27b is honestly unmet: GPUI picks
+    /// the display at open time, so moving displays is a drag, stated here.
+    fn toggle_projector_fullscreen(&mut self, cx: &mut Context<Self>) {
+        match self.projector_window {
+            Some(handle) => {
+                let _ = handle.update(cx, |_, window, _| window.toggle_fullscreen());
+                self.set_status(cx, "Projector fullscreen toggled.");
+            }
+            None => self.set_status(cx, "No projector window — open it first."),
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn set_status(&mut self, cx: &mut Context<Self>, msg: impl Into<String>) {
         self.status = msg.into();
         cx.notify();
     }
@@ -2384,7 +2548,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
 /// and leaves the background alone (OBSERVATIONS §6: an engaged command is
 /// marked by an orange outline, not by a filled block). The shield is the one
 /// exception — it fills red, which is load-bearing.
-fn btn(
+pub(crate) fn btn(
     ui: &UI,
     cx: &mut Context<Root>,
     label: &str,
@@ -2418,7 +2582,7 @@ fn btn(
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
-fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
+pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
     let mut col = div()
         .flex()
         .flex_col()
@@ -2633,7 +2797,7 @@ fn rail_index_for(title: &str) -> usize {
     }
 }
 
-fn row(kids: Vec<Div>) -> Div {
+pub(crate) fn row(kids: Vec<Div>) -> Div {
     let mut r = div().flex().flex_row().gap_1().items_center();
     for k in kids {
         r = r.child(k);
@@ -2641,7 +2805,7 @@ fn row(kids: Vec<Div>) -> Div {
     r
 }
 
-fn label(ui: &UI, text: &str, size_px: f32) -> Div {
+pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
     div().text_size(px(size_px)).text_color(ui.fg).child(text.to_string())
 }
 
@@ -2776,7 +2940,7 @@ impl Root {
         if self.viewer_mode {
             return div().w(px(0.)).h(px(0.));
         }
-        let mut tabs: Vec<Div> = RibbonTab::all()
+        let tabs: Vec<Div> = RibbonTab::all()
             .into_iter()
             .map(|tab| {
                 let id = tab.id();
@@ -2789,18 +2953,6 @@ impl Root {
                 })
             })
             .collect();
-        // DoD #6 hook: explorer toggle (panel docks on `Text` — see below).
-        tabs.push(btn(
-            ui,
-            cx,
-            "⊞ style explorer",
-            self.show_style_explorer,
-            |this, _, _, cx| {
-                this.show_style_explorer = !this.show_style_explorer;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
         div()
             .flex()
             .flex_col()
@@ -2815,8 +2967,15 @@ impl Root {
             .when(self.ribbon == RibbonTab::Message, |d| {
                 d.child(self.live_panel(ui, cx))
             })
-            // DoD #6 hook: explorer docks on `Text` (style surface), not `Edit`.
-            .when(self.ribbon == RibbonTab::Text && self.show_style_explorer, |d| {
+            // The `Background` tab carries the image + video galleries
+            // (B-32): click-to-assign at the Images/Videos style level with
+            // the Luminosité steppers beside each grid.
+            .when(self.ribbon == RibbonTab::Background, |d| {
+                d.child(media_gallery::background_tab(ui, cx))
+            })
+            // The style explorer opens from the Styles-group launcher above
+            // (§5.3), over whichever tab is active — it is not a tab itself.
+            .when(self.show_style_explorer, |d| {
                 d.child(self.style_explorer(ui, cx))
             })
     }
@@ -2839,6 +2998,21 @@ impl Root {
                 cx.notify();
             }));
         }
+        // Style Explorer launcher, bottom-right of the Styles group (UX-RESEARCH
+        // §5.3: "the little launcher button at the bottom-right of the Styles
+        // ribbon group"). It is NOT a fifth ribbon tab and does not belong on
+        // Text or Edit — the tree opens over whatever tab is active.
+        style_kids.push(btn(
+            ui,
+            cx,
+            "Style explorer",
+            self.show_style_explorer,
+            |this, _, _, cx| {
+                this.show_style_explorer = !this.show_style_explorer;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ));
         // Font group: family + B/I/U + alignment + chord notation.
         let mut font_kids: Vec<Div> = Vec::new();
         for fam in font_families() {
@@ -4589,6 +4763,34 @@ impl Root {
                         cx.notify();
                     }),
                 ]),
+                // B-12 second window + B-32 cut scope. Transport
+                // (play/pause/stop) is the row above; the in/out range row
+                // below is the cutting-slider equivalent, typed into the
+                // field (no I/O-key binding in v1 — S9 documents I/O as
+                // verse-tag navigation, so the context switch stays manual).
+                row(vec![
+                    label(ui, "projector window:", 12.),
+                    btn(ui, cx, "⛶ open window", self.projector_window.is_some(), |this, _, _, cx| {
+                        this.open_projector(cx, false);
+                    }),
+                    btn(ui, cx, "⛶ open fullscreen", self.projector_window.is_some(), |this, _, _, cx| {
+                        this.open_projector(cx, true);
+                    }),
+                    btn(ui, cx, "⛶ fullscreen toggle", false, |this, _, _, cx| {
+                        this.toggle_projector_fullscreen(cx);
+                    }),
+                ]),
+                row(vec![
+                    label(ui, "cut scope (controls 13/14):", 12.),
+                    btn(ui, cx, "verse cut", self.cut_scope == CutScope::Verse, |this, _, _, cx| {
+                        this.cut_scope = CutScope::Verse;
+                        this.set_status(cx, "Cut range applies to this verse (scope button).");
+                    }),
+                    btn(ui, cx, "song cut", self.cut_scope == CutScope::Song, |this, _, _, cx| {
+                        this.cut_scope = CutScope::Song;
+                        this.set_status(cx, "Cut range applies to the whole song (scope button).");
+                    }),
+                ]),
                 row(vec![
                     div().flex_1().child(self.media_range_field.clone()),
                     label(
@@ -4758,84 +4960,33 @@ impl Root {
         )
     }
 
-    /// Note shown when the style asks for a background kind v1 cannot render.
-    /// Solid color is the only projected background; the rest round-trip in
-    /// the schema for interop (SPEC section 3).
+    /// Note shown when the style asks for a background kind v1 cannot fully
+    /// render. Images render via `gpui::img`; video loops show a captioned
+    /// placeholder tile (gpui 0.2.2 has no video element); only the camera is
+    /// still a solid-color stand-in.
     fn background_note(&self) -> Option<&'static str> {
         match self.bg_kind {
             BackgroundKind::Color => None,
-            BackgroundKind::Image => Some("▣ image background = v1 stub (solid color shown)"),
-            BackgroundKind::VideoLoop => Some("▶ video-loop background = v1 stub (solid color shown)"),
+            BackgroundKind::Image => None,
+            BackgroundKind::VideoLoop => Some("▶ video loop = captioned tile (no video element in gpui 0.2.2)"),
             BackgroundKind::Camera => Some("◉ camera background = v1 stub (solid color shown)"),
         }
     }
 
     fn projector_view(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        let theme = self.theme();
-        let proj_bg = hex(theme.projection_bg);
-        let proj_fg = hex(theme.projection_fg);
-        // A freeze holds the projected slide: the projector shows the frozen
-        // position while the operator keeps browsing, so the congregation
-        // never sees the browsing.
-        let live = self.live_slides();
-        let slides = self.projector_slides();
-        let n = slides.len();
-        let cur = self.projector_slide_index(live.len());
+        // B-12 single-window fallback: this renders the exact same snapshot
+        // as the real second window (`projector_window::render_snapshot`),
+        // so the view switcher can never disagree with the projector about
+        // what is live. The control header above it (state chips, bg note)
+        // is control-only — the sacred screen carries none of it.
+        let snap = self.projector_snapshot(cx);
+        let n = self.projector_slides().len();
+        let cur = self.projector_slide_index(self.live_slides().len());
         let frozen = self.frozen_slide.is_some();
-        let alert_text = self.alert_field.read(cx).text();
-        let chord = self.proj_chord_line();
-        // `.`/Ctrl+T semantics, in order: the base screen blanks everything; hidden
-        // text keeps the background playing but drops header/body/footer and
-        // chords; otherwise the slide renders in full.
-        let mut inner = if self.blank {
-            div().flex_1().bg(rgb(0x000000))
-        } else if self.text_hidden {
-            let mut bare = div().flex_1().bg(proj_bg);
-            if let Some(note) = self.background_note() {
-                bare = bare.child(
-                    div()
-                        .p(px(8.))
-                        .text_size(px(13.))
-                        .text_color(hex("#999999"))
-                        .child(note.to_string()),
-                );
-            }
-            bare
-        } else if let Some(s) = slides.get(cur) {
-            self.slide_view(ui, s, true, proj_bg, proj_fg, true, chord.as_deref())
-        } else {
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .bg(proj_bg)
-                .child(
-                    div()
-                        .text_size(px(28.))
-                        .text_color(hex("#999999"))
-                        .child("(no live item — pick an agenda item and press Show)".to_string()),
-                )
-        };
-        if self.alert_visible && !self.blank {
-            inner = div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .child(div().flex_1().child(inner))
-                .child(
-                    div()
-                        .bg(ui.danger)
-                        .p(px(10.))
-                        .text_size(px(26.))
-                        .text_color(rgb(0xFFFFFF))
-                        .child(format!("{}: {alert_text}", self.t("alert"))),
-                );
-        }
+        let inner = projector_window::render_snapshot(ui, &snap);
         div().flex().flex_col().flex_1().child({
-            // Background kinds other than a solid color are a documented v1
-            // stub: the style color is projected with a note instead.
+            // Only kinds v1 cannot fully render get a note (video poster,
+            // camera stand-in); images and colors render as assigned.
             let bg_note = self.background_note();
             let state = if frozen {
                 "❄ FROZEN"
@@ -4865,6 +5016,19 @@ impl Root {
                 top = top
                     .child(div().flex_1())
                     .child(label(ui, &format!("◴ {}", self.clock_display()), 14.));
+            }
+            // Luminosity provenance chip (control-only chrome, never projected):
+            // shows the resolved value and which style level set it.
+            if snap.luminosity != 0.0 {
+                top = top.child(label(
+                    ui,
+                    &format!(
+                        "luminosity {:+} (at {})",
+                        snap.luminosity.round() as i32,
+                        snap.lum_source.as_deref().unwrap_or("default")
+                    ),
+                    12.,
+                ));
             }
             let mut page = div().flex().flex_col().flex_1().child(top);
             if let Some(note) = bg_note {
