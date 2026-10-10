@@ -25,9 +25,14 @@
 use std::borrow::Cow;
 
 use gpui::{AssetSource, SharedString, Styled, px};
+#[cfg(test)]
 use vp_core::schema::ItemKind;
 
 /// The manifest, embedded so tests read the same contract both ports share.
+///
+/// Test-only: the runtime resolves artwork through [`VpIconAssets`] + [`art`],
+/// never by parsing this JSON. Keeping it out of the shipping binary.
+#[cfg(test)]
 pub const MANIFEST_JSON: &str =
     include_str!("../../../assets/icons/manifest.json");
 
@@ -80,6 +85,10 @@ pub fn file_for(icon_id: &str) -> Option<&'static str> {
 }
 
 /// Inline SVG markup for a manifest id, if it is one of ours.
+///
+/// Test-only: the runtime draws through [`art`] (which goes through
+/// [`VpIconAssets`] + `img()`), not through this string.
+#[cfg(test)]
 pub fn svg_for(icon_id: &str) -> Option<&'static str> {
     let bytes = bytes_for_file(file_for(icon_id)?)?;
     std::str::from_utf8(bytes).ok()
@@ -92,8 +101,11 @@ pub fn asset_path(icon_id: &str) -> Option<String> {
 
 /// Strip action (`ux::tool_strip`) → manifest id.
 ///
-/// The pencil's action is `mode` (it switches mode, not projection) while its
-/// artwork id stays `cmd-pencil` — the name on the file, not the action.
+/// Test-only contract check: the runtime maps actions through `tool_strip`
+/// itself. The pencil's action is `mode` (it switches mode, not projection)
+/// while its artwork id stays `cmd-pencil` — the name on the file, not the
+/// action.
+#[cfg(test)]
 pub fn strip_icon(action: &str) -> Option<&'static str> {
     match action {
         "next" => Some("cmd-next"),
@@ -109,6 +121,10 @@ pub fn strip_icon(action: &str) -> Option<&'static str> {
 
 /// Agenda kind → badge manifest id. Exhaustive over [`ItemKind`]: adding a
 /// kind breaks the build here until it gets drawn artwork.
+///
+/// Test-only mapping check: the runtime resolves badges through `art` +
+/// [`asset_path`].
+#[cfg(test)]
 pub fn kind_icon(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Song => "kind-song",

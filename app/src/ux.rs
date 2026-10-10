@@ -406,6 +406,9 @@ pub const TOOL_STRIP_PENCIL_INDEX: usize = 6;
 
 /// The five main attributes of the style explorer tree, in the order the
 /// original lists them (Body, Header, Footer, Chords, Background).
+///
+/// Test-only: the explorer view reads [`crate::style_explorer`], not this list.
+#[cfg(test)]
 pub fn style_attributes() -> [&'static str; 5] {
     ["Body", "Header", "Footer", "Chords", "Background"]
 }
