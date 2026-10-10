@@ -51,11 +51,12 @@ Typecheck: `npm run typecheck` (`tsc --noEmit`).
   - **Two ribbon rows**: app commands (File | Agenda | Songs | Bibles | Media
     | Style | View, grouped buttons — every pre-existing control is kept and
     still works, reorganized, nothing deleted) + format ribbon (Text |
-    Background | Edition) with Styles (level Base/Songbooks/Song/Verse +
+    Background | Message | Edit) with Styles (level Base/Songbooks/Song/Verse +
     Bible-verse style), Font (family, Bold/Italic/Underline, alignment,
     chord notation Do-Re-Mi vs C-D-E), Colors (swatches + per-word
     highlight), Animation (none/fade/slide/zoom thumbnails stored as
-    style.transition).
+    style.transition), Message (alert overlay, clock, media transport —
+    moved whole from the top-row Media panel; Media keeps the .pptx import).
   - **LEFT column**: *Agenda panel on top (kind icons, right-side icon-button
     strip: add / save / duplicate / delete / move-up / move-down) +
     Songbooks|Bibles tab strip below (green ＋ Add + search box:
@@ -74,7 +75,8 @@ Typecheck: `npm run typecheck` (`tsc --noEmit`).
     large black preview (centered white text, top-right reference header,
     bottom translation footer) + stage mini (current/next) + clock/alert
     status.
-  - **Keyboard**: F5 play/pause, I/O media-range stub note, X next PowerPoint
+  - **Keyboard**: F5 start-pres (play/pause when the media player owns focus),
+    I/O media-range stub note, X next PowerPoint
     slide, F6 focus slide panel, Ctrl+S save, Alt+S jump to Songs,
     1..0/V/C/B/E/O project filmstrip slides, Ctrl+*/Ctrl+/ (and
     Shift+*/Shift+/) Bible range adjust. Full table in-app (? or View →
@@ -112,7 +114,7 @@ Typecheck: `npm run typecheck` (`tsc --noEmit`).
 ┌ topbar: title · style-badge · lang/theme/accent · Projector · Stage · Stop ┐
 ├ ribbon tabs: File Agenda Songs Bibles Media Style View                     ┤
 ├ ribbon panel (grouped buttons for the active tab)                          ┤
-├ format tabs: Text Background Edition (+ Styles Font Colors Animation)      ┤
+├ format tabs: Text Background Message Edit (+ Styles Font Colors Animation · Message carries alert/clock/transport)      ┤
 ├──────────────┬─────────────────────────────┬───────────────┤
 │ LEFT: agenda │ MIDDLE: edit + slides       │ RIGHT: tools  │
 │  *Agenda +   │  edit pane (lyrics /        │  icon strip   │
