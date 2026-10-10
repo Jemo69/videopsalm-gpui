@@ -53,6 +53,20 @@ test("every command button has a title explaining it", () => {
   }
 });
 
+test("an engaged command gets the orange outline, not an accent fill", () => {
+  // B-30 (OBSERVATIONS §6, BACKLOG): the original marks engagement with an
+  // orange rounded-rect outline and leaves the background alone. Same token
+  // as GPUI ENGAGED (#f97327); the shield keeps its load-bearing red fill.
+  const m = /#tool-strip button\.on\s*\{([^}]*)\}/.exec(css);
+  assert.ok(m, "the generic engaged rule must exist");
+  assert.ok(
+    !/background:\s*var\(--accent\)/.test(m![1]),
+    "engaged must not fill with the accent"
+  );
+  assert.match(m![1], /outline:\s*2px solid var\(--engaged\)/);
+  assert.match(css, /--engaged:\s*#f97327/i);
+});
+
 test("the shield lights RED, not the generic accent", () => {
   assert.match(css, /#tool-strip button#tool-shield\.on\s*\{[^}]*background:\s*#dc2626/s);
   // The generic `.on` style must not be the only rule, or the shield would be

@@ -132,34 +132,14 @@
       <button id="bible-fav-remove">☆ Remove</button>
     </div>
   </section>
-  <!-- MEDIA -->
+  <!-- MEDIA (top row): file import only. Alert/clock/transport live on the
+       Message format tab, mirroring GPUI's RibbonTab::Message → live_panel. -->
   <section data-ribbon-panel="media" class="ribbon-panel">
-    <div class="ribbon-group">
-      <span class="ribbon-label">Alert overlay</span>
-      <input id="alert-text" size="32" placeholder="Information message overlay…" />
-      <button id="alert-show">Show alert</button>
-      <button id="alert-hide">Hide alert</button>
-    </div>
-    <div class="ribbon-group">
-      <span class="ribbon-label">Clock</span>
-      <select id="clock-mode"><option value="clock">clock</option><option value="countdown">countdown</option><option value="stopwatch">stopwatch</option></select>
-      <input id="clock-seconds" type="number" value="300" style="width:6em" title="countdown seconds" />
-      <button id="clock-start">Start</button>
-      <button id="clock-reset">Reset</button>
-      <strong id="clock-display">--:--</strong>
-    </div>
     <div class="ribbon-group">
       <span class="ribbon-label">PowerPoint (.pptx import; X = next slide)</span>
       <input type="file" id="pptx-file" accept=".pptx" />
       <button id="pptx-import">Import .pptx</button>
       <button id="pptx-next" title="X: next PowerPoint slide">Next slide (X)</button>
-    </div>
-    <!-- B-32 galleries mount (UI in media-gallery.ts; transport + cut range live here too).
-         Replaces the old "Media range (stub)" row: play/pause/stop, I/O in-out range with
-         verse/song scope, image/video galleries with Luminosité + keep-open pin. -->
-    <div class="ribbon-group">
-      <span class="ribbon-label">Galleries + transport (B-32)</span>
-      <div id="media-galleries"></div>
     </div>
   </section>
   <!-- STYLE -->
@@ -212,11 +192,12 @@
   </section>
 </div>
 
-<!-- ══ Format ribbon (VideoPsalm-style Text | Background | Edition) ══ -->
+<!-- ══ Format ribbon (VideoPsalm-style Text | Background | Message | Edit) ══ -->
 <nav id="ribbon-format-tabs" role="tablist" aria-label="Format tabs">
   <button data-format="text" class="active">Text</button>
   <button data-format="background">Background</button>
-  <button data-format="edition">Edition</button>
+  <button data-format="message">Message</button>
+  <button data-format="edit">Edit</button>
 </nav>
 <div id="ribbon-format">
   <section data-format-panel="text" class="format-panel active">
@@ -299,9 +280,35 @@
       <span class="hint">Transitions live under the Text tab; stored as style.transition.</span>
     </div>
   </section>
-  <section data-format-panel="edition" class="format-panel">
+  <!-- MESSAGE: alert overlay + clock + media transport, mirroring GPUI's
+       RibbonTab::Message → live_panel (moved whole from the top-row Media
+       panel, so renderer.ts and media-gallery.ts logic is untouched). -->
+  <section data-format-panel="message" class="format-panel">
+    <div class="ribbon-group">
+      <span class="ribbon-label">Alert overlay</span>
+      <input id="alert-text" size="32" placeholder="Information message overlay…" />
+      <button id="alert-show">Show alert</button>
+      <button id="alert-hide">Hide alert</button>
+    </div>
+    <div class="ribbon-group">
+      <span class="ribbon-label">Clock</span>
+      <select id="clock-mode"><option value="clock">clock</option><option value="countdown">countdown</option><option value="stopwatch">stopwatch</option></select>
+      <input id="clock-seconds" type="number" value="300" style="width:6em" title="countdown seconds" />
+      <button id="clock-start">Start</button>
+      <button id="clock-reset">Reset</button>
+      <strong id="clock-display">--:--</strong>
+    </div>
+    <!-- B-32 galleries mount (UI in media-gallery.ts; transport + cut range live here too).
+         Replaces the old "Media range (stub)" row: play/pause/stop, I/O in-out range with
+         verse/song scope, image/video galleries with Luminosité + keep-open pin. -->
+    <div class="ribbon-group">
+      <span class="ribbon-label">Galleries + transport (B-32)</span>
+      <div id="media-galleries"></div>
+    </div>
+  </section>
+  <section data-format-panel="edit" class="format-panel">
       <div class="ribbon-group">
-      <span class="ribbon-label">Edition helpers</span>
+      <span class="ribbon-label">Edit helpers</span>
       <label>Transpose <input id="fmt-transpose" type="number" value="0" min="-11" max="11" style="width:4em" title="Mirrors Style → Chords transpose" /></label>
       <button id="fmt-print" title="Print the agenda booklet">🖨 Print booklet</button>
       <span class="hint">Full header/footer templates live under Style → Header/footer.</span>
