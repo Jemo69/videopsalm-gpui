@@ -3,9 +3,10 @@
 // The original drives a whole service from a small, memorized set of keys, so
 // a jump-starter never needs the mouse: arrows and space step through slides,
 // digits and letters jump to a verse or named section, `.`/`,` toggle the black
-// base screen, Escape ends the presentation, and Ctrl+P/T/B/E toggle the
-// projector screen, the text, the slide-panel shield, and Edit/Viewer mode.
-// `Shift+arrow` and `+`/`-` move the selection *without* displaying it.
+// base screen, Escape ends the presentation, and Ctrl+P/T/B/E/R toggle the
+// projector screen, the text, the slide-panel shield, Edit/Viewer mode, and
+// the freeze. `Shift+arrow` and `+`/`-` move the selection *without*
+// displaying it.
 //
 // Kept in its own module (no DOM access) so it is directly unit-testable.
 
@@ -27,8 +28,8 @@ export type PresAction =
   | "next" | "prev" | "toggleBase" | "endPres" | "songStart" | "songEnd"
   | "peekNext" | "peekPrev" | "peekItemNext" | "peekItemPrev"
   | "toggleProjector" | "toggleText" | "toggleShield" | "toggleMode"
-  | "playPause" | "save" | "focusSongs" | "focusBibles" | "focusSlides"
-  | "toggleFreeze"
+  | "playPause" | "startPres" | "save" | "focusSongs" | "focusBibles" | "focusSlides"
+  | "toggleFreeze" | "toggleRibbon" | "keyTips"
   | "pptx" | "rangeExtendEnd" | "rangeShrinkEnd" | "rangeExtendStart" | "rangeShrinkStart"
   | { digit: number } | { section: string } | { addResult: number };
 
@@ -42,16 +43,36 @@ export interface KeyLike {
 }
 
 /**
+ * `true` while the single-screen guard blocks ending the presentation: the
+ * `*`-marked shortcuts (`Esc`, `-`, clicks on the projection screen) are
+ * "operational when there is only one screen" and "disabled" with two or
+ * more (UX-RESEARCH §7, vendor `the-keyboard-shortcuts.html` `*` remark;
+ * RESEARCH-weebly §1.1). This is a disable-guard, NOT a confirm dialog —
+ * no VideoPsalm source documents a confirm-before-ending prompt.
+ */
+export function presentationEndBlocked(displayCount: number): boolean {
+  return displayCount >= 2;
+}
+
+/**
  * Route a keystroke through the presentation keymap.
  *
  * Returns null when the key is not part of the presentation vocabulary, so it
  * falls through to normal typing. `editing` gates everything a text field
  * would otherwise swallow — on-the-fly lyric edits are never hijacked — while
  * the Ctrl/Shift verse-range keys stay live, matching the original.
+ *
+ * `mediaFocused` scopes `F5` the way the original does (RESEARCH-weebly
+ * §1.6): restart-from-beginning on the slide panel, play/pause when the
+ * video/audio player owns focus. The caller derives it from
+ * `document.activeElement`.
  */
-export function routePresKey(e: KeyLike, editing: boolean): PresAction | null {
+export function routePresKey(e: KeyLike, editing: boolean, mediaFocused = false): PresAction | null {
   const k = e.key;
   const mod = e.ctrlKey || e.metaKey;
+  // `Ctrl+F1` collapses/restores the ribbon (show-or-hide-the-toolbar,
+  // RESEARCH-weebly §8.4). Bare `F1` stays unbound, as before.
+  if (mod && (k === "F1" || k === "f1")) return "toggleRibbon";
   if (mod) {
     switch (k.toLowerCase()) {
       case "p": return "toggleProjector";
@@ -85,6 +106,10 @@ export function routePresKey(e: KeyLike, editing: boolean): PresAction | null {
   // `Alt+S` to Save is the single most common way to get this map wrong.
   if (e.altKey && k.toLowerCase() === "s") return "focusSongs";
   if (e.altKey && k.toLowerCase() === "b") return "focusBibles";
+  // Bare `Alt` reveals the ribbon KeyTips, "like in MS Office" (1.5 changelog;
+  // UX-RESEARCH §4.3). On the keydown of Alt itself `e.altKey` is already true,
+  // so match the key name with no other modifier held.
+  if (k === "Alt" && !e.ctrlKey && !e.metaKey && !e.shiftKey) return "keyTips";
   // Verse-range adjustment stays live while typing, as in the original.
   if ((e.ctrlKey || e.shiftKey) && (k === "*" || k === "+")) return "rangeExtendStart";
   if ((e.ctrlKey || e.shiftKey) && (k === "/" || k === "-")) return "rangeShrinkStart";
@@ -113,7 +138,11 @@ export function routePresKey(e: KeyLike, editing: boolean): PresAction | null {
     case "-":
       return "peekItemPrev";
     case "F5":
-      return "playPause";
+      // Context-dependent (§1.6): restart-from-beginning, unless the
+      // video/audio player owns focus — then play/pause (1.27b changelog,
+      // which is also what a Logitech R400 sends). The caller passes
+      // `mediaFocused` from `document.activeElement`.
+      return mediaFocused ? "playPause" : "startPres";
     case "F6":
       return "focusSlides";
     case "x": case "X":
@@ -144,15 +173,21 @@ export function shortcutHelp(): [string, string][] {
     // Ctrl+R is the snowflake, per the 1.15 changelog entry.
     ["Ctrl+R", "freeze / unfreeze the projected slide"],
     ["Ctrl+E", "switch Edit ↔ Viewer mode"],
-    ["F5", "media play / pause"],
+    // F5 is context-dependent (RESEARCH-weebly §1.6): restart on the slide
+    // panel, play/pause when the video/audio player owns focus (1.27b —
+    // "works with Logitech remotes"). Play/pause is also always a click away
+    // on the player's own controls.
+    ["F5", "start presentation from the beginning (in the media player: play / pause)"],
+    ["Ctrl+F1", "collapse / restore the ribbon"],
+    ["Alt", "reveal ribbon KeyTips"],
     ["X", "next PowerPoint slide"],
     ["F6", "focus the slide panel"],
     // Alt+S is Songbooks, not Save — 1.27 beta restored it after Save hijacked
     // it, and pairing it with Alt+B is the documented pair.
     ["Ctrl+S", "save the agenda"],
     ["Alt+S / Alt+B", "jump to Songbooks / Bibles"],
-    ["Ctrl+N", "add the Nth search result to the agenda"],
-    ["Ctrl+1 / 2 / 3", "Control / Projector / Stage view"],
+    // 1.10: "you can add one of those songs by pressing Ctrl+song position".
+    ["Ctrl+1…9", "add the Nth search result to the agenda"],
     ["Ctrl+* / Ctrl+/", "extend / shrink verse range end"],
     ["Shift+* / Shift+/", "extend / shrink verse range start"],
   ];

@@ -25,7 +25,7 @@
   <button data-ribbon="file" class="active">File</button>
   <button data-ribbon="agenda">Agenda</button>
   <button data-ribbon="songs">Songs</button>
-  <button data-ribbon="bibles">Bibles</button>
+  <button data-ribbon="bibles" title="Bibles (Alt+B)">Bibles</button>
   <button data-ribbon="media">Media</button>
   <button data-ribbon="style">Style</button>
   <button data-ribbon="view">View</button>
@@ -330,7 +330,7 @@
     <section id="library-panel">
       <div class="lib-tabs" role="tablist" aria-label="Library tabs">
         <button id="lib-tab-songbooks" class="active" title="Song library">📚 Songbooks</button>
-        <button id="lib-tab-bibles" title="Bible library">📖 Bibles</button>
+        <button id="lib-tab-bibles" title="Bible library (Alt+B)">📖 Bibles</button>
         <button id="lib-add" title="Add (songbook: new songbook · bibles: add favorite)">＋ Add</button>
       </div>
       <div id="lib-song-pane">
@@ -455,24 +455,37 @@
 
 <!-- ══ Status bar + shortcuts ══ -->
 <footer id="statusbar">
-  <span id="status-hint">Double-click / Enter projects · F5 play-pause · X next PPTX slide · F6 slide panel · Ctrl+S save · Alt+S songs · ? shortcuts</span>
+  <span id="status-hint">Double-click / Enter projects · F5 start (in player: play/pause) · X next PPTX slide · F6 slide panel · Ctrl+S save · Alt+S songs · Alt+B bibles · ? shortcuts</span>
   <span class="spacer"></span>
   <span id="backend-info" class="hint"></span>
 </footer>
 <div id="shortcuts-help" hidden>
   <h3>⌨ Keyboard shortcuts</h3>
   <table>
-    <tr><td><kbd>F5</kbd></td><td>Play / pause projected media</td></tr>
+    <tr><td><kbd>F5</kbd></td><td>Start presentation from the beginning. When the video/audio player owns focus: play / pause (works with Logitech R400 remotes)</td></tr>
     <tr><td><kbd>I</kbd> / <kbd>O</kbd></td><td>Set media range in/out — <em>stub in v1</em> (SPEC §3; full trimming out of scope)</td></tr>
     <tr><td><kbd>X</kbd></td><td>Next PowerPoint slide (imported .pptx item)</td></tr>
     <tr><td><kbd>F6</kbd></td><td>Focus the slide filmstrip panel</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save agenda</td></tr>
     <tr><td><kbd>Alt</kbd>+<kbd>S</kbd></td><td>Jump to Songs (instant-find box)</td></tr>
+    <tr><td><kbd>Alt</kbd>+<kbd>B</kbd></td><td>Jump to Bibles</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>F1</kbd></td><td>Collapse / restore the ribbon</td></tr>
+    <tr><td><kbd>Alt</kbd></td><td>Reveal ribbon KeyTips</td></tr>
     <tr><td><kbd>1</kbd>…<kbd>0</kbd>, <kbd>V</kbd> <kbd>C</kbd> <kbd>B</kbd> <kbd>E</kbd> <kbd>O</kbd></td><td>Project filmstrip slide</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>*</kbd> / <kbd>Ctrl</kbd>+<kbd>/</kbd></td><td>Extend / reduce Bible verse range (Shift+* / Shift+/ also work)</td></tr>
     <tr><td><kbd>Enter</kbd> / double-click</td><td>Project selected agenda item</td></tr>
   </table>
   <button id="shortcuts-close">Close</button>
+</div>
+<div id="keytips" hidden>
+  <strong>KeyTips</strong> (Alt to hide):
+  <span><kbd>Alt</kbd>+<kbd>S</kbd> Songs</span>
+  <span><kbd>Alt</kbd>+<kbd>B</kbd> Bibles</span>
+  <span><kbd>Ctrl</kbd>+<kbd>F1</kbd> ribbon</span>
+  <span><kbd>Ctrl</kbd>+<kbd>S</kbd> save</span>
+  <span><kbd>Ctrl</kbd>+<kbd>R</kbd> freeze</span>
+  <span><kbd>Ctrl</kbd>+<kbd>B</kbd> shield</span>
+  <span><kbd>F5</kbd> start</span>
 </div>
 
 <!-- ══ Print booklet (print CSS shows only this) ══ -->

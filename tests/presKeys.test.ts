@@ -3,7 +3,7 @@
 // alike; `presKeys.ts` is DOM-free precisely so it can be tested headless.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FILM_DIGITS, SECTION_LETTERS, routePresKey, shortcutHelp } from "../src/renderer/presKeys";
+import { FILM_DIGITS, SECTION_LETTERS, presentationEndBlocked, routePresKey, shortcutHelp } from "../src/renderer/presKeys";
 import type { KeyLike, PresAction } from "../src/renderer/presKeys";
 
 function key(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
@@ -15,6 +15,14 @@ function key(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
 function editing(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
   return routePresKey(
     { key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods },
+    true,
+  );
+}
+function mediaKey(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
+  // The video/audio player owns focus: F5 must mean play/pause (§1.6).
+  return routePresKey(
+    { key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods },
+    false,
     true,
   );
 }
@@ -110,10 +118,29 @@ test("unrelated keys do not route", () => {
 });
 
 test("media and slide-panel keys", () => {
-  assert.equal(key("F5"), "playPause");
+  // F5 is context-dependent (RESEARCH-weebly §1.6): restart-from-beginning
+  // on the slide panel, play/pause when the player owns focus (1.27b, R400).
+  assert.equal(key("F5"), "startPres");
+  assert.equal(mediaKey("F5"), "playPause");
   assert.equal(key("F6"), "focusSlides");
   assert.equal(key("x"), "pptx");
   assert.equal(key("s", { altKey: true }), "focusSongs");
+  assert.equal(key("b", { altKey: true }), "focusBibles");
+});
+
+test("Ctrl+F1 collapses the ribbon and bare Alt reveals KeyTips", () => {
+  // show-or-hide-the-toolbar (§8.4) and 1.5 ("Press Alt to discover them").
+  assert.equal(key("F1", { ctrlKey: true }), "toggleRibbon");
+  assert.equal(key("Alt"), "keyTips");
+  // Bare F1 stays unbound, as before — only the Ctrl chord is new.
+  assert.equal(key("F1"), null);
+});
+
+test("the single-screen guard blocks ending only with two or more screens", () => {
+  // Vendor `*` remark (UX-RESEARCH §7, RESEARCH-weebly §1.1).
+  assert.equal(presentationEndBlocked(1), false);
+  assert.equal(presentationEndBlocked(2), true);
+  assert.equal(presentationEndBlocked(3), true);
 });
 
 test("the help table documents every group", () => {
@@ -121,7 +148,8 @@ test("the help table documents every group", () => {
   assert.ok(rows.length >= 20);
   const text = rows.map(([k, d]) => `${k} ${d}`).join("\n");
   for (const needle of ["Space", "PgDn", "1…9", "B C I O P N S T U V E", "Escape",
-    "Ctrl+P", "Ctrl+T", "Ctrl+B", "Ctrl+E", "Shift+→", "+ / -", "Home / End"]) {
+    "Ctrl+P", "Ctrl+T", "Ctrl+B", "Ctrl+E", "Ctrl+R", "Ctrl+F1", "Alt",
+    "Shift+→", "+ / -", "Home / End", "F5"]) {
     assert.ok(text.includes(needle), `help table missing ${needle}`);
   }
 });

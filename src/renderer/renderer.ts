@@ -105,7 +105,7 @@ let bibleHeader = "";
 let bibleCustomText: string | null = null;
 
 // Filmstrip key labels: digits first, then the section letters.
-import { FILM_DIGITS, SECTION_LETTERS, routePresKey, shortcutHelp } from "./presKeys";
+import { FILM_DIGITS, SECTION_LETTERS, presentationEndBlocked, routePresKey, shortcutHelp } from "./presKeys";
 import type { PresAction } from "./presKeys";
 // The single Bible reference parser, shared with the unit tests. Do not
 // re-implement reference parsing inline — that is how the app and its tests
@@ -928,6 +928,76 @@ function togglePlayPause(): void {
   }
 }
 
+/**
+ * `true` while the video/audio player owns keyboard focus — the only context
+ * in which `F5` means play/pause (RESEARCH-weebly §1.6; 1.27b changelog
+ * scopes it as *"Play or pause video or audio"*). The preview embeds real
+ * `controls`-enabled media, which Chromium makes focusable, so
+ * `activeElement` is the ground truth — not "media exists".
+ */
+function mediaPlayerFocused(): boolean {
+  const a = document.activeElement as HTMLElement | null;
+  if (!a) return false;
+  const tag = a.tagName;
+  if (tag === "VIDEO" || tag === "AUDIO") return true;
+  return !!a.closest?.("#live-preview video, #live-preview audio");
+}
+
+/**
+ * `F5` — "Start a presentation from the beginning" (help page), which
+ * "will restart the presentation at the beginning in case it was already
+ * started" (2014 keyboard blog). Beginning = first agenda item, first slide;
+ * with no agenda, restart whatever the filmstrip currently shows.
+ */
+async function startPresentationFromBeginning(): Promise<void> {
+  if (agenda.items.length) {
+    const first = agenda.items[0];
+    selectedItemId = first.id;
+    refreshAgendaListSelection();
+    await refreshFilmstrip();
+    if (filmSlides.length) {
+      await projectFilmSlide(0);
+      if (verseEnabled[0] !== false) setHint(`Presentation started from the beginning: ${first.title}.`);
+    } else {
+      await projectItem(first);
+      setHint(`Presentation started from the beginning: ${first.title}.`);
+    }
+    return;
+  }
+  if (filmSlides.length) {
+    await projectFilmSlide(0);
+    return;
+  }
+  setHint("F5: agenda is empty — add an item first.");
+}
+
+/** `Ctrl+F1` collapses/restores the ribbon (show-or-hide-the-toolbar §8.4). */
+let ribbonCollapsed = false;
+function toggleRibbonCollapsed(): void {
+  ribbonCollapsed = !ribbonCollapsed;
+  for (const id of ["ribbon-tabs", "ribbon", "ribbon-format-tabs", "ribbon-format"]) {
+    const n = document.getElementById(id);
+    if (n) (n as HTMLElement).hidden = ribbonCollapsed;
+  }
+  setHint(ribbonCollapsed ? "Ribbon collapsed (Ctrl+F1 to restore)." : "Ribbon restored.");
+}
+
+/** Bare `Alt` reveals the ribbon KeyTips, "like in MS Office" (1.5). */
+function toggleKeyTips(): void {
+  el<HTMLElement>("keytips").hidden = !el<HTMLElement>("keytips").hidden;
+}
+
+// Single-screen guard (UX-RESEARCH §7 `*` remark): `Esc`/`-` are disabled
+// with two or more screens attached. The count is cached — display plug and
+// unplug arrive via window focus, not via projection.
+let displayCount = 1;
+async function refreshDisplayCount(): Promise<void> {
+  try {
+    const n = await vp().displayCount();
+    if (typeof n === "number" && n >= 1) displayCount = n;
+  } catch { /* keep the single-screen default */ }
+}
+
 // ---------- slides panel: labeled verse blocks (V1/V2/V3 + C) with ✓ checkboxes ----------
 let filmLabels: string[] = [];
 let filmBodies: string[] = [];
@@ -1723,9 +1793,11 @@ el<HTMLButtonElement>("shortcuts-close").addEventListener("click", () => {
 });
 
 // ---------- keyboard ----------
-// F5 play/pause · media cut range (typed field in the gallery transport row,
+// F5 start-from-beginning (play/pause when the media player owns focus) ·
+// media cut range (typed field in the gallery transport row,
 // enforced on preview media) · X next PPTX · F6 slide panel ·
-// Ctrl+S save · Alt+S songs · 1..0/V/C/B/E/O slides · Ctrl+*/Shift+* & Ctrl+//Shift+/ range.
+// Ctrl+S save · Alt+S songs · Alt+B bibles · Ctrl+F1 ribbon · Alt KeyTips ·
+// 1..0/V/C/B/E/O slides · Ctrl+*/Shift+* & Ctrl+//Shift+/ range.
 function isEditing(target: EventTarget | null): boolean {
   const t = target as HTMLElement | null;
   if (!t || !("tagName" in (t as object))) return false;
@@ -1739,7 +1811,7 @@ document.addEventListener("keydown", (e) => {
     el<HTMLElement>("shortcuts-help").hidden = !el<HTMLElement>("shortcuts-help").hidden;
     return;
   }
-  const action = routePresKey(e, isEditing(e.target));
+  const action = routePresKey(e, isEditing(e.target), mediaPlayerFocused());
   if (!action) return;
   e.preventDefault();
   void handlePresKey(action);
@@ -1780,6 +1852,9 @@ async function handlePresKey(action: PresAction): Promise<void> {
     case "toggleMode": toggleViewerMode(); break;
     case "toggleFreeze": toggleFreeze(); break;
     case "playPause": togglePlayPause(); break;
+    case "startPres": await startPresentationFromBeginning(); break;
+    case "toggleRibbon": toggleRibbonCollapsed(); break;
+    case "keyTips": toggleKeyTips(); break;
     case "save": await saveAgendaNow(); break;
     case "focusSongs": switchRibbon("songs"); el<HTMLInputElement>("lib-search").focus(); break;
     case "focusBibles": focusBiblePane(); break;
@@ -1917,6 +1992,12 @@ function peekSlide(dir: number): void {
 
 /** `+`/`-`: next/previous agenda item without displaying it. */
 function peekAgendaItem(dir: number): void {
+  // `-`* is single-screen-only: with a projector attached it must not step
+  // out of the service (mirrors the GPUI `peek_item` guard).
+  if (dir < 0 && presentationEndBlocked(displayCount)) {
+    setHint(`"-" is disabled with a projector attached (single-screen only).`);
+    return;
+  }
   const idx = agenda.items.findIndex((x) => x.id === selectedItemId);
   const next = idx + dir;
   if (next < 0 || next >= agenda.items.length) return;
@@ -1924,8 +2005,15 @@ function peekAgendaItem(dir: number): void {
   setHint(`Agenda item: ${agenda.items[next].title} (not displayed).`);
 }
 
-/** Escape: end the presentation — blank the projector, back to the agenda. */
+/** `Escape`: end the presentation — blank the projector, back to the agenda. */
 async function endPresentation(): Promise<void> {
+  // `Escape`* is single-screen-only (UX-RESEARCH §7 `*` remark): with two or
+  // more screens a stray key must not kill the service. This is a
+  // disable-guard, not a confirm dialog — the original has no confirm.
+  if (presentationEndBlocked(displayCount)) {
+    setHint("Esc is disabled with a projector attached — a stray key must not end the service.");
+    return;
+  }
   await vp().stop();
   blackedOut = true;
   textHidden = false;
@@ -2101,6 +2189,10 @@ syncTestamentToBook();
 mountMediaGalleriesNow();
 void refreshAgenda();
 void runSongSearch();
+// Display plug/unplug while running arrives via window focus, not via
+// projection — re-read the count so the single-screen guard never goes stale.
+void refreshDisplayCount();
+window.addEventListener("focus", () => void refreshDisplayCount());
 void (async () => {
   try {
     const backend = (await vp().libraryBackend()) as string;

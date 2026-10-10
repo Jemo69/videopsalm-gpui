@@ -176,6 +176,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("vp:get-projector-state", () => ({ slide: currentSlide, alert: alertState }));
   ipcMain.handle("vp:get-stage-state", () => stageState);
+  // Single-screen guard (UX-RESEARCH §7 `*` remark): the `*` shortcuts are
+  // disabled with two or more screens attached.
+  ipcMain.handle("vp:get-display-count", () => screen.getAllDisplays().length);
   ipcMain.handle("vp:library-backend", () => library?.backend ?? "none");
 }
 

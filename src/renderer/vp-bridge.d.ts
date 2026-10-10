@@ -16,6 +16,8 @@ interface VpBridge {
   getProjectorState(): Promise<unknown>;
   getStageState(): Promise<unknown>;
   libraryBackend(): Promise<unknown>;
+  /** Number of attached displays (single-screen guard, UX-RESEARCH §7). */
+  displayCount(): Promise<number>;
   onRendered(cb: (data: unknown) => void): void;
   onStageRender(cb: (data: unknown) => void): void;
   onClock(cb: (text: string) => void): void;

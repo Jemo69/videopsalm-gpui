@@ -290,6 +290,13 @@ test("every routed action has a handler in the renderer", () => {
     const a = K(c, { ctrlKey: true });
     if (typeof a === "string") routed.add(a);
   }
+  // R-4/R-8 actions: F5 (startPres without player focus), Ctrl+F1 (ribbon),
+  // bare Alt (KeyTips). Without these probes a routed-but-unhandled action
+  // would pass silently.
+  for (const [k, mods] of [["F1", { ctrlKey: true }], ["Alt", {}]] as const) {
+    const a = K(k, mods as Record<string, boolean>);
+    if (typeof a === "string") routed.add(a);
+  }
   for (const k of ["*", "/"]) {
     for (const mods of [{ ctrlKey: true }, { shiftKey: true }, { ctrlKey: true, shiftKey: true }]) {
       const a = K(k, mods);

@@ -136,12 +136,15 @@ stage window: current + next + clock + alert
 
 | Keys | Action |
 | ---- | ------ |
-| F5 | Play / pause projected media |
+| F5 | Start presentation from the beginning (play / pause when the media player owns focus — R400 remotes) |
+| Ctrl+F1 | Collapse / restore the ribbon |
+| Alt | Reveal ribbon KeyTips |
 | I / O | Media range in/out — **stub in v1** (SPEC §3) |
 | X | Next PowerPoint slide |
 | F6 | Focus the slide filmstrip panel |
 | Ctrl+S | Save agenda |
 | Alt+S | Jump to Songs instant-find |
+| Alt+B | Jump to Bibles |
 | 1…0, V C B E O | Project filmstrip slide |
 | Ctrl+\* / Ctrl+/ (Shift+\* / Shift+/ too) | Extend / reduce Bible verse range |
 | Enter / double-click | Project selected agenda item |
@@ -161,7 +164,9 @@ stage window: current + next + clock + alert
   `data/bible.sample.json` shape.
 - Telemetry: none. No network calls by default (YouTube/website items are
   inert link cards; nothing is fetched).
-- Keyboard shortcuts implemented: global keybindings for F5 (play/pause),
+- Keyboard shortcuts implemented: global keybindings for F5 (start from
+  beginning; play/pause when the media player owns focus), Ctrl+F1 (ribbon),
+  Alt (KeyTips),
   X (next .pptx slide), F6 (focus slide panel), Ctrl+S (save), Alt+S (songs),
   1..0/V/C/B/E/O (project filmstrip slides), Ctrl+\*/Ctrl+/ and
   Shift+\*/Shift+/ (Bible range), Enter/double-click (project), ? (help).

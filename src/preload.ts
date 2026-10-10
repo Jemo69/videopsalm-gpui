@@ -18,6 +18,7 @@ const api = {
   getProjectorState: () => ipcRenderer.invoke("vp:get-projector-state"),
   getStageState: () => ipcRenderer.invoke("vp:get-stage-state"),
   libraryBackend: () => ipcRenderer.invoke("vp:library-backend"),
+  displayCount: () => ipcRenderer.invoke("vp:get-display-count"),
   onRendered: (cb: (data: unknown) => void) => ipcRenderer.on("vp:render", (_e, data) => cb(data)),
   onStageRender: (cb: (data: unknown) => void) => ipcRenderer.on("vp:stage-render", (_e, data) => cb(data)),
   onClock: (cb: (text: string) => void) => ipcRenderer.on("vp:clock", (_e, text) => cb(text as string)),
