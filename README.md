@@ -88,7 +88,10 @@ cargo dev    # alias for cargo run -p videopsalm-gpui (builds fine;
 > (2) `.cargo/config.toml` carries the local `-L ~/.local/lib` linker path so
 > plain `cargo build`/`cargo test`/`cargo dev` link without extra setup.
 
-Single window, 1500×950, three views (tabs or top-bar buttons):
+Control window, 1500×950, three views (tabs or top-bar buttons), plus an
+optional second projector window (`app/src/projector_window.rs` via
+`cx.open_window` — opens fullscreen, tracks the live slide; moving it across
+displays is a drag, not a switcher):
 
 - **Control** — toolbar (view tabs + theme + language), VideoPsalm-style
   formatting ribbon (Styles: style-level cascade Base/Songbooks/Song/
@@ -131,8 +134,11 @@ Single window, 1500×950, three views (tabs or top-bar buttons):
 - **Projector** — live worship slide (centered header/body/footer from
   the theme style, bilingual stacking with dimmed translation lines,
   optional chord-symbols line, alert overlay, optional clock overlay,
-  background color; image/video-loop/camera show a documented stub
-  note), style badge in the header.
+  background color; assigned image files render via `gpui::img`,
+  video-loop shows a honestly-labelled captioned tile — gpui 0.2.2 has no
+  video element — camera shows a documented stub note), style badge in
+  the header. Image/video galleries (`app/src/media_gallery.rs`) assign
+  one session-global background (per-level assignment honestly unmet).
 - **Stage** — current + next, whole-song option, big clock.
 
 Keys (single-key shortcuts fire when no text field is focused, so typing
@@ -182,11 +188,13 @@ Covers the four required core modules and more: verse-splitter (8),
 chord-transpose (9), reference parser incl. range adjust (9), agenda
 serde/ops (4), schema shapes incl. style transition default (4), SQLite
 library + instant find (4), slides incl. sample-agenda acceptance (6),
-pptx zip parsing (3), media stub (2), i18n (1), themes (2). 54 vp-core
-tests, all passing; plus 15 app tests (`app/src/ux.rs`: ribbon tabs,
-filmstrip labels, digit/verse shortcuts, kind badges, layout-prefs
-serde + old-file compat, style levels, transitions, font families,
-chapter counts, slide verse ids, tool-strip glyphs).
+pptx zip parsing (3), media stub (2), i18n (1), themes (2), geometry,
+cascade, galleries. Counts re-verified 2026-10-10 by running the suites:
+**143 vp-core tests, all passing; plus 87 app tests** (`app/src/ux.rs`:
+ribbon tabs, filmstrip labels, digit/verse shortcuts, kind badges,
+layout-prefs serde + old-file compat, style levels, transitions, font
+families, chapter counts, slide verse ids, tool-strip glyphs, F5/KeyTips/
+freeze/bibles bindings, bible-hit rows, viewer chrome gate).
 
 ## Scope / limitations vs SPEC section 3 (all explicit stubs)
 
@@ -199,9 +207,9 @@ chapter counts, slide verse ids, tool-strip glyphs).
 | Telemetry | NONE by design. |
 | VLC playback | `MediaPlayer` trait; default backend shells to the OS file handler (`xdg-open`/`open`); **GStreamer hookup point** documented in `vp-core/src/media.rs` (`GstPlayer` implementing `MediaPlayer`; GStreamer not required to build). |
 | Video audio-channel select | Default channel only. |
-| Dual-screen projector window | Single-window fallback with view switcher (acceptance still passes); multi-window TODO documented in `app/src/main.rs` header. `F6` focuses the slide panel (toggles the Projector view); `I`/`O` pin a local play range and `X` steps live PowerPoint placeholders — all documented stubs with on-screen equivalents. Single-key shortcuts (`1..0`, `V/C/B/E/O`, `I/O`, `X`, `Shift+*`, `Shift+/`) are gated while a text field is focused so lyric editing is never hijacked. |
+| Dual-screen projector window | Second window opens fullscreen via `cx.open_window` (`app/src/projector_window.rs`) and tracks the live slide; `F6` focuses the slide panel; `I`/`O` pin a local play range and `X` steps live PowerPoint placeholders — all documented stubs with on-screen equivalents. No monitor switcher yet: moving the window across displays is a drag. Single-key shortcuts (`1..0`, `V/C/B/E/O`, `I/O`, `X`, `Shift+*`, `Shift+/`) are gated while a text field is focused so lyric editing is never hijacked. |
 | 40 skins / 28+ languages | 4 open themes (light/dark/gray/blue + 6 accent swatches + auto) and i18n infra with en + fr (ribbon/panel keys included). Style levels (Song/Bible/Media/Alert/Clock) as ◈ badges; panel layout persists to `videopsalm-layout.json`. |
-| Background image / video loop under lyrics | v1 projects the style background color and shows a stub note (`BackgroundKind::Image/VideoLoop/Camera` round-trips in the schema for interop). |
+| Background image / video loop under lyrics | Assigned images render in preview + projector via `gpui::img` (`app/src/projector_window.rs`); video-loop shows a captioned tile (no decoder in gpui 0.2.2 — honestly unmet, see `projector_window.rs` header). Assignment is session-global, not per style level. |
 | Viewer mode / church logo | Not in v1 UI (schema-compatible settings passthrough exists). |
 | Print | Booklet exports to `print-booklet.html` (print view) instead of direct printing. |
 | Import assistants (OpenSong, OpenLP, …) | Not in v1; same JSON shape importable via the samples folder schema. |
