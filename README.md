@@ -88,7 +88,7 @@ cargo dev    # alias for cargo run -p videopsalm-gpui (builds fine;
 > (2) `.cargo/config.toml` carries the local `-L ~/.local/lib` linker path so
 > plain `cargo build`/`cargo test`/`cargo dev` link without extra setup.
 
-Single window, 1500×950, three views (tabs or `Ctrl+1/2/3`):
+Single window, 1500×950, three views (tabs or top-bar buttons):
 
 - **Control** — toolbar (view tabs + theme + language), VideoPsalm-style
   formatting ribbon (Styles: style-level cascade Base/Songbooks/Song/
@@ -125,7 +125,7 @@ Single window, 1500×950, three views (tabs or `Ctrl+1/2/3`):
     top-right ref header, bottom translation/author footer ref line per
     slide, chord-symbols line when enabled) + stage mini (current + next,
     clock) + projector controls (Prev/Next, Blank, Hide), media player
-    (open file, Play/Pause F5, Stop, I/O range `in-out` ms), alerts
+    (open file, Play/Pause transport button, Stop, I/O range `in-out` ms), alerts
     overlay, clock/countdown/stopwatch, .pptx import stub, print booklet
     (`print-booklet.html`, chords on/off, honors font/align/B/I/U).
 - **Projector** — live worship slide (centered header/body/footer from
@@ -143,17 +143,20 @@ on-screen button equivalent):
 | Key | Action |
 |---|---|
 | `Ctrl+Right` / `Ctrl+Left` | next / prev slide (steps across agenda items) |
-| `F5` | media play/pause |
+| `F5` | start presentation from the beginning (play/pause: Message-tab transport button) |
+| `Ctrl+P` / `Ctrl+T` / `Ctrl+B` / `Ctrl+R` / `Ctrl+E` | projector screen / text / shield / freeze / Edit↔Viewer |
 | `F6` | focus slide panel (toggles Projector view) |
 | `I` / `O` | media in/out-point stub (pins 0 / 30s range locally) |
 | `X` | advance live PowerPoint item (stub; status note otherwise) |
 | `Ctrl+S` | save agenda |
-| `Alt+S` | jump to songbooks (instant-find field) |
+| `Alt+S` / `Alt+B` | jump to songbooks (instant-find field) / bibles (book field) |
+| `Ctrl+F1` | collapse / restore the ribbon |
+| `Alt` | reveal ribbon KeyTips |
 | `1..9`, `0` | jump to slide 1..10 of the live item |
 | `V C B E O` | jump to first Verse / Chorus / Bridge / Ending / Outro slide |
 | `Ctrl+*` / `Ctrl+/` | extend / shrink verse-range end |
 | `Shift+*` / `Shift+/` | extend / shrink verse-range start |
-| `Ctrl+1/2/3` | Control / Projector / Stage view |
+| `Ctrl+1…9` | add the Nth search result to the agenda |
 | `Ctrl+Q` | quit |
 
 Layout persistence: theme, language, ribbon tab, accent, style level,
