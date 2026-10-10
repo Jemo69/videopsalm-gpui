@@ -210,20 +210,15 @@ const SHIELD_ARMED: Rgba = Rgba {
     a: 1.0,
 };
 
-/// Lighten `c` toward white by `amount` (0..1), keeping alpha.
+/// Whether an engaged presentation command gets the orange outline.
 ///
-/// Used to mark an **engaged** presentation command: the original brightens the
-/// button's own colour rather than drawing the orange outline it uses for
-/// ribbon controls, and the per-command tint is what makes the strip readable
-/// at a glance.
-fn brighten(c: Rgba, amount: f32) -> Rgba {
-    let k = amount.clamp(0., 1.);
-    Rgba {
-        r: c.r + (1.0 - c.r) * k,
-        g: c.g + (1.0 - c.g) * k,
-        b: c.b + (1.0 - c.b) * k,
-        a: c.a,
-    }
+/// B-30 (OBSERVATIONS §6): the original marks engagement with an **orange
+/// rounded-rect outline** and leaves the background alone. Truth table — only
+/// engaged-and-not-shield-armed draws it; the armed shield keeps its red fill
+/// with no outline, and a disengaged command draws nothing. Pure so it is
+/// unit-testable (the strip builder itself needs a GPUI context).
+fn engaged_outline(active: bool, armed: bool) -> bool {
+    active && !armed
 }
 
 /// Black or white — whichever contrasts better against `c` (WCAG 2.x
@@ -2816,7 +2811,11 @@ pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
 impl Render for Root {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.ui();
-        div()
+        let chrome = viewer_chrome_visible(self.viewer_mode);
+        // Viewer mode drops the topbar AND the ribbon (viewer-mode.png opens
+        // straight onto the agenda); the body and any live projection stay.
+        // The strip pencil and Ctrl+E remain the way back — both survive.
+        let mut root = div()
             .key_context("App")
             .track_focus(&self.focus_handle(cx))
             // One raw key-down feeds the whole presentation keymap.
@@ -2829,14 +2828,17 @@ impl Render for Root {
             .size_full()
             .bg(ui.bg)
             .text_color(ui.fg)
-            .text_size(px(14.))
-            .child(self.topbar(&ui, cx))
-            .child(self.ribbon_bar(&ui, cx))
-            .child(match self.mode {
-                Mode::Control => self.control_view(&ui, cx),
-                Mode::Projector => self.projector_view(&ui, cx),
-                Mode::Stage => self.stage_view(&ui, cx),
-            })
+            .text_size(px(14.));
+        if chrome {
+            root = root
+                .child(self.topbar(&ui, cx))
+                .child(self.ribbon_bar(&ui, cx));
+        }
+        root.child(match self.mode {
+            Mode::Control => self.control_view(&ui, cx),
+            Mode::Projector => self.projector_view(&ui, cx),
+            Mode::Stage => self.stage_view(&ui, cx),
+        })
             .child(
                 div()
                     .px_2()
@@ -2845,6 +2847,18 @@ impl Render for Root {
                     .child(format!("{} {}", self.t("status"), self.status)),
             )
     }
+}
+
+/// Chrome gate for Viewer mode: the topbar and the ribbon go, the body
+/// (agenda, library, slides, preview) and any live projection stay.
+///
+/// Evidence: `viewer-mode.png` opens straight onto the `*Agenda` panel under
+/// the OS title bar — no topbar, no ribbon tab row. The ribbon builder already
+/// returned empty in Viewer mode but `render()` kept calling `topbar()`,
+/// leaving the mode/theme strip on screen. Pure so it is unit-testable
+/// (rendering itself needs a GPUI window).
+fn viewer_chrome_visible(viewer_mode: bool) -> bool {
+    !viewer_mode
 }
 
 impl Root {
@@ -4348,17 +4362,12 @@ impl Root {
     // The shield fills **red** when armed — that colour is load-bearing: it is
     // how the operator knows browsing cannot disturb the live slide.
     //
-    // Every other command marks engagement with a brightened fill of its own
-    // colour. It previously read `else if active { tint } else { tint }`, which
-    // made the engaged state invisible on the strip — the one cue the operator
-    // relies on mid-service.
-    let bg = if armed {
-        SHIELD_ARMED
-    } else if active {
-        brighten(tint, 0.45)
-    } else {
-        tint
-    };
+    // Every other command marks engagement exactly like `btn()`: an **orange
+    // outline** (`UI::engaged`) with the background left alone (B-30,
+    // OBSERVATIONS §6). A brightened fill used to sit here and made the
+    // engaged state read as a different, wrong treatment next to the ribbon.
+    let bg = if armed { SHIELD_ARMED } else { tint };
+    let outline = engaged_outline(active, armed);
     div()
         .w(px(34.))
         .h(px(34.))
@@ -4370,6 +4379,7 @@ impl Root {
         .text_color(ink_on(bg))
         .text_size(px(15.))
         .cursor_pointer()
+        .when(outline, |d| d.border_2().border_color(ui.engaged))
         // Lane G: drawn SVG on a neutral chip, so a coloured icon stays
         // readable on its same-coloured circle (and on light skins).
         .child(
@@ -5122,4 +5132,36 @@ fn main() {
         .unwrap();
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engaged_command_draws_the_orange_outline() {
+        // B-30 (OBSERVATIONS §6): engaged = orange outline, background alone.
+        // The armed shield is the one state that fills red instead.
+        assert!(engaged_outline(true, false));
+        assert!(!engaged_outline(false, false));
+        assert!(!engaged_outline(false, true));
+        assert!(!engaged_outline(true, true));
+    }
+
+    #[test]
+    fn viewer_mode_drops_chrome_and_keeps_projection() {
+        // viewer-mode.png: no topbar, no ribbon — the body starts at the
+        // agenda. `Root::render` branches on this gate; the projector/stage
+        // branches render regardless, so a live projection is untouched.
+        assert!(viewer_chrome_visible(false));
+        assert!(!viewer_chrome_visible(true));
+    }
+
+    #[test]
+    fn ribbon_has_the_real_four_tabs() {
+        // 1.29: Text | Background | Message | Edit (SCREENSHOT-1.29-LAYOUT.md).
+        // The Message tab hosts alert/clock/media transport via live_panel.
+        let ids: Vec<&str> = RibbonTab::all().iter().map(|t| t.id()).collect();
+        assert_eq!(ids, vec!["text", "background", "message", "edit"]);
+    }
 }
