@@ -77,10 +77,10 @@ use preview_resize::{DragGhost, FrameDrag, FrameId};
 use projector_window::{ProjectorSnapshot, ProjectorWindow};
 use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
-    BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, chapter_count,
-    digit_slide_index, filmstrip_label, font_families, kind_badge, route_pres_key, section_name,
-    shortcut_help, slide_verse_id, style_levels, tool_strip, transitions,
-    verse_shortcut_target,
+    BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, bible_hit_rows,
+    chapter_count, digit_slide_index, filmstrip_label, font_families, kind_badge,
+    presentation_end_blocked, presentation_start_index, route_pres_key, section_name, shortcut_help,
+    slide_verse_id, style_levels, tool_strip, transitions, verse_shortcut_target,
 };
 
 actions!(
@@ -364,6 +364,12 @@ pub(crate) struct Root {
     /// Keyboard reference panel, toggled on `F1`. Off by default — the slide
     /// panel is for slide rows.
     show_shortcuts: bool,
+    /// Ribbon collapsed via `Ctrl+F1` (show-or-hide-the-toolbar, §8.4).
+    /// Session-only: the original's collapse is a window state, not a saved
+    /// layout, and the sibling feel lane owns ribbon presentation.
+    ribbon_collapsed: bool,
+    /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
+    show_keytips: bool,
     /// The agenda has unsaved changes — the `*` in the panel header.
     ///
     /// UX-RESEARCH §3.1 / §10.9: `*Agenda` when unsaved, cleared on save. The
@@ -417,6 +423,9 @@ pub(crate) struct Root {
     scroll_books: ScrollHandle,
     scroll_slides: ScrollHandle,
     scroll_shortcuts: ScrollHandle,
+    /// Bible keyword-hit list (R-6): every hit renders inside a bounded
+    /// scroller with this handle — never `.take(30)` again.
+    scroll_bible_hits: ScrollHandle,
 
     search_field: gpui::Entity<TextField>,
     path_field: gpui::Entity<TextField>,
@@ -573,6 +582,8 @@ impl Root {
             show_style_explorer: false,
             explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
+            ribbon_collapsed: false,
+            show_keytips: false,
             agenda_dirty: false,
             frame_sel: FrameId::Body,
             frame_drag: None,
@@ -601,6 +612,7 @@ impl Root {
             scroll_books: ScrollHandle::new(),
             scroll_slides: ScrollHandle::new(),
             scroll_shortcuts: ScrollHandle::new(),
+            scroll_bible_hits: ScrollHandle::new(),
             search_field: search_field.clone(),
             path_field: path_field.clone(),
             alert_field: alert_field.clone(),
@@ -1954,7 +1966,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
     fn peek_item(&mut self, dir: i32, cx: &mut Context<Self>) {
         // `"-"*` is one of the single-screen-only keys. With a projector
         // attached it must not step backwards out of the service.
-        if dir < 0 && self.projector_attached() {
+        if dir < 0 && presentation_end_blocked(self.projector_attached()) {
             self.set_status(cx, "\"-\" is disabled while projecting.");
             return;
         }
@@ -2000,7 +2012,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
     /// watching. B-12 replaces this with a real second window and a real
     /// display count.
     fn end_presentation(&mut self, cx: &mut Context<Self>) {
-        if self.projector_attached() {
+        if presentation_end_blocked(self.projector_attached()) {
             self.set_status(
                 cx,
                 "Esc is disabled while projecting — a stray key must not end the service. \
@@ -2018,9 +2030,22 @@ fn apply_lyrics_document(&mut self, document: &str) {
     /// `true` when a projector is attached, i.e. the `*`-guarded shortcuts must
     /// not fire.
     ///
-    /// v1 is single-window, so the proxy is the projector view. See B-12.
+    /// The `*` entries are disabled with two or more screens (RESEARCH-weebly
+    /// §1.1). Single-window fallback proxies that as the projector view; the
+    /// B-12 real second window counts too — a live window IS an attached
+    /// projector, whatever mode the control window is in.
     fn projector_attached(&self) -> bool {
-        self.mode == Mode::Projector
+        self.mode == Mode::Projector || self.projector_window.is_some()
+    }
+
+    /// `F5` — start the presentation from the beginning: first agenda item,
+    /// first slide (help page; 2014 blog: *"restart ... at the beginning in
+    /// case it was already started"*).
+    fn start_presentation(&mut self, cx: &mut Context<Self>) {
+        match presentation_start_index(self.agenda.items.len()) {
+            Some(i) => self.show_live(cx, i),
+            None => self.set_status(cx, "F5: agenda is empty — add an item first."),
+        }
     }
 
     /// `Home` / `End`: first / last slide of the live item.
@@ -2474,7 +2499,15 @@ fn apply_lyrics_document(&mut self, document: &str) {
         // While a text field has focus only the non-character shortcuts work,
         // so on-the-fly lyric edits are never interrupted.
         let typing = self.editing(window, cx);
-        if typing && !matches!(key, PresKey::RangeExtendEnd | PresKey::RangeShrinkEnd) {
+        if typing
+            && !matches!(
+                key,
+                PresKey::RangeExtendEnd
+                    | PresKey::RangeShrinkEnd
+                    | PresKey::ToggleRibbon
+                    | PresKey::KeyTips
+            )
+        {
             return;
         }
         match key {
@@ -2501,14 +2534,25 @@ fn apply_lyrics_document(&mut self, document: &str) {
             PresKey::ToggleProjector => self.toggle_projector(cx),
             PresKey::ToggleText => self.toggle_text(cx),
             PresKey::ToggleShield => self.toggle_shield(cx),
+            PresKey::ToggleFreeze => self.toggle_freeze(cx),
             PresKey::ToggleMode => self.toggle_viewer_mode(cx),
-            PresKey::PlayPause => {
-                self.media.toggle();
+            PresKey::StartPres => self.start_presentation(cx),
+            PresKey::ToggleRibbon => {
+                self.ribbon_collapsed = !self.ribbon_collapsed;
+                cx.notify();
+            }
+            PresKey::KeyTips => {
+                self.show_keytips = !self.show_keytips;
                 cx.notify();
             }
             PresKey::Save => self.save_agenda(cx),
             PresKey::FocusSongs => {
                 let h = self.search_field.read(cx).focus_handle(cx);
+                window.focus(&h);
+                cx.notify();
+            }
+            PresKey::FocusBibles => {
+                let h = self.book_field.read(cx).focus_handle(cx);
                 window.focus(&h);
                 cx.notify();
             }
@@ -2832,6 +2876,11 @@ impl Render for Root {
             .text_size(px(14.))
             .child(self.topbar(&ui, cx))
             .child(self.ribbon_bar(&ui, cx))
+            // KeyTips overlay (bare Alt): control mode only, never over the
+            // projector or stage screens.
+            .when(self.show_keytips && self.mode == Mode::Control, |d| {
+                d.child(self.keytips_strip(&ui, cx))
+            })
             .child(match self.mode {
                 Mode::Control => self.control_view(&ui, cx),
                 Mode::Projector => self.projector_view(&ui, cx),
@@ -2939,6 +2988,18 @@ impl Root {
     fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         if self.viewer_mode {
             return div().w(px(0.)).h(px(0.));
+        }
+        // `Ctrl+F1` collapse (show-or-hide-the-toolbar, RESEARCH-weebly §8.4).
+        // A slim re-expand row stands in for the article's white arrow; the
+        // tab row itself is untouched.
+        if self.ribbon_collapsed {
+            return div().flex().flex_row().gap_1().px(px(6.)).items_center().children(vec![
+                label(ui, "ribbon collapsed", 12.),
+                btn(ui, cx, "expand (Ctrl+F1)", false, |this, _, _, cx| {
+                    this.ribbon_collapsed = false;
+                    cx.notify();
+                }),
+            ]);
         }
         let tabs: Vec<Div> = RibbonTab::all()
             .into_iter()
@@ -3155,6 +3216,23 @@ impl Root {
     /// (`viewer-mode.png`): a fixed left column holding the agenda above the
     /// songbooks/Bibles library, and a right column holding the slides panel
     /// with the command strip immediately to its right, above the preview.
+    /// KeyTips overlay: the Alt-accessible keys, one line (1.5: *"Press Alt
+    /// to discover them"*). Minimal port — a toggle strip, not per-control
+    /// badges. Rendered above the control view, never over the projector.
+    fn keytips_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div().flex().flex_row().gap_2().px(px(6.)).items_center().children(vec![
+            label(
+                ui,
+                "KeyTips (Alt): Alt+S songs · Alt+B bibles · Ctrl+F1 ribbon · Ctrl+S save · Ctrl+R freeze · Ctrl+B shield · F5 start",
+                12.,
+            ),
+            btn(ui, cx, "hide (Alt)", false, |this, _, _, cx| {
+                this.show_keytips = false;
+                cx.notify();
+            }),
+        ])
+    }
+
     /// The centre editor disappears and the ribbon goes entirely.
     ///
     /// The command strip used to sit in its own third column beside the
@@ -3816,6 +3894,8 @@ impl Root {
         ];
         // Keyword/phrase results, listed instantly as you type. Clicking one
         // adopts it as the current reference and returns to reference mode.
+        // Every hit renders inside a bounded scroller (R-6): the old
+        // `.take(30)` silently dropped matches past 30.
         if self.bible_search == BibleSearch::Keyword && !self.bible_hits.is_empty() {
             out.push(label(
                 ui,
@@ -3825,9 +3905,11 @@ impl Root {
                 ),
                 12.,
             ));
+            // Row text is pure (`ux::bible_hit_rows`, unit-tested: N hits in
+            // → N rows out); only the click wrapper needs the GPUI context.
+            let rows = bible_hit_rows(&self.bible_hits);
             let mut hits: Vec<Div> = Vec::new();
-            for hit in self.bible_hits.clone().into_iter().take(30) {
-                let short: String = hit.text.chars().take(70).collect();
+            for (hit, (reference, snippet)) in self.bible_hits.clone().into_iter().zip(rows) {
                 hits.push(
                     div()
                         .flex()
@@ -3837,12 +3919,8 @@ impl Root {
                         .rounded_sm()
                         .text_size(px(12.))
                         .bg(ui.bg)
-                        .child(
-                            div()
-                                .text_color(ui.accent)
-                                .child(format!("{} {}:{}", hit.book, hit.chapter, hit.verse)),
-                        )
-                        .child(div().flex_1().child(short))
+                        .child(div().text_color(ui.accent).child(reference))
+                        .child(div().flex_1().child(snippet))
                         .cursor_pointer()
                         .on_mouse_up(
                             MouseButton::Left,
@@ -3853,7 +3931,28 @@ impl Root {
                         ),
                 );
             }
-            out.push(div().flex().flex_col().gap(px(1.)).children(hits));
+            // Bounded scroller with a stable id, like every other panel list:
+            // a fresh id per frame would reset the scroll offset on re-render.
+            out.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h(px(48.))
+                    .max_h(px(280.))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .flex_1()
+                            .min_h_0()
+                            .id("scroll:bible-hits")
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_bible_hits)
+                            .children(hits),
+                    ),
+            );
         }
         out
     }
@@ -5105,7 +5204,8 @@ fn main() {
         bind_doc_keys(cx);
         // The presentation keymap is data, not bindings: see
         // `ux::route_pres_key` for the full table (arrows/space, digits,
-        // section letters, `.`/`,`, Escape, Shift+arrows, +/- and Ctrl+P/T/B/E).
+        // section letters, `.`/`,`, Escape, Shift+arrows, +/-, Ctrl+P/T/B/R/E,
+        // Alt+S/B, Ctrl+F1, Alt, F5/F6/F1 and the verse-range keys).
         // Root handles raw key-down and routes through it, so one gate
         // (`Root::editing`) covers the whole vocabulary.
         cx.bind_keys([KeyBinding::new("ctrl-q", QuitApp, None)]);

@@ -17,6 +17,7 @@
 //! * [`LayoutPrefs`] — file-backed panel-layout persistence.
 
 use serde::{Deserialize, Serialize};
+use vp_core::bible_data::VerseHit;
 use vp_core::schema::ItemKind;
 
 // ---------------------------------------------------------------------------
@@ -200,16 +201,44 @@ pub enum PresKey {
     ToggleText,
     /// Arm/disarm the slide-panel shield (Ctrl+B).
     ToggleShield,
+    /// Hold the projected slide while browsing the preview (Ctrl+R).
+    ///
+    /// 1.15: *"Snowflake" button shortcut: Ctrl+R*.
+    ToggleFreeze,
     /// Switch Edit ↔ Viewer mode (Ctrl+E).
     ToggleMode,
-    /// Media play/pause (F5).
-    PlayPause,
+    /// Restart the presentation from the beginning (F5).
+    ///
+    /// Context-dependent in the original (RESEARCH-weebly §1.6): F5 also
+    /// toggles media play/pause *"when the video/audio player owns focus"*
+    /// (1.27b — the Logitech R400 case). This port has no focusable player
+    /// widget, so F5 always restarts; play/pause stays one click away on the
+    /// Message-tab transport button, which the help row says.
+    StartPres,
     /// Save the agenda (Ctrl+S).
     Save,
     /// Focus the song instant-find box (Alt+S).
     FocusSongs,
+    /// Focus the Bible book box (Alt+B).
+    ///
+    /// *"To view Bible verses, click the button 'Bibles' or press `Alt + B`"*
+    /// (bible-verses.html, RESEARCH-weebly §2).
+    FocusBibles,
     /// Focus the slide panel (F6).
     FocusSlides,
+    /// Collapse / restore the ribbon (Ctrl+F1).
+    ///
+    /// show-or-hide-the-toolbar (RESEARCH-weebly §8.4): *"Use `Ctl+F1` to
+    /// hide or bring back the toolbar."* Double-click-tab collapse, the
+    /// top-right dropdown and the white arrow are the same article's other
+    /// methods and are NOT implemented — minimal port.
+    ToggleRibbon,
+    /// Reveal the ribbon KeyTips (bare Alt).
+    ///
+    /// 1.5 changelog: *"Ribbon shortcut. Press Alt to discover them (like in
+    /// MS Office)"* (UX-RESEARCH §4.3). Minimal port: a toggle overlay listing
+    /// the Alt-accessible keys, not per-control badges.
+    KeyTips,
     /// Advance a live PowerPoint item (X).
     PptxNext,
     /// Extend the Bible verse range at the end (Ctrl+*).
@@ -250,6 +279,39 @@ pub const SECTION_LETTERS: [(char, &str); 11] = [
     ('E', "ending"),
 ];
 
+/// Display rows for Bible keyword hits: `(reference, snippet)` pairs.
+///
+/// Pure so the no-truncation rule (R-6) is unit-testable: every hit in gets
+/// exactly one row out. The render layer only wraps these in a scrolling
+/// container — it must never `.take(n)` them again.
+pub fn bible_hit_rows(hits: &[VerseHit]) -> Vec<(String, String)> {
+    hits.iter()
+        .map(|h| {
+            let snippet: String = h.text.chars().take(70).collect();
+            (format!("{} {}:{}", h.book, h.chapter, h.verse), snippet)
+        })
+        .collect()
+}
+
+/// Agenda index `F5` restarts from: the first item, when there is one.
+///
+/// Pure so the restart target is unit-testable without a GPUI context.
+pub fn presentation_start_index(item_count: usize) -> Option<usize> {
+    if item_count > 0 { Some(0) } else { None }
+}
+
+/// Whether ending the presentation is blocked by the single-screen guard.
+///
+/// The `*` shortcuts (`Esc`, `-`, clicks on the projection screen) are
+/// *"operational when there is only one screen"* and *"disabled"* with two
+/// or more (UX-RESEARCH §7 `*` remark; RESEARCH-weebly §1.1). This is a
+/// disable-guard, NOT a confirm dialog — no VideoPsalm source documents one.
+/// Callers pass their projector-attached proxy (display count ≥ 2 in ports
+/// that can read it).
+pub fn presentation_end_blocked(projector_attached: bool) -> bool {
+    projector_attached
+}
+
 /// Human-readable section name for a letter, if it is a section key.
 pub fn section_name(letter: char) -> Option<&'static str> {
     SECTION_LETTERS
@@ -276,13 +338,19 @@ pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
         "end" => Some(PresKey::SongEnd),
         "+" | "=" => Some(PresKey::PeekItemNext),
         "-" => Some(PresKey::PeekItemPrev),
-        "f5" => Some(PresKey::PlayPause),
+        "f5" => Some(PresKey::StartPres),
         "f6" => Some(PresKey::FocusSlides),
         "ctrl-s" => Some(PresKey::Save),
         "alt-s" => Some(PresKey::FocusSongs),
+        "alt-b" => Some(PresKey::FocusBibles),
+        "ctrl-f1" => Some(PresKey::ToggleRibbon),
+        // Bare Alt reveals the ribbon KeyTips (1.5). Multi-char, so it would
+        // fall through `route_single_char` to None without this arm.
+        "alt" => Some(PresKey::KeyTips),
         "ctrl-p" => Some(PresKey::ToggleProjector),
         "ctrl-t" => Some(PresKey::ToggleText),
         "ctrl-b" => Some(PresKey::ToggleShield),
+        "ctrl-r" => Some(PresKey::ToggleFreeze),
         "ctrl-e" => Some(PresKey::ToggleMode),
         // Ctrl+digit adds the Nth search result to the agenda.
         //
@@ -348,12 +416,21 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+P", "show / hide the projector screen"),
         ("Ctrl+T", "show / hide the text (background keeps playing)"),
         ("Ctrl+B", "arm / disarm the shield"),
+        ("Ctrl+R", "freeze / unfreeze the projected slide"),
         ("Ctrl+E", "switch Edit ↔ Viewer mode"),
-        ("F5", "media play / pause"),
+        // F5 restarts from the beginning (§1.6); the player-focus play/pause
+        // the changelog adds has no focusable widget in this port, so media
+        // toggling lives on the Message-tab transport button instead.
+        ("F5", "start presentation from the beginning (play/pause: Message-tab transport)"),
         ("X", "next PowerPoint slide"),
         ("F6", "focus the slide panel"),
-        ("Ctrl+S / Alt+S", "save agenda / jump to instant find"),
-        ("Ctrl+1 / 2 / 3", "Control / Projector / Stage view"),
+        ("Ctrl+S", "save the agenda"),
+        ("Alt+S / Alt+B", "jump to Songbooks / Bibles"),
+        // 1.10: "add one of those songs by pressing Ctrl+song position" —
+        // never view switches, which the original does not bind.
+        ("Ctrl+1…9", "add the Nth search result to the agenda"),
+        ("Ctrl+F1", "collapse / restore the ribbon"),
+        ("Alt", "reveal ribbon KeyTips"),
         ("Ctrl+* / Ctrl+/", "extend / shrink verse range end"),
         ("Shift+* / Shift+/", "extend / shrink verse range start"),
         ("Ctrl+Q", "quit"),
@@ -914,9 +991,21 @@ mod tests {
         assert_eq!(route_pres_key("ctrl-p"), Some(PresKey::ToggleProjector));
         assert_eq!(route_pres_key("ctrl-t"), Some(PresKey::ToggleText));
         assert_eq!(route_pres_key("ctrl-b"), Some(PresKey::ToggleShield));
+        // Ctrl+R is the snowflake (1.15) — and plain "b" is a section jump,
+        // NOT the shield. The modifier is the whole difference.
+        assert_eq!(route_pres_key("ctrl-r"), Some(PresKey::ToggleFreeze));
+        assert_eq!(route_pres_key("b"), Some(PresKey::Section('B')));
         assert_eq!(route_pres_key("ctrl-e"), Some(PresKey::ToggleMode));
         assert_eq!(route_pres_key("ctrl-s"), Some(PresKey::Save));
         assert_eq!(route_pres_key("alt-s"), Some(PresKey::FocusSongs));
+        // Alt+B jumps to Bibles (bible-verses.html: "click the button
+        // 'Bibles' or press Alt+B").
+        assert_eq!(route_pres_key("alt-b"), Some(PresKey::FocusBibles));
+        assert_eq!(route_pres_key("B"), Some(PresKey::Section('B')));
+        // Ctrl+F1 collapses the ribbon (show-or-hide-the-toolbar, §8.4);
+        // bare Alt reveals the KeyTips (1.5).
+        assert_eq!(route_pres_key("ctrl-f1"), Some(PresKey::ToggleRibbon));
+        assert_eq!(route_pres_key("alt"), Some(PresKey::KeyTips));
         // Ctrl+1/2 are add-result, not view switches (1.10). The three views are
         // reached from the topbar, which is where the original puts them.
         assert_eq!(route_pres_key("ctrl-1"), Some(PresKey::AddResult(1)));
@@ -925,7 +1014,10 @@ mod tests {
         // Binding it to Stage stole the digit from the operator mid-search.
         assert_eq!(route_pres_key("ctrl-3"), Some(PresKey::AddResult(3)));
         assert_eq!(route_pres_key("ctrl-q"), Some(PresKey::Quit));
-        assert_eq!(route_pres_key("f5"), Some(PresKey::PlayPause));
+        // F5 restarts from the beginning (§1.6). This port has no focusable
+        // player widget, so there is no player-focus play/pause route — the
+        // Message-tab transport button is the documented play/pause path.
+        assert_eq!(route_pres_key("f5"), Some(PresKey::StartPres));
         assert_eq!(route_pres_key("f6"), Some(PresKey::FocusSlides));
         assert_eq!(route_pres_key("ctrl-*"), Some(PresKey::RangeExtendEnd));
         assert_eq!(route_pres_key("ctrl-/"), Some(PresKey::RangeShrinkEnd));
@@ -989,7 +1081,8 @@ mod tests {
         let text = rows.iter().map(|(k, d)| format!("{k} {d}")).collect::<Vec<_>>().join("\n");
         for needle in [
             "Space", "PgDn", "1…9", "B C I O P N S T U V E", "Escape", "Ctrl+P",
-            "Ctrl+T", "Ctrl+B", "Ctrl+E", "Shift+→", "+ / -", "Home / End",
+            "Ctrl+T", "Ctrl+B", "Ctrl+R", "Ctrl+E", "Ctrl+F1", "Alt", "Shift+→", "+ / -", "Home / End",
+            "F5", "Ctrl+1…9", "Alt+S / Alt+B",
         ] {
             assert!(text.contains(needle), "help table missing {needle}");
         }
@@ -999,6 +1092,48 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), before);
+    }
+
+    #[test]
+    fn bible_keyword_hits_render_all_without_truncation() {
+        // R-6: the old `.take(30)` silently dropped matches past 30. Forty
+        // seeded hits must yield forty rows — the scroller, not a cap,
+        // handles the overflow.
+        let hits: Vec<VerseHit> = (1..=40)
+            .map(|v| VerseHit {
+                book: "John".to_string(),
+                chapter: 3,
+                verse: v,
+                text: format!("For God so loved the world, verse {v}"),
+            })
+            .collect();
+        let rows = bible_hit_rows(&hits);
+        assert_eq!(rows.len(), 40);
+        assert_eq!(rows[0].0, "John 3:1");
+        assert_eq!(rows[39].0, "John 3:40");
+        assert!(rows[39].1.contains("verse 40"));
+        assert!(bible_hit_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn f5_restarts_from_the_first_agenda_item() {
+        // "Start a presentation from the beginning" (help page; 2014 blog:
+        // restart at the beginning when already started).
+        assert_eq!(presentation_start_index(3), Some(0));
+        assert_eq!(presentation_start_index(1), Some(0));
+        assert_eq!(presentation_start_index(0), None);
+    }
+
+    #[test]
+    fn single_screen_guard_blocks_ending_only_when_attached() {
+        // `*` remark (UX-RESEARCH §7, RESEARCH-weebly §1.1): disabled with
+        // two or more screens. The route still yields EndPres — the guard
+        // lives in the handler, so help stays accurate while a stray key
+        // cannot kill the service.
+        assert_eq!(route_pres_key("escape"), Some(PresKey::EndPres));
+        assert_eq!(route_pres_key("-"), Some(PresKey::PeekItemPrev));
+        assert!(!presentation_end_blocked(false));
+        assert!(presentation_end_blocked(true));
     }
 
     #[test]
