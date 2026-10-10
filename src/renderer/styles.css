@@ -1,7 +1,7 @@
 /* VideoPsalm Electron v1 — original open styling (no copied skins).
    4 open themes via body[data-theme]; custom accent via --accent.
    3-pane layout widths persist via body[data-left-collapsed]/[data-right-collapsed]. */
-:root { --accent: #2a5db0; --left-w: 300px; --right-w: 340px; }
+:root { --accent: #2a5db0; --left-w: 300px; --right-w: 340px; /* B-30 engaged-orange, same token as GPUI ENGAGED (0.976/0.451/0.153) */ --engaged: #f97327; }
 body[data-theme="light"] { --bg: #ffffff; --fg: #111111; --panel: #f2f2f2; --border: #cccccc; --badge-bg: #e4e4e4; }
 body[data-theme="dark"] { --bg: #141414; --fg: #f0f0f0; --panel: #1f1f1f; --border: #444444; --badge-bg: #2c2c2c; }
 body[data-theme="gray"] { --bg: #3a3f44; --fg: #f0ede4; --panel: #4a5056; --border: #6a7076; --badge-bg: #545a60; }
@@ -35,17 +35,21 @@ body[data-left-collapsed="1"][data-right-collapsed="1"] #layout { grid-template-
 
 /* ── Viewer mode (Ctrl+E) ──────────────────────────────────────────────────
    UX-RESEARCH §2.2 / §10.1: this **rewrites the window**, it is not a
-   hide-a-few-panes toggle. Two things matter and both were previously wrong:
+   hide-a-few-panes toggle. Three things matter:
 
    1. The ribbon goes entirely — including its *tab row*, not just the panel
       body. A leftover tab strip is the giveaway that this is a toggle.
-   2. The **agenda and the library both stay**. Viewer mode is the four areas:
+   2. The topbar goes too: viewer-mode.png opens straight onto the agenda
+      under the OS title bar. The strip pencil and Ctrl+E remain the way
+      back, and the projector window is unaffected, so live projection stays.
+   3. The **agenda and the library both stay**. Viewer mode is the four areas:
       agenda top-left, library bottom-left, slides top-right, preview
       bottom-right. Hiding the whole left column removed two of them — the
       panel the operator jumps from.
 
    So only the centre edit column and the song-detail editor are dropped, and
    the grid collapses to two columns. */
+body[data-viewer="1"] #topbar,
 body[data-viewer="1"] #song-detail,
 body[data-viewer="1"] #ribbon,
 body[data-viewer="1"] #ribbon-format,
@@ -126,7 +130,7 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 
 /* ══ VideoPsalm-style control layout (clean-room: layout mimicry only) ══ */
 
-/* ── format ribbon (second row: Text | Background | Edition) ── */
+/* ── format ribbon (second row: Text | Background | Message | Edit) ── */
 #ribbon-format-tabs { display: flex; gap: 0.2em; padding: 0.3em 1em 0; background: var(--panel); border-top: 1px solid var(--border); }
 #ribbon-format-tabs button { background: transparent; color: var(--fg); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 0.35em 1em; }
 #ribbon-format-tabs button.active { background: var(--bg); border-color: var(--border); font-weight: bold; box-shadow: inset 0 2px 0 var(--accent); }
@@ -217,9 +221,10 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
    the original spaces it for the same reason. */
 #tool-strip .tool-gap { display: block; height: 14px; border-bottom: 1px solid var(--border); margin: 4px 2px; }
 
-/* An engaged presentation command reads as lit, so the operator can see the
-   state without clicking anything. */
-#tool-strip button.on { background: var(--accent); color: var(--bg); outline: 2px solid var(--accent); }
+/* An engaged presentation command gets the orange rounded-rect OUTLINE with
+   the background left alone (B-30, OBSERVATIONS §6 — same token as GPUI
+   ENGAGED). The old accent fill read as a different, wrong treatment. */
+#tool-strip button.on { outline: 2px solid var(--engaged); outline-offset: 1px; }
 /* The shield specifically goes RED — that colour is load-bearing: it is how
    you know at a glance that browsing cannot disturb the live slide. */
 #tool-strip button#tool-shield.on { background: #dc2626; border-color: #dc2626; color: #fff; }
