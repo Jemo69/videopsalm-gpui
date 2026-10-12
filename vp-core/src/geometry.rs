@@ -701,7 +701,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[test]
     fn prepare_four_three_project_sixteen_nine_keeps_the_relative_layout() {
         // The same style, authored once, shown on a 4:3 authoring screen and
         // then projected at 16:9. Under the projection default every frame must

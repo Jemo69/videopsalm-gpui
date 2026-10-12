@@ -15,6 +15,10 @@ pub struct TranslationBook {
     pub name: String,
     #[serde(default)]
     pub chapters: Vec<Vec<String>>,
+    /// `bsname` from an imported Zefania file (the original's
+    /// `BibleBook.Abbreviation`); absent on formats that carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abbreviation: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -25,6 +29,23 @@ pub struct Translation {
     pub language: String,
     #[serde(default)]
     pub books: Vec<TranslationBook>,
+    // Metadata the original carries from its import dialogs (Zefania
+    // INFORMATION block, local XML info) into footers and the translation
+    // strip. `None`/absent on old sample files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abbreviation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Import provenance: `"osis" | "zefania" | "videopsalm-xml"` — mirrors
+    /// the original's `BibleSource` enum for the badge/About line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl Translation {
@@ -42,7 +63,9 @@ impl Translation {
     }
 
     /// Resolve a [`crate::schema::BibleRef`] to display lines
-    /// (`"16 text..."` per verse; missing verses render as `[…]`).
+    /// (`"16 text..."` per verse; verses past the chapter render `[…]`,
+    /// and verses that never existed in the source — an OSIS gap — are
+    /// omitted entirely rather than shown with the wrong text).
     pub fn resolve(&self, r: &crate::schema::BibleRef) -> Vec<String> {
         let mut out = Vec::new();
         let ch = self.chapter(&r.book, r.chapter);
@@ -55,11 +78,13 @@ impl Translation {
             r.verses.clone()
         };
         for v in verses {
-            let text = ch
-                .and_then(|lines| lines.get(v.saturating_sub(1) as usize))
-                .cloned()
-                .unwrap_or_else(|| "[…]".to_string());
-            out.push(format!("{v} {text}"));
+            match ch.and_then(|lines| lines.get(v.saturating_sub(1) as usize)) {
+                // Beyond the chapter: placeholder, as before.
+                None => out.push(format!("{v} […]")),
+                // Gap-filled empty string: no such verse in the source.
+                Some(text) if text.is_empty() => {}
+                Some(text) => out.push(format!("{v} {text}")),
+            }
         }
         out
     }

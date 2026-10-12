@@ -47,6 +47,7 @@
   "status": "Status",
   "media": "Media player",
   "play_pause": "Play/Pause (F5)",
+  "import_bible": "Import XML",
   "import_pptx": "Import .pptx",
   "print_booklet": "Print booklet",
   "verse_order": "Verse order",

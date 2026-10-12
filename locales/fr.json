@@ -47,6 +47,7 @@
   "status": "État",
   "media": "Lecteur média",
   "play_pause": "Lecture/Pause (F5)",
+  "import_bible": "Importer XML",
   "import_pptx": "Importer .pptx",
   "print_booklet": "Imprimer le carnet",
   "verse_order": "Ordre des couplets",
