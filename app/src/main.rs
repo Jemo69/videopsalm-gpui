@@ -1967,12 +1967,31 @@ fn apply_lyrics_document(&mut self, document: &str) {
         if n == 0 {
             return;
         }
+        // If the operator navigated the selection cursor away from the live
+        // verse (via Shift+arrow peek), stepping forward / Enter projects that
+        // selected verse.
+        let target = self.sel_item.or(self.live_item);
+        if let Some(item_idx) = target {
+            if let Some(vid) = self.sel_block.clone() {
+                let slides = self.item_slides(item_idx);
+                let live_vid = slides
+                    .get(self.live_slide)
+                    .and_then(|s| slide_verse_id(&s.header));
+                if live_vid.as_deref() != Some(&vid) && self.live_item == Some(item_idx) {
+                    if let Some(target_slide) = self.slide_for_song_verse(&slides, &vid) {
+                        self.goto_item_slide(cx, item_idx, target_slide);
+                        return;
+                    }
+                }
+            }
+        }
         if dir > 0 {
             if self.live_slide + 1 < n {
                 self.live_slide += 1;
             } else if let Some(idx) = self.live_item {
                 if idx + 1 < self.agenda.items.len() {
                     self.live_item = Some(idx + 1);
+                    self.sel_item = Some(idx + 1);
                     self.live_slide = 0;
                 }
             }
@@ -1981,42 +2000,78 @@ fn apply_lyrics_document(&mut self, document: &str) {
         } else if let Some(idx) = self.live_item {
             if idx > 0 {
                 self.live_item = Some(idx - 1);
+                self.sel_item = Some(idx - 1);
                 let prev = self.item_slides(idx - 1).len();
                 self.live_slide = prev.saturating_sub(1);
             }
         }
         self.blank = false;
+        if let Some(item_idx) = self.live_item {
+            let slides = self.item_slides(item_idx);
+            if let Some(cur) = slides.get(self.live_slide) {
+                if let Some(vid) = slide_verse_id(&cur.header) {
+                    self.sel_block = Some(vid);
+                }
+            }
+        }
+        self.scroll_slide_into_view();
         cx.notify();
     }
 
-    /// `Shift+arrow`: move the projected slide *without* displaying it. The
-    /// original uses this to line the next slide up while the audience still
-    /// sees the current one, so we advance the internal cursor only.
+    /// `Shift+arrow`: move the selection cursor *without* displaying it.
+    /// The audience continues seeing the current live slide on the projector.
     fn peek_slide(&mut self, dir: i32, cx: &mut Context<Self>) {
-        let n = self.live_slides().len();
-        if n == 0 {
+        let target = self.sel_item.or(self.live_item);
+        let Some(item_idx) = target else {
+            return;
+        };
+        let verses = self.ordered_item_verses(item_idx);
+        if verses.is_empty() {
             return;
         }
+
+        let cur_pos = self
+            .sel_block
+            .as_deref()
+            .and_then(|vid| verses.iter().position(|(k, _)| k == vid))
+            .unwrap_or_else(|| {
+                let slides = self.item_slides(item_idx);
+                slides
+                    .get(self.live_slide)
+                    .and_then(|s| slide_verse_id(&s.header))
+                    .and_then(|vid| verses.iter().position(|(k, _)| k == vid.as_str()))
+                    .unwrap_or(0)
+            });
+
         if dir > 0 {
-            if self.live_slide + 1 < n {
-                self.live_slide += 1;
-            } else if let Some(idx) = self.live_item {
+            if cur_pos + 1 < verses.len() {
+                self.sel_block = Some(verses[cur_pos + 1].0.clone());
+            } else if let Some(idx) = self.sel_item.or(self.live_item) {
                 if idx + 1 < self.agenda.items.len() {
                     self.sel_item = Some(idx + 1);
                     let title = self.agenda.items[idx + 1].title.clone();
                     self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
+                    let next_verses = self.ordered_item_verses(idx + 1);
+                    if let Some((first_vid, _)) = next_verses.first() {
+                        self.sel_block = Some(first_vid.clone());
+                    }
                 }
             }
-        } else if self.live_slide > 0 {
-            self.live_slide -= 1;
-        } else if let Some(idx) = self.live_item {
+        } else if cur_pos > 0 {
+            self.sel_block = Some(verses[cur_pos - 1].0.clone());
+        } else if let Some(idx) = self.sel_item.or(self.live_item) {
             if idx > 0 {
                 self.sel_item = Some(idx - 1);
                 let title = self.agenda.items[idx - 1].title.clone();
                 self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
+                let prev_verses = self.ordered_item_verses(idx - 1);
+                if let Some((last_vid, _)) = prev_verses.last() {
+                    self.sel_block = Some(last_vid.clone());
+                }
             }
         }
-        self.set_status(cx, "Moved without displaying.");
+        self.scroll_slide_into_view();
+        self.set_status(cx, "Moved selection without displaying.");
         cx.notify();
     }
 
@@ -4388,12 +4443,17 @@ impl Root {
             // keyboard cursor and stays subtler so the two never read as one.
             let row_bg = if live_now {
                 ui.selection
-            } else if selected {
-                ui.bg
             } else {
                 ui.bg
             };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
+            let border_c = if selected {
+                ui.engaged
+            } else if live_now {
+                ui.selection
+            } else {
+                row_bg
+            };
             let check = if hidden { "☐" } else { "☑" };
             let vid2 = vid.clone();
             let id2 = item_id.clone();
@@ -4407,10 +4467,8 @@ impl Root {
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
-                    // The live row carries a left edge marker as well as the
-                    // blue fill, so it stays obvious in a long list.
-                    .border_l_2()
-                    .border_color(if live_now { ui.selection } else { row_bg })
+                    .border_2()
+                    .border_color(border_c)
                     .child(btn(ui, cx, check, false, move |this, _, _, cx| {
                         let hide = !this.is_hidden(&id2, &vid2);
                         this.set_hidden(&id2, &vid2, hide);
@@ -4461,6 +4519,7 @@ impl Root {
             return vec![label(ui, "(no verses)", 13.)];
         }
         let slides = self.item_slides(item_idx);
+        let live_here = self.live_item == Some(item_idx);
         let mut out: Vec<Div> = Vec::new();
         for (num, lines) in verses.iter() {
             let text = lines.join(" ");
@@ -4469,7 +4528,18 @@ impl Root {
                 .slide_for_bible_text(&slides, &text)
                 .map(|i| format!("▸{}", i + 1))
                 .unwrap_or_else(|| "—".to_string());
-            let highlighted = self.sel_block.as_deref() == Some(num.as_str());
+            let live_now = live_here
+                && self.slide_for_bible_text(&slides, &text) == Some(self.live_slide);
+            let selected = self.sel_block.as_deref() == Some(num.as_str());
+            let row_bg = if live_now { ui.selection } else { ui.bg };
+            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
+            let border_c = if selected {
+                ui.engaged
+            } else if live_now {
+                ui.selection
+            } else {
+                row_bg
+            };
             let check = if hidden { "☐" } else { "☑" };
             let num2 = num.clone();
             let text2 = text.clone();
@@ -4483,8 +4553,10 @@ impl Root {
                     .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(if highlighted { ui.selection } else { ui.bg })
-                    .text_color(if highlighted { ui.selection_ink } else { ui.fg })
+                    .bg(row_bg)
+                    .text_color(row_ink)
+                    .border_2()
+                    .border_color(border_c)
                     .child(btn(ui, cx, check, false, move |this, _, _, cx| {
                         let hide = !this.is_hidden(&id2, &num2);
                         this.set_hidden(&id2, &num2, hide);
@@ -4494,14 +4566,14 @@ impl Root {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(if highlighted { ui.accent_ink } else { ui.accent })
+                            .text_color(if live_now { row_ink } else { ui.accent })
                             .child(num.clone()),
                     )
                     .child(div().flex_1().text_size(px(13.)).child(short))
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(if highlighted { ui.accent_ink } else { ui.fg })
+                            .text_color(if live_now { row_ink } else { ui.fg })
                             .child(at),
                     )
                     .cursor_pointer()
@@ -4655,12 +4727,69 @@ impl Root {
             .border_color(ui.border)
             .child(
                 div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
                     .text_size(px(13.))
-                    .child(format!("{} ◈ {} {count}", self.t("preview"), self.style_level)),
+                    .child(format!("{} ◈ {} {count}", self.t("preview"), self.style_level))
+                    .children(self.state_chips(ui)),
             )
             // B-07: the preview is the layout editor — frame selector + drag
             // handles wrap the slide body (RIGHT column, below slides+strip).
             .child(self.preview_surface(ui, cx, body))
+    }
+
+    /// Persistent state chips for the 4 distinct presentation states (B-04).
+    fn state_chips(&self, ui: &UI) -> Vec<Div> {
+        let mut chips = Vec::new();
+        if self.shield {
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(SHIELD_ARMED)
+                    .text_color(ink_on(SHIELD_ARMED))
+                    .text_size(px(11.))
+                    .child("🛡 SHIELD"),
+            );
+        }
+        if self.frozen_slide.is_some() {
+            let cyan = rgb(0x00ACC1);
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(cyan)
+                    .text_color(ink_on(cyan))
+                    .text_size(px(11.))
+                    .child("❄ FROZEN"),
+            );
+        }
+        if self.text_hidden {
+            let orange = rgb(0xF57C00);
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(orange)
+                    .text_color(ink_on(orange))
+                    .text_size(px(11.))
+                    .child("📄 TEXT HIDDEN"),
+            );
+        }
+        if self.blank {
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(ui.selection)
+                    .text_color(ui.selection_ink)
+                    .text_size(px(11.))
+                    .child("● BASE SCREEN"),
+            );
+        }
+        chips
     }
 
     /// One **round** presentation command button.
@@ -4825,7 +4954,11 @@ impl Root {
     fn project_now(&mut self, cx: &mut Context<Self>) {
         let idx = self.sel_item.or(self.live_item);
         if let Some(i) = idx {
-            self.show_live(cx, i);
+            if let Some(vid) = self.sel_block.clone() {
+                self.goto_song_verse(cx, i, &vid);
+            } else {
+                self.show_live(cx, i);
+            }
         } else {
             self.set_status(cx, "Pick an agenda item to project.");
         }

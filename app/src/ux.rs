@@ -328,7 +328,7 @@ pub fn section_name(letter: char) -> Option<&'static str> {
 /// wanted — they are ordinary characters while a text field has focus.
 pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
     match keystroke {
-        "space" | "right" | "down" | "pagedown" => Some(PresKey::Next),
+        "space" | "right" | "down" | "pagedown" | "enter" | "return" => Some(PresKey::Next),
         "backspace" | "left" | "up" | "pageup" => Some(PresKey::Prev),
         "shift-right" | "shift-down" => Some(PresKey::PeekNext),
         "shift-left" | "shift-up" => Some(PresKey::PeekPrev),
@@ -967,7 +967,7 @@ mod tests {
 
     #[test]
     fn arrows_space_and_punctuation_route_to_presentation() {
-        for k in ["space", "right", "down", "pagedown"] {
+        for k in ["space", "right", "down", "pagedown", "enter", "return"] {
             assert_eq!(route_pres_key(k), Some(PresKey::Next), "{k}");
         }
         for k in ["backspace", "left", "up", "pageup"] {
