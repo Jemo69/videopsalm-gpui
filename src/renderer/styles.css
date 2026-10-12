@@ -266,6 +266,14 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
    you know at a glance that browsing cannot disturb the live slide. */
 #tool-strip button#tool-shield.on { background: #dc2626; border-color: #dc2626; color: #fff; }
 #tool-strip button:hover { filter: brightness(1.25); }
+
+/* B-04 persistent state chips for 4 presentation states */
+.state-chips-bar { display: flex; flex-direction: row; gap: 0.35em; align-items: center; min-height: 1.4em; padding: 2px 0; }
+.state-chip { font-size: 0.72em; font-weight: bold; padding: 0.15em 0.45em; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+.state-chip.shield { background: #dc2626; color: #fff; }
+.state-chip.freeze { background: #00acc1; color: #fff; }
+.state-chip.text-hidden { background: #f57c00; color: #fff; }
+.state-chip.base { background: #2a5db0; color: #fff; }
 /* Songbooks excluded from instant find gray out and recede. */
 #songbook-tree li.group.excluded { color: var(--muted); opacity: 0.6; }
 .book-exclude { margin-left: 0.4em; background: none; border: 0; color: inherit; cursor: pointer; font-size: 1em; }

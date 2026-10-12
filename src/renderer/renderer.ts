@@ -2336,6 +2336,12 @@ async function selectAgendaItem(id: string, bypassShield = false): Promise<void>
  * leave the projector frozen on the previous slide, which reads as a hang.
  */
 async function stepSlide(dir: number): Promise<void> {
+  // If the operator navigated the selection cursor away from the live slide
+  // (via Shift+arrow peek), stepping forward / Enter projects that selected slide.
+  if (selectedSlide >= 0 && selectedSlide !== activeFilm && selectedSlide < filmSlides.length) {
+    await projectFilmSlide(selectedSlide);
+    return;
+  }
   const target = activeFilm + dir;
   if (activeFilm >= 0 && target >= 0 && target < filmSlides.length) {
     // Walk forward over excluded slides.
@@ -2358,7 +2364,8 @@ async function stepSlide(dir: number): Promise<void> {
 
 /** Shift+arrow: move without displaying — the audience keeps the current slide. */
 function peekSlide(dir: number): void {
-  const target = activeFilm + dir;
+  const current = selectedSlide >= 0 ? selectedSlide : (activeFilm >= 0 ? activeFilm : 0);
+  const target = current + dir;
   if (target >= 0 && target < filmSlides.length) {
     selectedSlide = target;
     paintFilmstrip();
@@ -2500,11 +2507,42 @@ function syncPresIndicators(): void {
   }
   document.getElementById("tool-text")?.classList.toggle("on", textHidden);
   document.getElementById("tool-freeze")?.classList.toggle("on", frozen);
+  document.getElementById("tool-blackout")?.classList.toggle("on", blackedOut);
   const modeBtn = document.getElementById("viewer-mode") as HTMLInputElement | null;
   if (modeBtn) modeBtn.checked = prefs.viewerMode;
   document.getElementById("btn-projector")?.classList.toggle("on", projectorOn);
   document.body.dataset["textHidden"] = textHidden ? "1" : "0";
   document.body.dataset["shield"] = shield ? "1" : "0";
+
+  // B-04 persistent state chips: visible at a glance above the preview
+  const chips = document.getElementById("state-chips");
+  if (chips) {
+    chips.innerHTML = "";
+    if (shield) {
+      const c = document.createElement("span");
+      c.className = "state-chip shield";
+      c.textContent = "🛡 SHIELD";
+      chips.appendChild(c);
+    }
+    if (frozen) {
+      const c = document.createElement("span");
+      c.className = "state-chip freeze";
+      c.textContent = "❄ FROZEN";
+      chips.appendChild(c);
+    }
+    if (textHidden) {
+      const c = document.createElement("span");
+      c.className = "state-chip text-hidden";
+      c.textContent = "📄 TEXT HIDDEN";
+      chips.appendChild(c);
+    }
+    if (blackedOut) {
+      const c = document.createElement("span");
+      c.className = "state-chip base";
+      c.textContent = "● BASE SCREEN";
+      chips.appendChild(c);
+    }
+  }
 }
 
 // ---------- B-07 hook: drag a frame edge in the preview; the rect lands in the live style ----------

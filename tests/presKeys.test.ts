@@ -27,8 +27,8 @@ function mediaKey(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
   );
 }
 
-test("arrows, space and page keys step slides", () => {
-  for (const k of [" ", "ArrowRight", "ArrowDown", "PageDown"]) {
+test("arrows, space, Enter and page keys step slides", () => {
+  for (const k of [" ", "ArrowRight", "ArrowDown", "PageDown", "Enter"]) {
     assert.equal(key(k), "next", k);
   }
   for (const k of ["Backspace", "ArrowLeft", "ArrowUp", "PageUp"]) {

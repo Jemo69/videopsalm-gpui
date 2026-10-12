@@ -121,7 +121,7 @@ export function routePresKey(e: KeyLike, editing: boolean, mediaFocused = false)
   if (e.shiftKey && (k === "ArrowLeft" || k === "ArrowUp")) return "peekPrev";
 
   switch (k) {
-    case " ": case "Spacebar": case "ArrowRight": case "ArrowDown": case "PageDown":
+    case " ": case "Spacebar": case "ArrowRight": case "ArrowDown": case "PageDown": case "Enter":
       return "next";
     case "Backspace": case "ArrowLeft": case "ArrowUp": case "PageUp":
       return "prev";
