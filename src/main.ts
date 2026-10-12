@@ -6,6 +6,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { openLibrary, type Library } from "./core/library";
 import { parseAgenda, serializeAgenda, createAgenda } from "./core/agendaSerde";
+import { importBibleXml } from "./core/bibleImport";
 import type { Agenda } from "./core/schemas";
 
 let controlWin: BrowserWindow | null = null;
@@ -130,9 +131,10 @@ function registerIpc(): void {
     for (const s of songs) library?.addSong(s);
     return songs.length;
   });
-  // Installed Bible translations (SPEC 2.2/2.3): one document per sample
-  // file, so the renderer can offer the translation tabs and run the
-  // keyword/phrase search over real verse text.
+  // Installed Bible translations (SPEC 2.2/2.3): the bundled sample files
+  // plus a local import folder — drop OSIS / Zefania / VideoPsalm XML files
+  // into `bibles/` next to the data dir (or userData/bibles) and they are
+  // installed at boot. Mirror of the GPUI port's boot scan.
   ipcMain.handle("vp:get-bible", () => {
     const dir = dataDir();
     const out: unknown[] = [];
@@ -145,7 +147,46 @@ function registerIpc(): void {
         // A malformed sample must not take the Bible pane down.
       }
     }
+    const scanDirs = [path.join(dir, "bibles")];
+    try {
+      scanDirs.push(path.join(app.getPath("userData"), "bibles"));
+    } catch {
+      // userData may be unavailable in tests; the data-dir scan still runs.
+    }
+    for (const scanDir of scanDirs) {
+      if (!fs.existsSync(scanDir)) continue;
+      let names: string[] = [];
+      try {
+        names = fs
+          .readdirSync(scanDir)
+          .filter((f) => f.toLowerCase().endsWith(".xml"))
+          .sort();
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        try {
+          const xml = fs.readFileSync(path.join(scanDir, name), "utf8");
+          out.push(importBibleXml(xml, name.replace(/\.xml$/i, "")));
+        } catch (e) {
+          // One bad file must not take the Bible pane down.
+          console.warn(`bibles/${name}: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    }
     return out;
+  });
+  // Import-XML row in the Bibles pane: read + parse here (core runs in both
+  // processes), hand the renderer a ready translation.
+  ipcMain.handle("vp:import-bible", (_e, filePath: string) => {
+    try {
+      const xml = fs.readFileSync(filePath, "utf8");
+      const fallback =
+        path.basename(filePath).replace(/\.[^.]+$/, "") || "Imported";
+      return { ok: true, translation: importBibleXml(xml, fallback) };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   });
   ipcMain.handle("vp:find-songs", (_e, query: string, field?: string) => {
     const songs = library?.findSongs(query) ?? [];

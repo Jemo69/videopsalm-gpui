@@ -9,6 +9,7 @@ const api = {
   saveAgenda: (filePath?: string) => ipcRenderer.invoke("vp:save-agenda", filePath),
   importSampleData: () => ipcRenderer.invoke("vp:import-sample-data"),
   getBible: () => ipcRenderer.invoke("vp:get-bible"),
+  importBible: (filePath: string) => ipcRenderer.invoke("vp:import-bible", filePath),
   findSongs: (query: string, field?: string) => ipcRenderer.invoke("vp:find-songs", query, field),
   openProjector: () => ipcRenderer.invoke("vp:open-projector"),
   openStage: () => ipcRenderer.invoke("vp:open-stage"),

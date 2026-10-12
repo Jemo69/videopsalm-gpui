@@ -360,6 +360,13 @@
              (UX-RESEARCH §3.4). Right-click a tab to favorite / unfavorite
              ("Favorites ★ with a right-click context menu", 1.27). -->
         <div class="row" id="bible-trans-row"><span class="ribbon-label">Translations</span></div>
+        <!-- Import row: path field + button, mirror of the GPUI port's
+             Bible row. The original opens a file dialog here; the path is
+             typed/pasted (same shape as the .pptx import). -->
+        <div class="row" id="bible-import-row">
+          <input id="bible-import-path" size="26" placeholder="bible.xml path..." title="Path to an OSIS / Zefania / VideoPsalm XML file" />
+          <button id="bible-import" title="Import a Bible translation from XML (SPEC 2.3)">Import XML</button>
+        </div>
         <div class="row">
           <button id="bible-context" title="Show the verses around the selection (SPEC 2.3)">…ctx</button>
         </div>

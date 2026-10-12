@@ -10,7 +10,7 @@ function el<T extends HTMLElement>(id: string): T {
   if (!n) throw new Error(`missing element #${id}`);
   return n as T;
 }
-const vp = (): VpBridge => window.vp;
+const bridge = (): VpBridge => window.vp;
 const PREFS_KEY = "vp:prefs:v1";
 
 // ---------- preferences (panel layout, theme, lang, style — all persist) ----------
@@ -463,7 +463,7 @@ document.querySelectorAll<HTMLButtonElement>(".anim").forEach((b) =>
     agenda.settings = { ...(agenda.settings ?? {}), transition: prefs.transition };
     savePrefs(); paintAnimSelection();
     setHint(`Transition: ${prefs.transition} (stored as style.transition)`);
-    void vp().setAgenda(agenda);
+    void bridge().setAgenda(agenda);
   }));
 function mirrorBgFromFmt(): void {
   prefs.bgKind = el<HTMLSelectElement>("fmt-bg-kind").value;
@@ -490,7 +490,7 @@ el<HTMLButtonElement>("fmt-print").addEventListener("click", () => {
 
 // ---------- agenda ----------
 async function refreshAgenda(): Promise<void> {
-  agenda = (await vp().getAgenda()) as Agenda;
+  agenda = (await bridge().getAgenda()) as Agenda;
   el<HTMLInputElement>("agenda-title").value = agenda.title;
   el<HTMLElement>("agenda-count").textContent = `${agenda.items.length} item(s)`;
   const list = el<HTMLElement>("agenda-list");
@@ -545,18 +545,18 @@ function selectedItem(): AgendaItem | undefined {
 }
 el<HTMLButtonElement>("agenda-new").addEventListener("click", async () => {
   const title = prompt("Agenda title?", "Untitled") ?? "Untitled";
-  agenda = (await vp().newAgenda(title)) as Agenda;
+  agenda = (await bridge().newAgenda(title)) as Agenda;
   selectedItemId = null;
   void refreshAgenda();
 });
 el<HTMLButtonElement>("agenda-open").addEventListener("click", async () => {
-  const res = (await vp().openAgenda()) as { agenda: Agenda } | null;
+  const res = (await bridge().openAgenda()) as { agenda: Agenda } | null;
   if (res) { selectedItemId = null; await refreshAgenda(); }
 });
 async function saveAgendaNow(): Promise<void> {
   agenda.title = el<HTMLInputElement>("agenda-title").value || agenda.title;
-  await vp().setAgenda(agenda);
-  const p = (await vp().saveAgenda()) as string | null;
+  await bridge().setAgenda(agenda);
+  const p = (await bridge().saveAgenda()) as string | null;
   if (p) {
     // Clear only when the write actually happened, so the flag cannot lie.
     agendaDirty = false;
@@ -569,7 +569,7 @@ async function saveAgendaNow(): Promise<void> {
 el<HTMLButtonElement>("agenda-save").addEventListener("click", () => void saveAgendaNow());
 el<HTMLInputElement>("agenda-title").addEventListener("change", async () => {
   agenda.title = el<HTMLInputElement>("agenda-title").value;
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
 });
 el<HTMLButtonElement>("agenda-load-sample").addEventListener("click", () => {
   setHint("Sample agenda is at data/agenda.sample.json — open it with the Open button.");
@@ -591,7 +591,7 @@ el<HTMLButtonElement>("add-item").addEventListener("click", async () => {
   agendaDirty = true;
   paintDirty();
   agenda.items.push(buildItemFromForm());
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda();
 });
 el<HTMLButtonElement>("item-insert").addEventListener("click", async () => {
@@ -600,7 +600,7 @@ el<HTMLButtonElement>("item-insert").addEventListener("click", async () => {
   agendaDirty = true;
   paintDirty();
   agenda.items.splice(i < 0 ? agenda.items.length : i + 1, 0, item);
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda();
 });
 el<HTMLButtonElement>("item-up").addEventListener("click", () => void moveSelected(-1));
@@ -610,14 +610,14 @@ async function moveSelected(dir: -1 | 1): Promise<void> {
   const j = i + dir;
   if (i < 0 || j < 0 || j >= agenda.items.length) return;
   [agenda.items[i], agenda.items[j]] = [agenda.items[j], agenda.items[i]];
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda();
 }
 el<HTMLButtonElement>("item-rename").addEventListener("click", async () => {
   const it = selectedItem();
   if (!it) return;
   const t = prompt("Rename item", it.title);
-  if (t) { it.title = t; await vp().setAgenda(agenda); void refreshAgenda(); }
+  if (t) { it.title = t; await bridge().setAgenda(agenda); void refreshAgenda(); }
 });
 el<HTMLButtonElement>("item-replace").addEventListener("click", async () => {
   const it = selectedItem();
@@ -630,7 +630,7 @@ el<HTMLButtonElement>("item-replace").addEventListener("click", async () => {
   else if (it.kind === "Song") it.ref.songId = t;
   else if (it.kind === "Alert" || it.kind === "Clock" || it.kind === "CCLI") it.ref.text = t;
   else it.ref.file = t;
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda(); void refreshFilmstrip();
 });
 el<HTMLButtonElement>("item-remove").addEventListener("click", async () => {
@@ -638,7 +638,7 @@ el<HTMLButtonElement>("item-remove").addEventListener("click", async () => {
   paintDirty();
   agenda.items = agenda.items.filter((x) => x.id !== selectedItemId);
   selectedItemId = null;
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda(); void refreshFilmstrip();
 });
 el<HTMLButtonElement>("item-project").addEventListener("click", () => {
@@ -664,7 +664,7 @@ el<HTMLButtonElement>("agenda-tool-duplicate").addEventListener("click", async (
   agendaDirty = true;
   paintDirty();
   agenda.items.splice(i + 1, 0, copy);
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   selectedItemId = copy.id;
   void refreshAgenda(); void refreshFilmstrip();
 });
@@ -674,7 +674,7 @@ el<HTMLButtonElement>("agenda-tool-delete").addEventListener("click", async () =
   paintDirty();
   agenda.items = agenda.items.filter((x) => x.id !== selectedItemId);
   selectedItemId = null;
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda(); void refreshFilmstrip();
 });
 el<HTMLButtonElement>("agenda-tool-up").addEventListener("click", () => void moveSelected(-1));
@@ -814,7 +814,7 @@ function slideHtmlFor(kind: string, title: string, bodyText: string, ref?: Agend
 // ---------- projection (freeze-aware; preview overlays updated always) ----------
 async function itemBodyText(it: AgendaItem): Promise<string> {
   if (it.kind === "Song" && it.ref?.songId) {
-    const songs = (await vp().findSongs("")) as Song[];
+    const songs = (await bridge().findSongs("")) as Song[];
     const s = songs.find((x) => x.id === it.ref!.songId);
     if (s) return s.verses.map((v) => v.lines.join("\n")).join("\n\n");
   }
@@ -835,7 +835,7 @@ async function pushPreview(title: string, html: string, next: string, footer: st
   }
   blackedOut = false;
   el<HTMLButtonElement>("tool-blackout").classList.remove("on");
-  await vp().project({ title, html }, next);
+  await bridge().project({ title, html }, next);
   el<HTMLElement>("live-preview").innerHTML = html;
   // B-32: enforce the selected item's in/out cut range on preview media.
   wireRangeLoop(el<HTMLElement>("live-preview"), previewRange());
@@ -867,10 +867,10 @@ async function projectItem(it: AgendaItem, slideIndex?: number): Promise<void> {
   const html = slideHtmlFor(it.kind, it.title, text, it.ref);
   await pushPreview(it.title, html, next, footer);
 }
-el<HTMLButtonElement>("btn-projector").addEventListener("click", () => void vp().openProjector());
-el<HTMLButtonElement>("btn-stage").addEventListener("click", () => void vp().openStage());
+el<HTMLButtonElement>("btn-projector").addEventListener("click", () => void bridge().openProjector());
+el<HTMLButtonElement>("btn-stage").addEventListener("click", () => void bridge().openStage());
 el<HTMLButtonElement>("btn-stop").addEventListener("click", async () => {
-  await vp().stop();
+  await bridge().stop();
   liveItemId = null;
   refreshAgendaListSelection();
   blackedOut = false;
@@ -903,7 +903,7 @@ el<HTMLButtonElement>("tool-blackout").addEventListener("click", async () => {
       next: el<HTMLElement>("stage-mini-next").textContent,
     };
     el<HTMLButtonElement>("tool-blackout").classList.add("on");
-    await vp().stop();
+    await bridge().stop();
     el<HTMLElement>("live-preview").innerHTML =
       `<div class="vp-slide" style="background-color:#000;"><div class="vp-body"><p>(blackout)</p></div></div>`;
     setHint("● Blackout — projection hidden. Press again to restore.");
@@ -911,7 +911,7 @@ el<HTMLButtonElement>("tool-blackout").addEventListener("click", async () => {
     blackedOut = false;
     el<HTMLButtonElement>("tool-blackout").classList.remove("on");
     if (blackoutSaved) {
-      await vp().project({ title: blackoutSaved.title, html: blackoutSaved.html }, blackoutSaved.next);
+      await bridge().project({ title: blackoutSaved.title, html: blackoutSaved.html }, blackoutSaved.next);
       el<HTMLElement>("live-preview").innerHTML = blackoutSaved.html;
       blackoutSaved = null;
     }
@@ -929,16 +929,16 @@ async function toggleAlert(): Promise<void> {
   const hidden = el<HTMLElement>("status-alert").textContent === "(hidden)";
   if (hidden) {
     const t = el<HTMLInputElement>("alert-text").value;
-    await vp().alert(t, true);
+    await bridge().alert(t, true);
     el<HTMLElement>("status-alert").textContent = t || "(visible, empty)";
   } else {
-    await vp().alert("", false);
+    await bridge().alert("", false);
     el<HTMLElement>("status-alert").textContent = "(hidden)";
   }
 }
 el<HTMLButtonElement>("alert-show").addEventListener("click", () => void toggleAlert());
 el<HTMLButtonElement>("alert-hide").addEventListener("click", async () => {
-  await vp().alert("", false);
+  await bridge().alert("", false);
   el<HTMLElement>("status-alert").textContent = "(hidden)";
 });
 el<HTMLButtonElement>("tool-edit").addEventListener("click", () => toggleViewerMode());
@@ -1030,7 +1030,7 @@ function toggleKeyTips(): void {
 let displayCount = 1;
 async function refreshDisplayCount(): Promise<void> {
   try {
-    const n = await vp().displayCount();
+    const n = await bridge().displayCount();
     if (typeof n === "number" && n >= 1) displayCount = n;
   } catch { /* keep the single-screen default */ }
 }
@@ -1146,7 +1146,7 @@ async function refreshFilmstrip(): Promise<void> {
     let song: Song | null = null;
     if (it.kind === "Song" && it.ref?.songId) {
       try {
-        const songs = (await vp().findSongs("")) as Song[];
+        const songs = (await bridge().findSongs("")) as Song[];
         song = songs.find((x) => x.id === it.ref!.songId) ?? null;
       } catch { song = null; }
     }
@@ -1317,7 +1317,7 @@ el<HTMLButtonElement>("songbook-new").addEventListener("click", () => {
 async function runSongSearch(): Promise<void> {
   const q = songQuery();
   const field = el<HTMLSelectElement>("song-field").value;
-  const songs = (await vp().findSongs(q, field)) as Song[];
+  const songs = (await bridge().findSongs(q, field)) as Song[];
   renderSongbookTree(songs);
   // Excluded songbooks drop their songs out of the search entirely, and their
   // rows gray out in the tree — the original's per-songbook exclude behavior.
@@ -1454,7 +1454,7 @@ el<HTMLButtonElement>("song-project").addEventListener("click", async () => {
   await pushPreview(currentSong.title, html, "", currentSong.songbookId ?? "SONG");
 });
 el<HTMLButtonElement>("song-import-sample").addEventListener("click", async () => {
-  const n = (await vp().importSampleData()) as number;
+  const n = (await bridge().importSampleData()) as number;
   setHint(`Imported ${n} sample songs.`);
   void runSongSearch();
 });
@@ -1578,6 +1578,36 @@ el<HTMLButtonElement>("bible-context").addEventListener("click", () => {
   if (ref && bibleSearch === "reference") renderBible(ref);
 });
 
+/** Import row: path field + button — mirror of the GPUI port's Bible row.
+ *  Main reads + parses the XML (OSIS / Zefania / VideoPsalm local, see
+ *  `core/bibleImport.ts`); the renderer installs the translation and
+ *  refreshes the tab strip and any visible selection. */
+el<HTMLButtonElement>("bible-import").addEventListener("click", async () => {
+  const path = el<HTMLInputElement>("bible-import-path").value.trim();
+  if (!path) {
+    setHint("Enter the path of the Bible XML file to import.");
+    return;
+  }
+  const res = (await bridge().importBible(path)) as {
+    ok: boolean;
+    translation?: { translationId: string; books: { name: string }[] };
+    error?: string;
+  } | null;
+  if (res?.ok && res.translation) {
+    bibles.install(res.translation as never);
+    el<HTMLInputElement>("bible-import-path").value = "";
+    renderTransTabs();
+    updateTransBadge();
+    setHint(
+      `Imported ${res.translation.translationId}: ${res.translation.books.length} books`
+    );
+    const cur = el<HTMLInputElement>("bible-ref").value;
+    if (cur && bibleSearch === "reference") renderBible(cur);
+  } else {
+    setHint(`Import failed: ${res?.error ?? "unknown error"}`);
+  }
+});
+
 /** Translation tab strip: one clickable tab per installed translation
  *  (active = orange), right-click favorites it (UX-RESEARCH §3.4). */
 function renderTransTabs(): void {
@@ -1620,7 +1650,7 @@ function rerunCurrentBibleView(): void {
 async function loadBibleLibrary(): Promise<void> {
   let docs: unknown[] = [];
   try {
-    docs = ((await vp().getBible()) as unknown[] | null) ?? [];
+    docs = ((await bridge().getBible()) as unknown[] | null) ?? [];
   } catch {
     docs = [];
   }
@@ -1841,6 +1871,12 @@ function focusBiblePane(): void {
   setHint("Bibles — type a reference (Matthew 26:26, Hebrews 11:1,9) or words to search.");
 }
 
+function focusSongbookPane(): void {
+  prefs.libTab = "songbooks";
+  applyLibTab();
+  el<HTMLInputElement>("lib-search").focus();
+}
+
 function applyLibTab(persist = true): void {
   if (persist) savePrefs();
   const bibles = prefs.libTab === "bibles";
@@ -1942,11 +1978,11 @@ el<HTMLInputElement>("bible-testament-nt").addEventListener("change", () => {
 // ---------- alerts ----------
 el<HTMLButtonElement>("alert-show").addEventListener("click", async () => {
   const t = el<HTMLInputElement>("alert-text").value;
-  await vp().alert(t, true);
+  await bridge().alert(t, true);
   el<HTMLElement>("status-alert").textContent = t || "(visible, empty)";
 });
 el<HTMLButtonElement>("alert-hide").addEventListener("click", async () => {
-  await vp().alert("", false);
+  await bridge().alert("", false);
   el<HTMLElement>("status-alert").textContent = "(hidden)";
 });
 
@@ -1959,7 +1995,7 @@ function fmt(s: number): string {
 function pushClock(text: string): void {
   el<HTMLElement>("clock-display").textContent = text;
   el<HTMLElement>("status-clock").textContent = text;
-  void vp().clock(text);
+  void bridge().clock(text);
 }
 el<HTMLButtonElement>("clock-start").addEventListener("click", () => {
   clockMode = el<HTMLSelectElement>("clock-mode").value as typeof clockMode;
@@ -2005,7 +2041,7 @@ el<HTMLButtonElement>("pptx-import").addEventListener("click", async () => {
     overrides: { pptxImport: true, slides: [`slides/${name}-import/slide1.png`], limitation: "slide images need external rasterization in v1" },
   });
   pptxSlideIndex = 0;
-  await vp().setAgenda(agenda);
+  await bridge().setAgenda(agenda);
   void refreshAgenda();
 });
 async function pptxNext(): Promise<void> {
@@ -2118,7 +2154,7 @@ async function handlePresKey(action: PresAction): Promise<void> {
     case "toggleRibbon": toggleRibbonCollapsed(); break;
     case "keyTips": toggleKeyTips(); break;
     case "save": await saveAgendaNow(); break;
-    case "focusSongs": switchRibbon("songs"); el<HTMLInputElement>("lib-search").focus(); break;
+    case "focusSongs": switchRibbon("songs"); focusSongbookPane(); break;
     case "focusBibles": focusBiblePane(); break;
     case "focusSlides": {
       el<HTMLElement>("slide-filmstrip").focus();
@@ -2164,7 +2200,7 @@ function addSearchResult(n: number): void {
   // Selecting (not projecting) keeps the live slide untouched, which is the
   // whole point of building an agenda from a search.
   selectedItemId = item.id;
-  void vp().setAgenda(agenda);
+  void bridge().setAgenda(agenda);
   void refreshFilmstrip();
   void refreshAgenda();
   setHint(`Added #${n} ${song.title} — selected, not displayed.`);
@@ -2185,9 +2221,9 @@ function toggleBaseScreen(): void {
       next: el<HTMLElement>("stage-mini-next").textContent ?? "",
     };
     el<HTMLElement>("live-preview").innerHTML = "";
-    void vp().project({ title: "", html: "" }, "");
+    void bridge().project({ title: "", html: "" }, "");
   } else if (blackoutSaved) {
-    void vp().project({ title: blackoutSaved.title, html: blackoutSaved.html }, blackoutSaved.next);
+    void bridge().project({ title: blackoutSaved.title, html: blackoutSaved.html }, blackoutSaved.next);
     el<HTMLElement>("live-preview").innerHTML = blackoutSaved.html;
     blackoutSaved = null;
   }
@@ -2276,7 +2312,7 @@ async function endPresentation(): Promise<void> {
     setHint("Esc is disabled with a projector attached — a stray key must not end the service.");
     return;
   }
-  await vp().stop();
+  await bridge().stop();
   blackedOut = true;
   textHidden = false;
   el<HTMLButtonElement>("tool-blackout").classList.add("on");
@@ -2369,7 +2405,7 @@ function toggleViewerMode(): void {
 /** Ctrl+P: show/hide the projector window. */
 function toggleProjectorScreen(): void {
   projectorOn = !projectorOn;
-  if (projectorOn) void vp().openProjector();
+  if (projectorOn) void bridge().openProjector();
   syncPresIndicators();
 }
 
@@ -2396,7 +2432,7 @@ function syncPresIndicators(): void {
 // re-project, dirty through the existing agendaDirty/paintDirty (no second flag).
 let frameSel: FrameId = "body";
 function reprojectCurrent(): void { const it = selectedItem(); if (it && filmSlides.length && selectedSlide >= 0) void projectItem(it, selectedSlide); else if (it) void projectItem(it); else if (filmSlides.length && selectedSlide >= 0) void projectFilmSlide(selectedSlide); }
-const previewResize = attachPreviewResize({ getRect: (f) => getStyleRect(agenda.settings, f), selected: () => frameSel, commit: (f, r) => { setStyleRect(agenda, f, r); agendaDirty = true; paintDirty(); void vp().setAgenda(agenda); reprojectCurrent(); previewResize.sync(); } });
+const previewResize = attachPreviewResize({ getRect: (f) => getStyleRect(agenda.settings, f), selected: () => frameSel, commit: (f, r) => { setStyleRect(agenda, f, r); agendaDirty = true; paintDirty(); void bridge().setAgenda(agenda); reprojectCurrent(); previewResize.sync(); } });
 el<HTMLButtonElement>("frame-body").addEventListener("click", () => { frameSel = "body"; previewResize.sync(); });
 el<HTMLButtonElement>("frame-header").addEventListener("click", () => { frameSel = "header"; previewResize.sync(); });
 el<HTMLButtonElement>("frame-footer").addEventListener("click", () => { frameSel = "footer"; previewResize.sync(); });
@@ -2427,12 +2463,12 @@ function mountMediaGalleriesNow(): void {
   if (!root) return;
   mountMediaGalleries(root, {
     getItems: () => agenda.items.map((it) => ({ id: it.id, title: it.title, kind: it.kind, file: it.ref?.file })),
-    addItem: (kind, title, file) => { agenda.items.push({ id: `item-${Date.now().toString(36)}`, kind, title, ref: { file }, flowType: "Manual" }); agendaDirty = true; paintDirty(); void vp().setAgenda(agenda); void refreshAgenda(); },
-    removeItem: (id) => { agenda.items = agenda.items.filter((x) => x.id !== id); agendaDirty = true; paintDirty(); void vp().setAgenda(agenda); void refreshAgenda(); },
+    addItem: (kind, title, file) => { agenda.items.push({ id: `item-${Date.now().toString(36)}`, kind, title, ref: { file }, flowType: "Manual" }); agendaDirty = true; paintDirty(); void bridge().setAgenda(agenda); void refreshAgenda(); },
+    removeItem: (id) => { agenda.items = agenda.items.filter((x) => x.id !== id); agendaDirty = true; paintDirty(); void bridge().setAgenda(agenda); void refreshAgenda(); },
     getBg: () => ({ kind: prefs.bgKind, file: prefs.bgFile }),
     setBg: (kind, file) => { prefs.bgKind = kind; prefs.bgFile = file; savePrefs(); syncFormatControls(); void refreshFilmstrip(); },
     getCascade: agendaCascade,
-    setCascade: (c) => { agenda.settings = { ...(agenda.settings ?? {}), cascade: c }; void vp().setAgenda(agenda); },
+    setCascade: (c) => { agenda.settings = { ...(agenda.settings ?? {}), cascade: c }; void bridge().setAgenda(agenda); },
     getKeepOpen: () => prefs.galleryKeepOpen, setKeepOpen: (b) => { prefs.galleryKeepOpen = b; savePrefs(); },
     getCollapsed: () => prefs.galleryCollapsed, setCollapsed: (b) => { prefs.galleryCollapsed = b; savePrefs(); },
     getTransport: currentTransport, doTransport: galleryTransport,
@@ -2457,7 +2493,7 @@ void refreshDisplayCount();
 window.addEventListener("focus", () => void refreshDisplayCount());
 void (async () => {
   try {
-    const backend = (await vp().libraryBackend()) as string;
+    const backend = (await bridge().libraryBackend()) as string;
     el<HTMLElement>("backend-info").textContent = `library: ${backend}`;
   } catch { /* bridge unavailable in plain-browser preview */ }
 })();

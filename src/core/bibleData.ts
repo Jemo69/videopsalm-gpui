@@ -20,12 +20,24 @@ export interface TranslationBook {
   name: string;
   /** `chapters[c][v]` is chapter c+1, verse v+1. */
   chapters: string[][];
+  /** `bsname` from an imported Zefania file (the original's abbreviation). */
+  abbreviation?: string;
 }
 
 export interface Translation {
   translationId: string;
   language?: string;
   books: TranslationBook[];
+  // Metadata carried from the import dialogs (Zefania INFORMATION, local
+  // XML info) — mirrors the optional fields on the Rust `Translation` so
+  // both ports write the same JSON shape.
+  title?: string;
+  abbreviation?: string;
+  publisher?: string;
+  copyright?: string;
+  description?: string;
+  /** `"osis" | "zefania" | "videopsalm-xml"` — the original's BibleSource. */
+  source?: string;
 }
 
 /** One verse returned by [`keywordSearch`]. */
@@ -116,17 +128,25 @@ export function chapter(t: Translation, book: string, ch: number): string[] | un
 }
 
 /**
- * Resolve a `BibleRef` to display lines (`"16 text…"`, missing verses as
- * `[…]`). An empty verse list means "the whole chapter".
+ * Resolve a `BibleRef` to display lines (`"16 text…"`, verses past the
+ * chapter as `[…]`, and verses that never existed in the source — an OSIS
+ * gap — omitted entirely rather than shown with the wrong text; parity with
+ * `bible_data.rs::resolve`). An empty verse list means "the whole chapter".
  */
 export function resolve(t: Translation, r: BibleRef): string[] {
   const ch = chapter(t, r.book, r.chapter);
   const verses: number[] =
     r.verses.length > 0 ? r.verses : ch ? ch.map((_, i) => i + 1) : [];
-  return verses.map((v) => {
-    const text = ch?.[v - 1] ?? "[…]";
-    return `${v} ${text}`;
-  });
+  const out: string[] = [];
+  for (const v of verses) {
+    const text = ch?.[v - 1];
+    if (text === undefined) {
+      out.push(`${v} […]`);
+    } else if (text.length > 0) {
+      out.push(`${v} ${text}`);
+    }
+  }
+  return out;
 }
 
 /**

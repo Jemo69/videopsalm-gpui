@@ -6,8 +6,10 @@ interface VpBridge {
   openAgenda(): Promise<unknown>;
   saveAgenda(filePath?: string): Promise<unknown>;
   importSampleData(): Promise<unknown>;
-  /** Installed Bible translation documents (`data/bible.sample*.json`). */
+  /** Installed Bible translation documents (`data/bible.sample*.json` + `bibles/*.xml`). */
   getBible(): Promise<unknown>;
+  /** Read + parse a Bible XML file (OSIS / Zefania / VideoPsalm local). */
+  importBible(filePath: string): Promise<unknown>;
   findSongs(query: string, field?: string): Promise<unknown>;
   openProjector(): Promise<unknown>;
   openStage(): Promise<unknown>;
