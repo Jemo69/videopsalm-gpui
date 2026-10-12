@@ -62,7 +62,7 @@ use vp_core::geometry::{FitMode, Viewport, resolve_percent};
 use vp_core::schema::{Align, Versification};
 use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
 use vp_core::i18n::Locale;
-use vp_core::library::{self};
+use vp_core::library::{self, SearchScope};
 use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
@@ -444,6 +444,8 @@ pub(crate) struct Root {
     pptx_field: gpui::Entity<TextField>,
     bible_xml_field: gpui::Entity<TextField>,
     clock_field: gpui::Entity<TextField>,
+    pub(crate) search_scope: SearchScope,
+    pub(crate) show_scope_grid: bool,
 
     pub(crate) _subs: Vec<Subscription>,
 }
@@ -672,6 +674,8 @@ impl Root {
             pptx_field: pptx_field.clone(),
             bible_xml_field: bible_xml_field.clone(),
             clock_field: clock_field.clone(),
+            search_scope: SearchScope::default(),
+            show_scope_grid: false,
             _subs: Vec::new(),
         };
 
@@ -1616,7 +1620,7 @@ impl Root {
     fn refresh_search(&mut self, query: &str, cx: &mut Context<Self>) {
         let scope = self.songbook_filter.clone().map(|s| vec![s]);
         let excluded: Vec<String> = self.excluded_books.iter().cloned().collect();
-        match library::instant_find_ex(&self.db, query, &[], scope.as_deref(), &excluded) {
+        match library::instant_find_scoped(&self.db, query, self.search_scope, scope.as_deref(), &excluded) {
             Ok(found) => {
                 let ids: Vec<String> = found.iter().map(|s| s.id.clone()).collect();
                 self.results = ids
@@ -3669,10 +3673,30 @@ impl Root {
                     this.add_current_to_agenda(cx);
                 }),
             ]),
-            row(vec![
+        ];
+
+        if songs_active {
+            kids.push(row(vec![
                 div().flex_1().child(self.search_field.clone()),
-                // Magnifier: swaps the shared search box between reference
-                // entry and a keyword/phrase hunt, as in the original.
+                btn(
+                    ui,
+                    cx,
+                    &format!("▾ {}", self.search_scope.label()),
+                    self.show_scope_grid,
+                    |this, _, _, cx| {
+                        this.show_scope_grid = !this.show_scope_grid;
+                        cx.notify();
+                    },
+                ),
+            ]));
+            if self.show_scope_grid {
+                kids.push(self.search_scope_panel(ui, cx));
+            }
+            kids.extend(self.songbook_rows(ui, cx));
+            kids.extend(self.songs_browser(ui, cx));
+        } else {
+            kids.push(row(vec![
+                div().flex_1().child(self.search_field.clone()),
                 btn(
                     ui,
                     cx,
@@ -3687,15 +3711,82 @@ impl Root {
                         this.set_bible_search(next, cx);
                     },
                 ),
-            ]),
-        ];
-        if songs_active {
-            kids.extend(self.songbook_rows(ui, cx));
-            kids.extend(self.songs_browser(ui, cx));
-        } else {
+            ]));
             kids.extend(self.bible_browser(ui, cx));
         }
         section(ui, &self.t("browser"), kids)
+    }
+
+    fn search_scope_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let left_col = vec![
+            SearchScope::TitleLyrics,
+            SearchScope::TitleThenLyrics,
+            SearchScope::Title,
+            SearchScope::AuthorComposer,
+            SearchScope::Themes,
+            SearchScope::References,
+        ];
+        let right_col = vec![
+            SearchScope::Ccli,
+            SearchScope::Copyright,
+            SearchScope::Memo1,
+            SearchScope::Memo2,
+            SearchScope::Memo3,
+            SearchScope::WithChords,
+        ];
+
+        let cur = self.search_scope;
+
+        let render_col = |col: Vec<SearchScope>, cx: &mut Context<Root>| {
+            let mut items = Vec::new();
+            for s in col {
+                let is_active = s == cur;
+                let s_label = s.label();
+                items.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(btn(ui, cx, if is_active { "●" } else { "○" }, is_active, move |this, _, _, cx| {
+                            this.search_scope = s;
+                            this.show_scope_grid = false;
+                            let q = this.search_field.read(cx).text();
+                            this.refresh_search(&q, cx);
+                        }))
+                        .child(label(ui, s_label, 11.))
+                );
+            }
+            div().flex().flex_col().gap_1().children(items)
+        };
+
+        let left_div = render_col(left_col, cx);
+        let right_div = render_col(right_col, cx);
+
+        div()
+            .flex()
+            .flex_col()
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel)
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ui.accent)
+                    .child("Find words in:")
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_3()
+                    .mt_1()
+                    .child(left_div)
+                    .child(right_div)
+            )
     }
 
     /// Songbooks as a tree above the song list, each with a search-scope
@@ -3857,18 +3948,47 @@ impl Root {
             .current()
             .map(|t| t.translation_id.clone())
             .unwrap_or_default();
-        let mut trans_row: Vec<Div> = vec![div()
-            .text_size(px(13.))
-            .text_color(ui.accent)
-            .child(format!("[{current_id}]"))];
+        let mut trans_tabs: Vec<Div> = Vec::new();
         for id in ids {
             let id2 = id.clone();
             let is_cur = id == current_id;
-            trans_row.push(btn(ui, cx, &id, is_cur, move |this, _, _, cx| {
-                this.bibles.switch_to(&id2);
-                this.rebuild_biref_with_verses(cx, None);
-            }));
+            let is_fav = self.bibles.favorites.contains(&id);
+            let tab_title = if is_fav {
+                format!("★ {id}")
+            } else {
+                id.clone()
+            };
+            trans_tabs.push(
+                div()
+                    .px_2()
+                    .py(px(2.))
+                    .rounded_t_sm()
+                    .cursor_pointer()
+                    .text_size(px(11.))
+                    .font_weight(if is_cur { FontWeight::BOLD } else { FontWeight::NORMAL })
+                    .bg(if is_cur { hex("#f97327") } else { ui.panel })
+                    .text_color(if is_cur { rgb(0xffffff) } else { ui.fg })
+                    .border_1()
+                    .border_color(if is_cur { hex("#f97327") } else { ui.border })
+                    .child(tab_title)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.bibles.switch_to(&id2);
+                            this.rebuild_biref_with_verses(cx, None);
+                        }),
+                    ),
+            );
         }
+        let trans_row: Vec<Div> = vec![
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(3.))
+                .items_center()
+                .child(label(ui, "Translations:", 11.))
+                .children(trans_tabs)
+        ];
         // Favorites (SPEC 2.3).
         let mut fav_row: Vec<Div> = vec![label(ui, "★", 13.)];
         for id in self.bibles.favorites.clone() {

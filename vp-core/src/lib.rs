@@ -26,6 +26,7 @@ pub mod slides;
 pub mod themes;
 pub mod verse_splitter;
 
+pub use library::SearchScope;
 pub use schema::{
     Agenda, AgendaItem, Background, BodyStyle, BibleRef, HeaderFooter, ItemKind, ItemRef, Rect, Song,
     Style, Versification, NORMALIZED_SPACE,

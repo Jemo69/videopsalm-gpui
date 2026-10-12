@@ -12,6 +12,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::bible_ref::normalize;
 use crate::schema::{Song, Songbook};
 
+use serde::{Deserialize, Serialize};
+
 /// Find methods exposed by instant find (SPEC: 12 methods in the original;
 /// v1 exposes these six).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +24,59 @@ pub enum FindMethod {
     Composer,
     Ccli,
     SongId,
+}
+
+/// The twelve search scopes from VideoPsalm's "Find words in:" panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchScope {
+    #[default]
+    TitleLyrics,
+    TitleThenLyrics,
+    Title,
+    AuthorComposer,
+    Themes,
+    References,
+    Ccli,
+    Copyright,
+    Memo1,
+    Memo2,
+    Memo3,
+    WithChords,
+}
+
+impl SearchScope {
+    pub const ALL: [SearchScope; 12] = [
+        SearchScope::TitleLyrics,
+        SearchScope::Ccli,
+        SearchScope::TitleThenLyrics,
+        SearchScope::Copyright,
+        SearchScope::Title,
+        SearchScope::Memo1,
+        SearchScope::AuthorComposer,
+        SearchScope::Memo2,
+        SearchScope::Themes,
+        SearchScope::Memo3,
+        SearchScope::References,
+        SearchScope::WithChords,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SearchScope::TitleLyrics => "Title and lyrics",
+            SearchScope::TitleThenLyrics => "Title then lyrics",
+            SearchScope::Title => "Title",
+            SearchScope::AuthorComposer => "Author and composer",
+            SearchScope::Themes => "Themes",
+            SearchScope::References => "References",
+            SearchScope::Ccli => "CCLI",
+            SearchScope::Copyright => "Copyright",
+            SearchScope::Memo1 => "Memo 1",
+            SearchScope::Memo2 => "Memo 2",
+            SearchScope::Memo3 => "Memo 3",
+            SearchScope::WithChords => "Songs with chords",
+        }
+    }
 }
 
 /// Open (or create) the library database and ensure the schema exists.
@@ -266,6 +321,197 @@ fn phrase_rank(song: &Song, phrase: &str) -> u8 {
     }
 }
 
+/// Split text into normalized words for search (removes accents/punctuation/case).
+pub fn search_words(s: &str) -> Vec<String> {
+    let norm = normalize(s);
+    norm.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// Matches if every word in `needle` prefixes a distinct word in `haystack` in any order.
+pub fn words_in_any_order(haystack: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut pool: Vec<&str> = haystack.iter().map(|s| s.as_str()).collect();
+    for n in needle {
+        if let Some(pos) = pool.iter().position(|h| h.starts_with(n.as_str())) {
+            pool.remove(pos);
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// Matches if words in `needle` appear in `haystack` in order as prefixes.
+pub fn words_in_order(haystack: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut at = 0;
+    for n in needle {
+        if let Some(pos) = haystack[at..].iter().position(|h| h.starts_with(n.as_str())) {
+            at += pos + 1;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// A book-scoped number search: "soc204" -> abbrev "soc", number "204".
+pub fn parse_book_scoped(query: &str) -> Option<(String, String)> {
+    let q = query.trim();
+    let num_start = q.rfind(|c: char| !c.is_ascii_digit()).map(|i| i + 1).unwrap_or(0);
+    if num_start > 0 && num_start < q.len() {
+        let (prefix, num) = q.split_at(num_start);
+        if prefix.chars().all(|c| c.is_alphabetic()) {
+            return Some((prefix.to_lowercase(), num.to_string()));
+        }
+    }
+    None
+}
+
+/// Does `song` satisfy `query` under `scope`?
+pub fn matches_song(song: &Song, query: &str, scope: SearchScope) -> bool {
+    let raw = query.trim();
+    if raw.is_empty() {
+        return true;
+    }
+    if let Some((abbrev, number)) = parse_book_scoped(raw) {
+        if song.songbook_id.to_lowercase() == abbrev {
+            return song.song_id.trim() == number;
+        }
+    }
+    let needle = search_words(raw);
+    if needle.is_empty() {
+        return true;
+    }
+
+    let title_words = search_words(&song.title);
+    let lyrics_text = song
+        .verses
+        .iter()
+        .flat_map(|v| v.lines.iter().map(|l| l.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lyrics_words = search_words(&lyrics_text);
+    let mut title_and_lyrics = title_words.clone();
+    title_and_lyrics.extend(lyrics_words.clone());
+
+    let needle_phrase = needle.concat();
+
+    match scope {
+        SearchScope::Title => {
+            title_words.concat().contains(&needle_phrase)
+                || words_in_any_order(&title_words, &needle)
+        }
+        SearchScope::TitleLyrics => {
+            title_and_lyrics.concat().contains(&needle_phrase)
+                || words_in_any_order(&title_and_lyrics, &needle)
+                || song.song_id.to_lowercase().contains(&raw.to_lowercase())
+                || song.ccli.to_lowercase().contains(&raw.to_lowercase())
+        }
+        SearchScope::TitleThenLyrics => {
+            let hit_title = title_words.concat().contains(&needle_phrase)
+                || words_in_order(&title_words, &needle)
+                || words_in_any_order(&title_words, &needle);
+            let hit_lyrics = lyrics_words.concat().contains(&needle_phrase)
+                || words_in_order(&lyrics_words, &needle)
+                || words_in_any_order(&lyrics_words, &needle);
+            hit_title && hit_lyrics
+        }
+        SearchScope::AuthorComposer => {
+            let authors_text = song.authors.join(" ");
+            let authors_words = search_words(&authors_text);
+            let composer_words = search_words(&song.composer);
+            let mut all_ac = authors_words;
+            all_ac.extend(composer_words);
+            all_ac.concat().contains(&needle_phrase) || words_in_any_order(&all_ac, &needle)
+        }
+        SearchScope::Themes => {
+            let themes_text = song.themes.join(" ");
+            let theme_words = search_words(&themes_text);
+            theme_words.concat().contains(&needle_phrase) || words_in_any_order(&theme_words, &needle)
+        }
+        SearchScope::References => {
+            let refs_text = song.references.join(" ");
+            let ref_words = search_words(&refs_text);
+            ref_words.concat().contains(&needle_phrase) || words_in_any_order(&ref_words, &needle)
+        }
+        SearchScope::Ccli => {
+            !song.ccli.is_empty() && song.ccli.to_lowercase().contains(&raw.to_lowercase())
+        }
+        SearchScope::Copyright => {
+            let copy_words = search_words(&song.copyright);
+            copy_words.concat().contains(&needle_phrase) || words_in_any_order(&copy_words, &needle)
+        }
+        SearchScope::Memo1 => {
+            let memo_words = search_words(&song.memo1);
+            memo_words.concat().contains(&needle_phrase) || words_in_any_order(&memo_words, &needle)
+        }
+        SearchScope::Memo2 => {
+            let memo_words = search_words(&song.memo2);
+            memo_words.concat().contains(&needle_phrase) || words_in_any_order(&memo_words, &needle)
+        }
+        SearchScope::Memo3 => {
+            let memo_words = search_words(&song.memo3);
+            memo_words.concat().contains(&needle_phrase) || words_in_any_order(&memo_words, &needle)
+        }
+        SearchScope::WithChords => {
+            let has_chords = !song.chords.overlays.is_empty()
+                || song.chords.chordpro.as_ref().is_some_and(|cp| !cp.trim().is_empty());
+            if !has_chords {
+                return false;
+            }
+            if raw.is_empty() {
+                return true;
+            }
+            title_and_lyrics.concat().contains(&needle_phrase)
+                || words_in_any_order(&title_and_lyrics, &needle)
+        }
+    }
+}
+
+/// Instant find scoped across songs using any of the 12 search scopes.
+pub fn instant_find_scoped(
+    conn: &Connection,
+    query: &str,
+    scope: SearchScope,
+    songbook_scope: Option<&[String]>,
+    excluded: &[String],
+) -> Result<Vec<Song>, rusqlite::Error> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare("SELECT data, songbook_id FROM songs")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row_to_song(row)?, row.get::<_, String>(1)?))
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (song, songbook_id) = row?;
+        if let Some(s_scope) = songbook_scope {
+            if !s_scope.iter().any(|s| *s == songbook_id) {
+                continue;
+            }
+        }
+        if excluded.iter().any(|s| *s == songbook_id) {
+            continue;
+        }
+        if matches_song(&song, q, scope) {
+            out.push(song);
+        }
+    }
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // settings + recents
 // ---------------------------------------------------------------------------
@@ -450,5 +696,71 @@ mod tests {
         assert_eq!(count_songs(&conn).unwrap(), 2);
         assert_eq!(get_song(&conn, "s1").unwrap().unwrap().title, "Amazing-Grace");
         assert!(get_song(&conn, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn twelve_search_scopes_and_book_scoped() {
+        let conn = open_memory().unwrap();
+        upsert_songbook(
+            &conn,
+            &Songbook {
+                id: "soc".into(),
+                name: "Songs of Celebration".into(),
+                abbrev: "soc".into(),
+                read_only: false,
+            },
+        )
+        .unwrap();
+
+        let mut s = song("s10", "A New Commandment", "Author X", "12345", "204", "soc");
+        s.copyright = "Copyright 1980 Celebration Music".into();
+        s.themes = vec!["Love".into(), "Fellowship".into()];
+        s.references = vec!["John 13:34".into()];
+        s.memo1 = "Note one".into();
+        s.memo2 = "Note two".into();
+        s.memo3 = "Note three".into();
+        s.chords.chordpro = Some("[D]A new [Em]commandment".into());
+        upsert_song(&conn, &s).unwrap();
+
+        // Title and lyrics
+        let r = instant_find_scoped(&conn, "commandment", SearchScope::TitleLyrics, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // Title
+        let r = instant_find_scoped(&conn, "new commandm", SearchScope::Title, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // Author and composer
+        let r = instant_find_scoped(&conn, "Author X", SearchScope::AuthorComposer, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // Themes
+        let r = instant_find_scoped(&conn, "Fellowship", SearchScope::Themes, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // References
+        let r = instant_find_scoped(&conn, "John 13", SearchScope::References, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // CCLI
+        let r = instant_find_scoped(&conn, "12345", SearchScope::Ccli, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // Copyright
+        let r = instant_find_scoped(&conn, "Celebration", SearchScope::Copyright, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+
+        // Memos
+        assert_eq!(instant_find_scoped(&conn, "one", SearchScope::Memo1, None, &[]).unwrap().len(), 1);
+        assert_eq!(instant_find_scoped(&conn, "two", SearchScope::Memo2, None, &[]).unwrap().len(), 1);
+        assert_eq!(instant_find_scoped(&conn, "three", SearchScope::Memo3, None, &[]).unwrap().len(), 1);
+
+        // With chords
+        assert_eq!(instant_find_scoped(&conn, "commandment", SearchScope::WithChords, None, &[]).unwrap().len(), 1);
+
+        // Book-scoped number search: "soc204"
+        let r = instant_find_scoped(&conn, "soc204", SearchScope::TitleLyrics, None, &[]).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].id, "s10");
     }
 }
