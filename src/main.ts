@@ -22,6 +22,13 @@ function distFile(...parts: string[]): string {
   return path.join(__dirname, ...parts);
 }
 
+/** The bundled `data/` directory, whichever of the two layouts we run from. */
+function dataDir(): string {
+  const dataDirPath = path.join(app.getAppPath(), "..", "electron-app", "data");
+  const altDir = path.join(__dirname, "..", "..", "data");
+  return fs.existsSync(path.join(dataDirPath, "songs.sample.json")) ? dataDirPath : altDir;
+}
+
 function createControlWindow(): void {
   controlWin = new BrowserWindow({
     width: 1280,
@@ -118,12 +125,27 @@ function registerIpc(): void {
     return target;
   });
   ipcMain.handle("vp:import-sample-data", () => {
-    const dataDir = path.join(app.getAppPath(), "..", "electron-app", "data");
-    const altDir = path.join(__dirname, "..", "..", "data");
-    const dir = fs.existsSync(path.join(dataDir, "songs.sample.json")) ? dataDir : altDir;
+    const dir = dataDir();
     const songs = JSON.parse(fs.readFileSync(path.join(dir, "songs.sample.json"), "utf8")) as import("./core/schemas").Song[];
     for (const s of songs) library?.addSong(s);
     return songs.length;
+  });
+  // Installed Bible translations (SPEC 2.2/2.3): one document per sample
+  // file, so the renderer can offer the translation tabs and run the
+  // keyword/phrase search over real verse text.
+  ipcMain.handle("vp:get-bible", () => {
+    const dir = dataDir();
+    const out: unknown[] = [];
+    for (const file of ["bible.sample.json", "bible.sample-fr.json"]) {
+      const full = path.join(dir, file);
+      if (!fs.existsSync(full)) continue;
+      try {
+        out.push(JSON.parse(fs.readFileSync(full, "utf8")));
+      } catch {
+        // A malformed sample must not take the Bible pane down.
+      }
+    }
+    return out;
   });
   ipcMain.handle("vp:find-songs", (_e, query: string, field?: string) => {
     const songs = library?.findSongs(query) ?? [];

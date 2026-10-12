@@ -170,12 +170,32 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 .lib-tabs button { background: transparent; color: var(--fg); border: 1px solid var(--border); border-radius: 6px 6px 0 0; padding: 0.3em 0.8em; }
 .lib-tabs button.active { background: var(--panel); font-weight: bold; box-shadow: inset 0 2px 0 var(--accent); }
 #lib-add { margin-left: auto; background: #1d7a34; color: #fff; border: none; font-weight: bold; }
-.lib-search-row input { width: 100%; box-sizing: border-box; }
+.lib-search-row input { flex: 1; min-width: 6em; box-sizing: border-box; }
 #lib-song-pane, #lib-bible-pane { overflow-y: auto; min-height: 0; }
 #lib-song-pane { display: flex; flex-direction: column; }
 #lib-song-pane[hidden], #lib-bible-pane[hidden] { display: none; }
 #song-list { overflow-y: auto; }
 .trans-badge { display: inline-block; font-size: 0.75em; font-weight: bold; background: #b26a00; color: #fff; border-radius: 4px; padding: 0.2em 0.6em; }
+
+/* ── Bible 3-mode search (port of gpui `BibleSearch` + `BibleLibrary`) ──
+   Magnifier at the far left of the search box: reference mode carries an
+   orange active box (OBSERVATIONS §4), keyword mode does not. */
+.magnifier { background: var(--panel); color: var(--fg); border: 1px solid var(--border); padding: 0.35em 0.6em; font-size: 0.85em; white-space: nowrap; }
+.magnifier.mode-ref { outline: 2px solid var(--engaged); outline-offset: 1px; font-weight: bold; }
+/* Translation tab strip: horizontally scrollable, active tab orange. */
+#bible-trans-row { flex-wrap: nowrap; overflow-x: auto; gap: 0.3em; padding-bottom: 0.2em; }
+#bible-trans-row .ribbon-label { position: static; flex: none; }
+.trans-tab { background: var(--panel); color: var(--fg); border: 1px solid var(--border); padding: 0.15em 0.5em; font-size: 0.8em; white-space: nowrap; cursor: pointer; }
+.trans-tab.active { background: var(--engaged); border-color: var(--engaged); color: #fff; font-weight: bold; }
+#bible-context.on { outline: 2px solid var(--engaged); outline-offset: 1px; font-weight: bold; }
+/* Keyword results: two-column rows (fixed reference column + verse text) in a
+   bounded scroller. Every hit renders — no cap (R-6). */
+.bible-hits { max-height: 280px; min-height: 48px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 0.25em; margin: 0.4em 0; }
+.bible-hit { display: flex; gap: 0.5em; width: 100%; text-align: left; background: var(--panel); color: var(--fg); border: 1px solid transparent; padding: 0.15em 0.35em; font-size: 0.85em; cursor: pointer; box-sizing: border-box; }
+.bible-hit .hit-ref { flex: none; width: 7em; color: var(--accent); font-weight: bold; }
+.bible-hit .hit-text { flex: 1; min-width: 0; }
+.bible-hit.selected { outline: 2px solid var(--accent); }
+.bible-hit.empty { justify-content: center; color: var(--muted, var(--fg)); opacity: 0.7; cursor: default; }
 .bible-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4em; max-height: 14em; overflow: hidden; }
 #bible-book-list { overflow-y: auto; max-height: 13em; margin: 0; padding-left: 0; border: 1px solid var(--border); border-radius: 6px; }
 #bible-book-list li { cursor: pointer; padding: 0.15em 0.4em; list-style: none; }

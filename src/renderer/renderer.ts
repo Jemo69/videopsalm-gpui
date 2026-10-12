@@ -32,6 +32,8 @@ interface Prefs {
   fmtBold: boolean; fmtItalic: boolean; fmtUnderline: boolean;
   wordHighlight: boolean; highlightColor: string; transition: string;
   libTab: string; testament: string;
+  /** Bible search box mode, driven by the magnifier (GPUI `LayoutPrefs.bible_search`). */
+  bibleSearch: "reference" | "keyword";
 }
 function defaultPrefs(): Prefs {
   return {
@@ -48,6 +50,7 @@ function defaultPrefs(): Prefs {
     fmtBold: false, fmtItalic: false, fmtUnderline: false,
     wordHighlight: false, highlightColor: "#ffd54a", transition: "none",
     libTab: "songbooks", testament: "OT",
+    bibleSearch: "reference",
   };
 }
 function loadPrefs(): Prefs {
@@ -88,6 +91,10 @@ function paintDirty(): void {
 let lastSearchResults: Song[] = [];
 
 let selectedItemId: string | null = null;
+/** The agenda item currently on screen — its row is filled blue, distinct from
+ *  the selected row (the keyboard cursor), exactly as in the GPUI port
+ *  (`main.rs:3360-3388`: live = fill, selected = left edge). */
+let liveItemId: string | null = null;
 let currentSong: Song | null = null;
 let filmSlides: string[] = [];
 let verseEnabled: boolean[] = [];
@@ -112,6 +119,17 @@ import type { PresAction } from "./presKeys";
 // came to disagree about which strings are valid.
 import { parseBibleRef } from "../core/refParser";
 import type { BibleRef } from "../core/schemas";
+// Bible translation store — the port of `vp-core/src/bible_data.rs`: resolve,
+// keyword/phrase search (the original's third Bible search mode), context and
+// the installed-translations registry.
+import {
+  BibleLibrary,
+  bibleHitRows,
+  chapter as chapterVersesOf,
+  keywordSearch,
+  translationFromJson,
+  type VerseHit,
+} from "../core/bibleData";
 // Lane G drawn icons (no unicode stand-ins): strip + kind badges render
 // inlined SVG from icons.ts, byte-identical to assets/icons/*.svg.
 import { kindBadgeSvg, stripIconSvg } from "./icons";
@@ -144,9 +162,16 @@ function loadExcludedBooks(): string[] {
   } catch { /* corrupted / blocked storage: start with none excluded */ }
   return [];
 }
-// Bible search box mode: reference entry, or a keyword/phrase hunt.
-let bibleSearch: "reference" | "keyword" = "reference";
-let bibleKeywordHits: { book: string; chapter: number; verse: number; text: string }[] = [];
+// Bible search box mode: reference entry, or a keyword/phrase hunt. The
+// magnifier toggles it (UX-RESEARCH §3.4); the mode persists with the layout,
+// exactly as `LayoutPrefs.bible_search` does in the GPUI port.
+let bibleSearch: "reference" | "keyword" = prefs.bibleSearch ?? "reference";
+let bibleKeywordHits: VerseHit[] = [];
+/** Surrounding-verse context (SPEC 2.3): `…ctx` shows ±2 verses around the
+ *  selection. Session state — the GPUI port does not persist it either. */
+let bibleContext = false;
+/** Installed translations; filled from `vp:get-bible`, else the inline sample. */
+const bibles = new BibleLibrary();
 // Style explorer visibility (attribute tree with source levels).
 let styleExplorer = false;
 // DoD #6 hook: session cascade + tree mounted on the Text tab panel (see style-explorer.ts).
@@ -269,6 +294,8 @@ function applyPrefsToDom(): void {
     : { search: "Keywords or number to search" };
   el<HTMLInputElement>("song-search").placeholder = dict.search;
   el<HTMLInputElement>("lib-search").placeholder = dict.search;
+  // Bible box placeholder/labels follow the mode + language too.
+  applyBibleSearchChrome();
   syncFormatControls();
   paintAnimSelection();
   applyLibTab(false);
@@ -504,8 +531,14 @@ async function refreshAgenda(): Promise<void> {
   if (selectedItemId && !agenda.items.some((x) => x.id === selectedItemId)) selectedItemId = null;
 }
 function refreshAgendaListSelection(): void {
-  document.querySelectorAll("#agenda-list li").forEach((li) =>
-    li.classList.toggle("selected", (li as HTMLElement).dataset["id"] === selectedItemId));
+  document.querySelectorAll("#agenda-list li").forEach((li) => {
+    const id = (li as HTMLElement).dataset["id"];
+    li.classList.toggle("selected", id === selectedItemId);
+    // Live (on screen) and selected (keyboard cursor) are two different states:
+    // collapsing them loses the distinction that makes the list readable
+    // mid-service (`main.rs:3360-3363`).
+    li.classList.toggle("live", id === liveItemId);
+  });
 }
 function selectedItem(): AgendaItem | undefined {
   return agenda.items.find((x) => x.id === selectedItemId);
@@ -808,6 +841,8 @@ async function pushPreview(title: string, html: string, next: string, footer: st
   wireRangeLoop(el<HTMLElement>("live-preview"), previewRange());
 }
 async function projectItem(it: AgendaItem, slideIndex?: number): Promise<void> {
+  liveItemId = it.id;
+  refreshAgendaListSelection();
   const body = await itemBodyText(it);
   const next = agenda.items[agenda.items.findIndex((x) => x.id === it.id) + 1]?.title ?? "";
   const footer = it.kind === "BibleVerses" ? String(prefs.versification) : (it.ref?.songId ?? it.kind);
@@ -836,6 +871,8 @@ el<HTMLButtonElement>("btn-projector").addEventListener("click", () => void vp()
 el<HTMLButtonElement>("btn-stage").addEventListener("click", () => void vp().openStage());
 el<HTMLButtonElement>("btn-stop").addEventListener("click", async () => {
   await vp().stop();
+  liveItemId = null;
+  refreshAgendaListSelection();
   blackedOut = false;
   el<HTMLButtonElement>("tool-blackout").classList.remove("on");
   el<HTMLElement>("live-preview").innerHTML = "";
@@ -1245,15 +1282,31 @@ el<HTMLInputElement>("lib-search").addEventListener("input", (e) => {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void runSongSearch(), 150);
 });
-// Bible reference mirrors (library box <-> Bibles tab box).
+// Bible reference mirrors (library box <-> Bibles tab box). The box then runs
+// in whichever mode the magnifier selected: reference entry keeps waiting for
+// Enter/Show, a keyword hunt lists matches instantly (OBSERVATIONS §4 —
+// "matching verses are listed instantly").
+/** Mirror the typed text into the other box, then run the active mode. */
+function onBibleSearchInput(mirrorInto: "ref" | "lib", value: string): void {
+  const other = mirrorInto === "ref"
+    ? el<HTMLInputElement>("bible-ref")
+    : el<HTMLInputElement>("lib-bible-search");
+  other.value = value;
+  if (bibleSearch === "keyword") applyBibleKeyword(value);
+}
 el<HTMLInputElement>("bible-ref").addEventListener("input", (e) => {
-  el<HTMLInputElement>("lib-bible-search").value = (e.target as HTMLInputElement).value;
+  onBibleSearchInput("lib", (e.target as HTMLInputElement).value);
 });
 el<HTMLInputElement>("lib-bible-search").addEventListener("input", (e) => {
-  el<HTMLInputElement>("bible-ref").value = (e.target as HTMLInputElement).value;
+  onBibleSearchInput("ref", (e.target as HTMLInputElement).value);
 });
 el<HTMLInputElement>("lib-bible-search").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); renderBible(el<HTMLInputElement>("bible-ref").value); }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const q = el<HTMLInputElement>("bible-ref").value;
+    if (bibleSearch === "keyword") applyBibleKeyword(q);
+    else renderBible(q);
+  }
 });
 el<HTMLSelectElement>("song-field").addEventListener("change", () => void runSongSearch());
 el<HTMLButtonElement>("songbook-new").addEventListener("click", () => {
@@ -1407,6 +1460,192 @@ el<HTMLButtonElement>("song-import-sample").addEventListener("click", async () =
 });
 
 // ---------- bible (ref box + picker + favorites + bilingual) ----------
+//
+// Bible 3-mode selection (UX-RESEARCH §3.4): the magnifier toggles the shared
+// search box between **reference entry** and a **keyword/phrase hunt** over the
+// installed translation; results list instantly and clicking one adopts it as
+// the reference. Port of `vp-core/src/bible_data.rs` + `main.rs::apply_bible_search`.
+// (`bibleSearch` is seeded from the persisted pref at its declaration.)
+
+/** The two placeholders OBSERVATIONS §4 photographed, per mode and language. */
+function biblePlaceholder(mode: "reference" | "keyword", lang: string): string {
+  if (mode === "keyword") {
+    return lang === "fr" ? "Mots-clés ou phrase à chercher, ex. : pain vin" : "Words or phrase to search, for ex.: bread wine";
+  }
+  return lang === "fr" ? "Référence à sélectionner, ex. Romains 3:23-25, 30" : "Reference to select, e.g.: Romans 3:23-25, 30";
+}
+
+/** Push the current mode into both search boxes: placeholder, magnifier label
+ *  and the orange active box that marks reference mode. */
+function applyBibleSearchChrome(): void {
+  const ph = biblePlaceholder(bibleSearch, prefs.lang);
+  el<HTMLInputElement>("bible-ref").placeholder = ph;
+  el<HTMLInputElement>("lib-bible-search").placeholder = ph;
+  const mag = el<HTMLButtonElement>("bible-magnifier");
+  mag.textContent = bibleSearch === "reference" ? "🔍 ref" : "🔍 words";
+  mag.title = bibleSearch === "reference"
+    ? "Select verses by their reference"
+    : "Search for verses containing given words or a phrase";
+  mag.classList.toggle("mode-ref", bibleSearch === "reference");
+  const ctx = el<HTMLButtonElement>("bible-context");
+  ctx.classList.toggle("on", bibleContext);
+}
+
+/** Swap modes: set the box's chrome, drop the hits, persist the mode. */
+function setBibleSearch(mode: "reference" | "keyword"): void {
+  bibleSearch = mode;
+  prefs.bibleSearch = mode;
+  savePrefs();
+  bibleKeywordHits = [];
+  renderBibleHits();
+  applyBibleSearchChrome();
+}
+
+/** Current text of the (mirrored) Bible search box. */
+function bibleQuery(): string {
+  return el<HTMLInputElement>("lib-bible-search").value || el<HTMLInputElement>("bible-ref").value;
+}
+
+/** Keyword mode: hunt the current translation and list every hit. */
+function applyBibleKeyword(text: string): void {
+  const t = bibles.current();
+  bibleKeywordHits = t && text.trim() ? keywordSearch(t, text) : [];
+  renderBibleHits();
+  setHint(`Bible keyword search: ${bibleKeywordHits.length} verse(s).`);
+}
+
+/** Render the hit list — bounded scroller, one row per hit, never truncated
+ *  (R-6: a `.take(30)` cap silently dropped matches past thirty). */
+function renderBibleHits(): void {
+  const box = el<HTMLElement>("bible-hits");
+  box.innerHTML = "";
+  const query = bibleQuery().trim();
+  if (bibleSearch !== "keyword" || !query) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  if (bibleKeywordHits.length === 0) {
+    // OBSERVATIONS §4: the original's centred empty state.
+    const empty = document.createElement("div");
+    empty.className = "bible-hit empty";
+    empty.textContent = "No Bible verse found.";
+    box.appendChild(empty);
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "hint";
+  head.textContent = `🔍 ${bibleKeywordHits.length} keyword match(es) — click one, or 🔍 to go back`;
+  box.appendChild(head);
+  const rows = bibleHitRows(bibleKeywordHits);
+  bibleKeywordHits.forEach((hit, i) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "bible-hit";
+    const ref = document.createElement("span");
+    ref.className = "hit-ref";
+    ref.textContent = rows[i][0];
+    const txt = document.createElement("span");
+    txt.className = "hit-text";
+    txt.textContent = rows[i][1];
+    row.append(ref, txt);
+    row.addEventListener("click", () => pickBibleHit(hit));
+    box.appendChild(row);
+  });
+}
+
+/** Adopt a keyword hit: back to reference mode with that verse selected. */
+function pickBibleHit(hit: VerseHit): void {
+  const ref = `${hit.book} ${hit.chapter}:${hit.verse}`;
+  setBibleSearch("reference");
+  el<HTMLInputElement>("bible-ref").value = ref;
+  el<HTMLInputElement>("lib-bible-search").value = ref;
+  renderBible(ref);
+  setHint(`Bible keyword search: adopted ${ref}.`);
+}
+
+el<HTMLButtonElement>("bible-magnifier").addEventListener("click", () => {
+  setBibleSearch(bibleSearch === "reference" ? "keyword" : "reference");
+  if (bibleSearch === "keyword") applyBibleKeyword(bibleQuery());
+});
+
+/** `…ctx` — show the verses around the selection (SPEC 2.3). Re-derives the
+ *  current reference so toggling off restores the plain selection. */
+el<HTMLButtonElement>("bible-context").addEventListener("click", () => {
+  bibleContext = !bibleContext;
+  applyBibleSearchChrome();
+  const ref = el<HTMLInputElement>("bible-ref").value;
+  if (ref && bibleSearch === "reference") renderBible(ref);
+});
+
+/** Translation tab strip: one clickable tab per installed translation
+ *  (active = orange), right-click favorites it (UX-RESEARCH §3.4). */
+function renderTransTabs(): void {
+  const row = el<HTMLElement>("bible-trans-row");
+  row.querySelectorAll(".trans-tab").forEach((n) => n.remove());
+  for (const id of bibles.ids()) {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "trans-tab" + (bibles.currentId === id ? " active" : "");
+    tab.textContent = `${bibles.favorites.includes(id) ? "★ " : ""}${id}`;
+    tab.title = `Switch to ${id} — right-click to favorite`;
+    tab.addEventListener("click", () => {
+      if (!bibles.switchTo(id)) return;
+      renderTransTabs();
+      updateTransBadge();
+      rerunCurrentBibleView();
+      setHint(`Translation: ${id}`);
+    });
+    tab.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (bibles.favorites.includes(id)) bibles.removeFavorite(id);
+      else bibles.addFavorite(id);
+      renderTransTabs();
+    });
+    row.appendChild(tab);
+  }
+}
+
+/** Re-derive the visible Bible view from whatever the box currently holds —
+ *  used when the translation swaps so selection text follows immediately. */
+function rerunCurrentBibleView(): void {
+  const q = el<HTMLInputElement>("bible-ref").value.trim();
+  if (!q) return;
+  if (bibleSearch === "keyword") applyBibleKeyword(bibleQuery());
+  else renderBible(q);
+}
+
+/** Seed the registry from `vp:get-bible`; fall back to the inline sample so
+ *  keyword search still works when IPC/data files are unavailable. */
+async function loadBibleLibrary(): Promise<void> {
+  let docs: unknown[] = [];
+  try {
+    docs = ((await vp().getBible()) as unknown[] | null) ?? [];
+  } catch {
+    docs = [];
+  }
+  const loaded = docs.flatMap((d) => {
+    try {
+      return [translationFromJson(d)];
+    } catch {
+      return [];
+    }
+  });
+  if (loaded.length === 0) {
+    const verses = Object.entries(SAMPLE_VERSES).map(([k, text]) => {
+      const [book, ch, v] = k.split("|");
+      return { book, chapter: parseInt(ch, 10), verse: parseInt(v, 10), text };
+    });
+    bibles.install(translationFromJson({ translationId: "sample", verses }));
+  } else {
+    for (const t of loaded) bibles.install(t);
+  }
+  renderTransTabs();
+  updateTransBadge();
+  applyBibleSearchChrome();
+  if (bibleSearch === "keyword") applyBibleKeyword(bibleQuery());
+}
+
 const SAMPLE_VERSES: Record<string, string> = {
   "John|3|16": "For God so loved the world, that he gave his only begotten Son…",
   "John|3|17": "For God sent not his Son into the world to condemn the world…",
@@ -1418,6 +1657,8 @@ const SAMPLE_VERSES: Record<string, string> = {
 let bibleVerses: number[] = [];
 let bibleBook = "John";
 let bibleChapter = 3;
+// Load the installed translations once; every later render consults the store.
+void loadBibleLibrary();
 function populateBibleBooks(): void {
   const sel = el<HTMLSelectElement>("bible-book");
   sel.innerHTML = "";
@@ -1526,12 +1767,30 @@ function renderBible(text: string, keepRange = false): void {
   }
   bibleBook = parsed.book;
   bibleChapter = parsed.chapter;
+  const store = bibles.current();
+  const storeChapter = store ? chapterVersesOf(store, parsed.book, parsed.chapter) : undefined;
+  // `…ctx` (SPEC 2.3): show the verses around the selection. Only possible
+  // when the translation actually carries the chapter — otherwise fall back to
+  // the plain selection exactly as `apply_browser_context` does in the GPUI
+  // port when `wide.is_empty()`.
+  let contextNote: string | null = null;
   if (!keepRange) {
     bibleVerses = [...parsed.verses];
+    if (bibleContext && storeChapter && bibleVerses.length > 0) {
+      const lo = Math.max(1, Math.min(...bibleVerses) - 2);
+      const hi = Math.max(...bibleVerses) + 2;
+      bibleVerses = [];
+      for (let v = lo; v <= hi; v++) bibleVerses.push(v);
+      contextNote = `Context: ${bibleVerses.length} verses around the selection.`;
+    }
     syncPickerToRange();
   }
   const lines = bibleVerses.map((v) => {
-    const t = SAMPLE_VERSES[`${bibleBook}|${bibleChapter}|${v}`]
+    // The installed translation is the source of truth; the inline sample and
+    // the "needs a Bible import" marker are the fallbacks for chapters the
+    // sample does not carry.
+    const t = storeChapter?.[v - 1]
+      ?? SAMPLE_VERSES[`${bibleBook}|${bibleChapter}|${v}`]
       ?? `[${bibleBook} ${bibleChapter}:${v} — full text needs a Bible import]`;
     if (prefs.bilingual) {
       if (prefs.suppressEmpty && !t.trim()) return `${v}. ${t}`;
@@ -1540,7 +1799,7 @@ function renderBible(text: string, keepRange = false): void {
     return `${v}. ${t}`;
   });
   const bookName = displayBookName(bibleBook);
-  const header = `${bookName} ${bibleChapter}${bibleVerses.length ? ":" + bibleVerses.join(",") : ""} (${prefs.versification})`;
+  const header = `${bookName} ${bibleChapter}${bibleVerses.length ? ":" + bibleVerses.join(",") : ""} (${prefs.versification})${contextNote ? " (context)" : ""}`;
   bibleHeader = header;
   bibleCustomText = null;
   el<HTMLElement>("bible-preview").textContent = `${header}\n\n${lines.join("\n")}`;
@@ -1549,6 +1808,7 @@ function renderBible(text: string, keepRange = false): void {
   showEditPane("bible", header);
   updateTransBadge();
   syncTestamentToBook();
+  if (contextNote) setHint(contextNote);
   void refreshFilmstrip();
 }
 el<HTMLButtonElement>("bible-project").addEventListener("click", async () => {
@@ -1605,7 +1865,9 @@ el<HTMLButtonElement>("lib-add").addEventListener("click", () => {
 
 // ---------- bible book list + chapter grid + testament filter ----------
 function updateTransBadge(): void {
-  el<HTMLElement>("bible-trans-badge").textContent = String(prefs.versification);
+  // The badge names the *translation* (the GPUI port shows `[SAMPLE-EN]`);
+  // with no store loaded it degrades to the versification it used to show.
+  el<HTMLElement>("bible-trans-badge").textContent = bibles.currentId ?? String(prefs.versification);
 }
 function testamentOf(index: number): "OT" | "NT" {
   return index < OT_COUNT ? "OT" : "NT";
