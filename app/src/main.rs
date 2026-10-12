@@ -442,6 +442,7 @@ pub(crate) struct Root {
     lyrics_doc: gpui::Entity<DocField>,
     _lyrics_doc_subs: Vec<Subscription>,
     pptx_field: gpui::Entity<TextField>,
+    bible_xml_field: gpui::Entity<TextField>,
     clock_field: gpui::Entity<TextField>,
 
     pub(crate) _subs: Vec<Subscription>,
@@ -489,6 +490,52 @@ impl Root {
         let mut bibles = BibleLibrary::default();
         bibles.install(Translation::from_json(BIBLE_EN).unwrap());
         bibles.install(Translation::from_json(BIBLE_FR).unwrap());
+        // Local import folder: drop OSIS / Zefania / VideoPsalm-XML files
+        // (or our own JSON shape) into `bibles/` next to the app and they
+        // are installed at boot — no network, SPEC 2.2/2.3 local import.
+        let mut boot_imports = 0usize;
+        let mut boot_import_errors: Vec<String> = Vec::new();
+        if let Ok(dir) = std::fs::read_dir("bibles") {
+            let mut paths: Vec<std::path::PathBuf> = dir.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for p in paths {
+                let ext = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let name = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if ext == "xml" {
+                    let loaded = std::fs::read_to_string(&p)
+                        .map_err(|e| e.to_string())
+                        .and_then(|xml| {
+                            vp_core::bible_import::import_bible_xml(&xml, &name)
+                                .map_err(|e| e.to_string())
+                        });
+                    match loaded {
+                        Ok(t) => {
+                            bibles.install(t);
+                            boot_imports += 1;
+                        }
+                        Err(e) => boot_import_errors.push(format!("{}: {e}", p.display())),
+                    }
+                } else if ext == "json" {
+                    let loaded = std::fs::read_to_string(&p)
+                        .map_err(|e| e.to_string())
+                        .and_then(|s| Translation::from_json(&s).map_err(|e| e.to_string()));
+                    match loaded {
+                        Ok(t) => {
+                            bibles.install(t);
+                            boot_imports += 1;
+                        }
+                        Err(e) => boot_import_errors.push(format!("{}: {e}", p.display())),
+                    }
+                }
+            }
+        }
         bibles.add_favorite("SAMPLE-EN");
 
         let agenda =
@@ -516,6 +563,7 @@ impl Root {
             d
         });
         let pptx_field = cx.new(|cx| TextField::new("slides.pptx path...", cx));
+        let bible_xml_field = cx.new(|cx| TextField::new("bible.xml path...", cx));
         let clock_field = cx.new(|cx| TextField::new("300", cx));
         // B-07: the invisible preview-drag ghost (a resize shows no chip).
         let drag_ghost = cx.new(|_| DragGhost);
@@ -622,6 +670,7 @@ impl Root {
             lyrics_doc: lyrics_doc.clone(),
             _lyrics_doc_subs: Vec::new(),
             pptx_field: pptx_field.clone(),
+            bible_xml_field: bible_xml_field.clone(),
             clock_field: clock_field.clone(),
             _subs: Vec::new(),
         };
@@ -714,6 +763,16 @@ impl Root {
             this.status = format!("Layout restored from {}.", LayoutPrefs::FILE);
         }
         this.seed_cascade_from_style(); // DoD #6 hook: seed the session cascade.
+        if !boot_import_errors.is_empty() {
+            this.status = format!(
+                "bibles/: {boot_imports} installed, {} failed \u{2014} {}",
+                boot_import_errors.len(),
+                boot_import_errors.join("; ")
+            );
+        } else if boot_imports > 0 {
+            this.status =
+                format!("Installed {boot_imports} Bible translation(s) from bibles/.");
+        }
         this
     }
 
@@ -2221,6 +2280,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
             || self.media_path_field.read(cx).focus_handle(cx).is_focused(window)
             || self.media_range_field.read(cx).focus_handle(cx).is_focused(window)
             || self.pptx_field.read(cx).focus_handle(cx).is_focused(window)
+            || self.bible_xml_field.read(cx).focus_handle(cx).is_focused(window)
             || self.clock_field.read(cx).focus_handle(cx).is_focused(window)
         {
             return true;
@@ -2479,6 +2539,40 @@ fn apply_lyrics_document(&mut self, document: &str) {
         }
     }
 
+    /// Import a Bible translation from an XML file on disk — the three
+    /// formats the original's import assistant offers (OSIS, Zefania, and
+    /// VideoPsalm's own per-book XML), through `vp_core::bible_import`.
+    /// The path field sits in the Bibles pane next to the button.
+    fn import_bible_xml(&mut self, cx: &mut Context<Self>) {
+        let path = self.bible_xml_field.read(cx).text();
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            self.set_status(cx, "Enter the path of the Bible XML file to import.");
+            return;
+        }
+        let fallback = std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Imported".to_string());
+        let result = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Cannot read file: {e}"))
+            .and_then(|xml| {
+                vp_core::bible_import::import_bible_xml(&xml, &fallback).map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(t) => {
+                let id = t.translation_id.clone();
+                let books = t.books.len();
+                self.bibles.install(t);
+                self.bibles.switch_to(&id);
+                self.bible_xml_field.update(cx, |f, cx| f.set_text("", cx));
+                self.rebuild_biref_with_verses(cx, None);
+                self.set_status(cx, format!("Imported {id}: {books} books"));
+            }
+            Err(e) => self.set_status(cx, format!("Import failed: {e}")),
+        }
+    }
+
     // ------------------------------------------------------------- keymap
 
     /// The whole presentation vocabulary, routed from one raw key-down.
@@ -2542,11 +2636,18 @@ fn apply_lyrics_document(&mut self, document: &str) {
             }
             PresKey::Save => self.save_agenda(cx),
             PresKey::FocusSongs => {
+                // Alt+S jumps to Songbooks: show the pane *and* focus its
+                // search box — focusing a hidden field alone did nothing
+                // visible (the pane never switched).
+                self.left_tab = LeftTab::Songs;
                 let h = self.search_field.read(cx).focus_handle(cx);
                 window.focus(&h);
                 cx.notify();
             }
             PresKey::FocusBibles => {
+                // Alt+B likewise: switch to the Bibles pane first, then
+                // focus its book field.
+                self.left_tab = LeftTab::Bibles;
                 let h = self.book_field.read(cx).focus_handle(cx);
                 window.focus(&h);
                 cx.notify();
@@ -3838,8 +3939,18 @@ impl Root {
         if grid.is_empty() {
             grid.push(label(ui, "(?)", 12.));
         }
+        // Import row: path field + button, mirroring the .pptx row's shape.
+        // The original opens a file dialog here; gpui has none, so the path
+        // is typed/pasted (same pattern as `pptx_field`).
+        let import_row = vec![
+            div().flex_1().child(self.bible_xml_field.clone()),
+            btn(ui, cx, &self.t("import_bible"), false, |this, _, _, cx| {
+                this.import_bible_xml(cx);
+            }),
+        ];
         let mut out = vec![
             row(trans_row),
+            row(import_row),
             row(fav_row),
             row(vec![
                 btn(ui, cx, &self.t("bilingual"), self.bilingual, |this, _, _, cx| {

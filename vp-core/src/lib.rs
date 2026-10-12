@@ -12,6 +12,7 @@
 
 pub mod agenda;
 pub mod bible_data;
+pub mod bible_import;
 pub mod bible_ref;
 pub mod cascade;
 pub mod chord_transpose;
