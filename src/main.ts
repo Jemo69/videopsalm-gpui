@@ -207,6 +207,13 @@ function registerIpc(): void {
       return true;
     });
   });
+  // Lyrics edits: the centre editor is the live source of truth while a song
+  // is open; each edit upserts the song so the filmstrip, the projector and a
+  // restart all see the same text (addSong upserts on id in both backends).
+  ipcMain.handle("vp:save-song", (_e, song: import("./core/schemas").Song) => {
+    library?.addSong(song);
+    return true;
+  });
   ipcMain.handle("vp:open-projector", () => {
     createProjectorWindow();
     return true;

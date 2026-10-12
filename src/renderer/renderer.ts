@@ -1132,7 +1132,16 @@ async function refreshFilmstrip(): Promise<void> {
     paintFilmstrip();
     return;
   }
-  const body = await itemBodyText(it);
+  // While the selected Song is open in the centre editor, that text is the
+  // live source of truth — the library copy lags up to 300ms behind (the
+  // debounced save), and rebuilding slides from it would ignore in-flight
+  // edits, which is how "editing the lyrics" used to appear to do nothing.
+  const editingThisSong =
+    it.kind === "Song" && currentSong != null && it.ref?.songId === currentSong.id &&
+    editorSongId === currentSong.id;
+  const body = editingThisSong
+    ? el<HTMLTextAreaElement>("lyrics-editor").value
+    : await itemBodyText(it);
   const slides = splitSlides(body);
   if (it.kind === "BibleVerses") {
     const refText = it.title;
@@ -1145,10 +1154,10 @@ async function refreshFilmstrip(): Promise<void> {
   } else {
     let song: Song | null = null;
     if (it.kind === "Song" && it.ref?.songId) {
-      try {
-        const songs = (await bridge().findSongs("")) as Song[];
-        song = songs.find((x) => x.id === it.ref!.songId) ?? null;
-      } catch { song = null; }
+      song = currentSong?.id === it.ref.songId
+        ? currentSong
+        : ((await bridge().findSongs("").catch(() => [])) as Song[])
+            .find((x) => x.id === it.ref!.songId) ?? null;
     }
     setSlides(`item:${it.id}`, slides,
       slides.map((s, i) => labelFor(i, s, song).label),
@@ -1420,10 +1429,16 @@ function renderSongbookTree(songs: Song[]): void {
     mk(id, `${id} (${n})`, excludedBooks.includes(id));
   }
 }
-/** Push the current song into the centre lyrics editor (shared by the
- *  library click path and the agenda selection path). */
+/** Which song the centre editor is showing. Re-running the filmstrip refresh
+ *  for the *same* song must not overwrite the operator's mid-edit text —
+ *  that is exactly what made typing look dead: every keystroke re-ran
+ *  refreshFilmstrip, which re-filled the textarea from the stored song and
+ *  wiped the character just typed. */
+let editorSongId: string | null = null;
 function fillLyricsEditor(): void {
   if (!currentSong) return;
+  if (editorSongId === currentSong.id) return; // already loaded; keep live edits
+  editorSongId = currentSong.id;
   el<HTMLTextAreaElement>("lyrics-editor").value =
     currentSong.chords?.chordpro ??
     currentSong.verses.map((v) => v.lines.join("\n")).join("\n\n");
@@ -1436,7 +1451,36 @@ function showSong(s: Song): void {
   showEditPane("song", s.title);
   renderSongPreview();
 }
-el<HTMLTextAreaElement>("lyrics-editor").addEventListener("input", () => renderSongPreview());
+/** The lyrics editor is the live source of truth while a song is open (the
+ *  pane's own subtitle: "edits apply live, even during projection"). Each
+ *  keystroke writes the text back into the song object and repaints the
+ *  filmstrip from it; the library upsert is debounced so fast typing doesn't
+ *  hammer the store, and the edit still survives a restart. */
+let saveSongTimer: ReturnType<typeof setTimeout> | undefined;
+function applyLyricsEdit(): void {
+  const song = currentSong;
+  if (!song) return;
+  const text = el<HTMLTextAreaElement>("lyrics-editor").value;
+  song.verses = text.split(/\n[ \t]*\n/).map((block, i) => ({
+    id: song.verses[i]?.id ?? String(i + 1),
+    lines: block.split("\n"),
+    order: i + 1,
+  }));
+  if (/\[[^\]]+\]/.test(text)) {
+    song.chords = {
+      notation: song.chords?.notation ?? "ABC",
+      transpose: song.chords?.transpose ?? 0,
+      overlays: [],
+      chordpro: text,
+    };
+  } else if (song.chords) {
+    delete song.chords.chordpro;
+  }
+  renderSongPreview();
+  clearTimeout(saveSongTimer);
+  saveSongTimer = setTimeout(() => { void bridge().saveSong(song); }, 300);
+}
+el<HTMLTextAreaElement>("lyrics-editor").addEventListener("input", () => applyLyricsEdit());
 el<HTMLInputElement>("transpose-steps").addEventListener("input", () => renderSongPreview());
 el<HTMLSelectElement>("chord-notation").addEventListener("change", () => renderSongPreview());
 function renderSongPreview(): void {

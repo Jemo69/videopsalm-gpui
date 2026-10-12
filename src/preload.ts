@@ -11,6 +11,7 @@ const api = {
   getBible: () => ipcRenderer.invoke("vp:get-bible"),
   importBible: (filePath: string) => ipcRenderer.invoke("vp:import-bible", filePath),
   findSongs: (query: string, field?: string) => ipcRenderer.invoke("vp:find-songs", query, field),
+  saveSong: (song: unknown) => ipcRenderer.invoke("vp:save-song", song),
   openProjector: () => ipcRenderer.invoke("vp:open-projector"),
   openStage: () => ipcRenderer.invoke("vp:open-stage"),
   project: (slide: unknown, next?: string) => ipcRenderer.invoke("vp:project", slide, next),

@@ -11,6 +11,7 @@ interface VpBridge {
   /** Read + parse a Bible XML file (OSIS / Zefania / VideoPsalm local). */
   importBible(filePath: string): Promise<unknown>;
   findSongs(query: string, field?: string): Promise<unknown>;
+  saveSong(song: unknown): Promise<unknown>;
   openProjector(): Promise<unknown>;
   openStage(): Promise<unknown>;
   project(slide: unknown, next?: string): Promise<unknown>;
