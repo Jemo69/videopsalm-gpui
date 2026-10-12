@@ -51,10 +51,17 @@ function createProjectorWindow(): BrowserWindow {
   }
   const displays = screen.getAllDisplays();
   const target = displays.length > 1 ? displays[displays.length - 1] : displays[0];
+  // Dual display: fullscreen on the projection screen, as the original does.
+  // Single display: a windowed companion (960×540, bottom-right) — a
+  // fullscreen takeover on the only screen hides the control window and the
+  // operator loses the app entirely (it reads as "nothing works").
+  const single = displays.length === 1;
   projectorWin = new BrowserWindow({
-    x: target.bounds.x,
-    y: target.bounds.y,
-    fullscreen: true,
+    x: single ? target.bounds.x + Math.max(0, target.bounds.width - 980) : target.bounds.x,
+    y: single ? target.bounds.y + Math.max(0, target.bounds.height - 560) : target.bounds.y,
+    width: single ? 960 : undefined,
+    height: single ? 540 : undefined,
+    fullscreen: !single,
     backgroundColor: "#000000",
     title: "VideoPsalm — Projector",
     webPreferences: { preload: distFile("preload.js"), contextIsolation: true, nodeIntegration: false },
@@ -248,6 +255,29 @@ function registerIpc(): void {
 app.whenReady().then(() => {
   const userDir = path.join(app.getPath("userData"), "library");
   library = openLibrary(userDir);
+  // First run (or an empty library): seed the bundled samples so the app is
+  // usable the moment it opens — GPUI parity: it boots with the sample songs
+  // and agenda already loaded instead of three empty panes.
+  try {
+    if (library.findSongs("").length === 0) {
+      const dir = dataDir();
+      const songs = JSON.parse(
+        fs.readFileSync(path.join(dir, "songs.sample.json"), "utf8")
+      ) as import("./core/schemas").Song[];
+      for (const s of songs) library.addSong(s);
+    }
+  } catch (e) {
+    console.warn("sample songs:", e instanceof Error ? e.message : e);
+  }
+  try {
+    const dir = dataDir();
+    const agendaPath = path.join(dir, "agenda.sample.json");
+    if (currentAgenda.items.length === 0 && fs.existsSync(agendaPath)) {
+      currentAgenda = parseAgenda(fs.readFileSync(agendaPath, "utf8"));
+    }
+  } catch (e) {
+    console.warn("sample agenda:", e instanceof Error ? e.message : e);
+  }
   registerIpc();
   createControlWindow();
   if (process.argv.includes("--control-only")) {

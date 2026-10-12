@@ -85,7 +85,12 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 .tree li.group { font-weight: bold; }
 
 /* filmstrip */
-#slide-filmstrip { display: flex; gap: 0.5em; flex-wrap: wrap; border: 1px dashed var(--border); border-radius: 6px; padding: 0.5em; min-height: 3em; }
+/* Filmstrip: one block per line, stacked, and the panel scrolls when there
+   are more slides than fit. `align-items: stretch` (the flex default) plus a
+   `width: 100%` on the block is what keeps each block on its own line; the
+   earlier `flex-wrap: wrap` with auto-width blocks let the second block wrap
+   into a line the panel had no height budget for, so it was clipped away. */
+#slide-filmstrip { display: flex; flex-direction: column; gap: 0.35em; overflow-y: auto; overscroll-behavior: contain; border: 1px dashed var(--border); border-radius: 6px; padding: 0.5em; min-height: 13em; flex: 1; align-items: stretch; }
 #slide-filmstrip:focus { outline: 2px solid var(--accent); }
 .film { background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4em 0.6em; max-width: 16em; text-align: left; }
 .film kbd { margin-right: 0.4em; }
@@ -209,10 +214,19 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 #song-detail { display: flex; flex-direction: column; gap: 0.3em; }
 #song-detail h4 { margin: 0; }
 #lyrics-editor, #bible-verse-edit { width: 100%; box-sizing: border-box; resize: vertical; }
-#slide-filmstrip { display: flex; flex-direction: column; gap: 0.35em; overflow-y: auto; border: 1px dashed var(--border); border-radius: 6px; padding: 0.5em; min-height: 6em; flex: 1; }
-.slide-block { display: grid; grid-template-columns: auto auto 1fr; gap: 0.5em; align-items: start; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4em 0.6em; cursor: pointer; text-align: left; width: 100%; box-sizing: border-box; font: inherit; }
-.slide-block .slide-label { font-weight: bold; font-size: 0.8em; border: 1px solid var(--border); border-radius: 4px; padding: 0.1em 0.4em; background: var(--badge-bg); white-space: nowrap; }
-.slide-block .slide-text { white-space: pre-wrap; }
+.slide-block { display: grid; /* Fixed px text track, not `1fr`: this WSLg Xvfb session renders the window at a fractional CSS width (215.875px), and Chromium mis-resolves a `minmax(0,1fr)` track in that case — the computed tracks summed to ~178px against a 216px box, squeezing `.slide-text` to ~112px, wrapping each lyric line one-word-per-line and stretching the block to ~298px, which overflowed the ~114px filmstrip and hid every slide row. A literal px track sidesteps the fractional-`fr` bug and keeps both blocks visible; the track is wider than the filmstrip so the text still gets the full column and wraps on words. */ grid-template-columns: auto auto minmax(0,1fr); gap: 0.5em; align-items: start; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4em 0.6em; cursor: pointer; text-align: left; width: 100%; box-sizing: border-box; font: inherit; min-width: 0; flex: 0 0 auto; }
+/* Four children — checkbox, label, text, footer — so the grid needs an
+   explicit checkbox track. Without it the checkbox consumed the first `auto`,
+   the label the second, and the `1fr` text track was measured against a
+   squeezed implicit 4th column: the lyric text collapsed to a ~105px sliver,
+   wrapped one word per line, and each block grew to ~300px — overflowing the
+   ~114px filmstrip and hiding every slide row. `minmax(0,1fr)` (not bare
+   `1fr`) is what actually lets the text track absorb the leftover width; the
+   `.slide-block` is a `button`, and a bare `1fr` under a button's
+   `min-content` floor resolves to the text's intrinsic width instead. */
+.slide-block input[type="checkbox"] { grid-column: 1; margin: 0.15em 0 0; }
+.slide-block .slide-label { grid-column: 2; font-weight: bold; font-size: 0.8em; border: 1px solid var(--border); border-radius: 4px; padding: 0.1em 0.4em; background: var(--badge-bg); white-space: nowrap; }
+.slide-block .slide-text { grid-column: 3; min-width: 0; max-height: 3.5em; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
 .slide-block .slide-foot { grid-column: 3; font-size: 0.75em; opacity: 0.65; }
 /* The slide currently ON SCREEN is highlighted blue — that is the single most
    important visual cue in the panel (UX-RESEARCH 10.3). `.selected` is the
@@ -255,7 +269,13 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 /* Hidden text: the background keeps playing, the words do not show. */
 body[data-text-hidden="1"] .vp-slide { background-image: none; }
 body[data-shield="1"] #agenda-list li:not(.selected) { opacity: 0.65; }
-.preview-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.preview-stack { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* The right column scrolls (#layout > * has overflow-y:auto). When the stack
+   is taller than the viewport, the flex column used to overflow *upward*, so
+   the #frame-bar scrolled on top of the slide blocks above it. Keeping the
+   toolbar pinned and letting the preview own its height stops the collision —
+   the toolbar no longer slides over the filmstrip. */
+#frame-bar { flex: 0 0 auto; position: sticky; top: 0; z-index: 4; background: var(--bg); padding: 0.2em 0; }
 .preview-wrap { position: relative; }
 .preview-wrap .preview { min-height: 220px; }
 #preview-ref { position: absolute; top: 0.4em; right: 0.7em; font-size: 0.75em; opacity: 0.85; color: #fff; background: rgba(0,0,0,0.55); padding: 0.1em 0.5em; border-radius: 4px; }

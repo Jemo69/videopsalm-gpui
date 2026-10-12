@@ -1155,7 +1155,12 @@ async function refreshFilmstrip(): Promise<void> {
       slides.map((s, i) => labelFor(i, s, song).body),
       slides.map((_, i) => footerFor(i, song, it, "")),
       it.title, it.ref?.songId ?? it.kind, false);
+    // Selecting a Song in the agenda loads it into the editor, exactly like
+    // clicking it in the library does — otherwise the centre pane shows an
+    // empty "Lyrics: Amazing Grace" with nothing to edit.
+    if (song) currentSong = song;
     showEditPane("song", it.title);
+    fillLyricsEditor();
   }
 }
 
@@ -1415,11 +1420,18 @@ function renderSongbookTree(songs: Song[]): void {
     mk(id, `${id} (${n})`, excludedBooks.includes(id));
   }
 }
+/** Push the current song into the centre lyrics editor (shared by the
+ *  library click path and the agenda selection path). */
+function fillLyricsEditor(): void {
+  if (!currentSong) return;
+  el<HTMLTextAreaElement>("lyrics-editor").value =
+    currentSong.chords?.chordpro ??
+    currentSong.verses.map((v) => v.lines.join("\n")).join("\n\n");
+}
 function showSong(s: Song): void {
   currentSong = s;
   el<HTMLElement>("song-title").textContent = s.title;
-  el<HTMLTextAreaElement>("lyrics-editor").value =
-    s.chords?.chordpro ?? s.verses.map((v) => v.lines.join("\n")).join("\n\n");
+  fillLyricsEditor();
   el<HTMLElement>("song-preview").hidden = false;
   showEditPane("song", s.title);
   renderSongPreview();
@@ -2497,3 +2509,4 @@ void (async () => {
     el<HTMLElement>("backend-info").textContent = `library: ${backend}`;
   } catch { /* bridge unavailable in plain-browser preview */ }
 })();
+
