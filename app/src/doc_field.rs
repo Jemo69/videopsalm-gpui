@@ -19,8 +19,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::lyrics_doc;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, KeyBinding, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, SharedString,
+    AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, IntoElement,
+    KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, SharedString,
     UTF16Selection, Window, actions, div, hsla, prelude::*, px, rgb, rgba,
 };
 
@@ -109,6 +110,14 @@ impl DocField {
         self.sel = self.content.len()..self.content.len();
         self.selection_reversed = false;
         cx.notify();
+    }
+
+    /// Record the surface bounds from the paint phase. Click hit-testing
+    /// (`hit_test`) and the platform text-input registration both need the
+    /// real on-screen rect, which only exists once laid out — a plain `div()`
+    /// can never learn it, which is why [`DocSurface`] reports it here.
+    fn set_surface_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.last_bounds = Some(bounds);
     }
 
     fn emit(&self, cx: &mut Context<Self>) {
@@ -235,8 +244,6 @@ impl DocField {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // gpui 0.2.2's MouseDownEvent carries no bounds; the caller supplies
-        // the element's bounds via `set_surface_bounds` on focus.
         self.selection_reversed = event.modifiers.shift;
         if let Some(pos) = self.hit_test(event.position) {
             self.move_to(pos, event.modifiers.shift, cx);
@@ -410,7 +417,7 @@ impl Render for DocField {
         let empty = content.is_empty();
         let placeholder = self.placeholder.clone();
 
-        div()
+        let surface = div()
             .flex()
             .flex_col()
             .flex_1()
@@ -464,7 +471,99 @@ impl Render for DocField {
                         })
                         .collect()
                 },
-            )
+            );
+        // Paint-phase bridge: without it the surface renders but never
+        // receives typed text (see [`DocSurface`]).
+        DocSurface::new(cx.entity(), surface.into_any_element())
+    }
+}
+
+/// Paint-phase bridge between the document surface and the window.
+///
+/// A plain `div()` can never call `window.handle_input` — paint-phase only —
+/// so typed characters never reached
+/// [`EntityInputHandler::replace_text_in_range`]: the document rendered but
+/// swallowed every keystroke, and `last_bounds` stayed `None` forever so
+/// clicks never moved the cursor either. This element lays out exactly one
+/// child (the surface div, unchanged) and, in `paint`, registers the text
+/// input handler with the real surface bounds and records those bounds for
+/// [`DocField::hit_test`].
+pub struct DocSurface {
+    doc: gpui::Entity<DocField>,
+    child: AnyElement,
+}
+
+impl DocSurface {
+    pub fn new(doc: gpui::Entity<DocField>, child: AnyElement) -> Self {
+        DocSurface { doc, child }
+    }
+}
+
+// `Element: IntoElement` is a supertrait in gpui 0.2.2 — a bare element must
+// convert into itself (see gpui `element.rs`, the `Empty` impl).
+impl IntoElement for DocSurface {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for DocSurface {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // `handle_input` no-ops unless our handle is focused, so registering
+        // unconditionally is correct — typing reaches `replace_text_in_range`
+        // exactly when the operator has clicked into the document.
+        let focus = self.doc.read(cx).focus_handle.clone();
+        window.handle_input(
+            &focus,
+            ElementInputHandler::new(bounds, self.doc.clone()),
+            cx,
+        );
+        self.doc.update(cx, |d, _| d.set_surface_bounds(bounds));
+        self.child.paint(window, cx);
     }
 }
 
