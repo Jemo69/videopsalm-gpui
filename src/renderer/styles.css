@@ -69,7 +69,10 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 .preview.mini { min-height: 60px; font-size: 0.85em; }
 .hint { opacity: 0.7; font-size: 0.9em; font-weight: normal; }
 #agenda-list li.selected, #song-list li.selected, #media-list li.selected { outline: 2px solid var(--accent); }
-#agenda-list li, #song-list li, #media-list li, #songbook-tree li { cursor: pointer; padding: 0.25em 0.4em; list-style: none; }
+#agenda-list li { cursor: pointer; padding: 0.25em 0.4em; list-style: none; display: flex; align-items: center; gap: 6px; }
+#song-list li, #media-list li, #songbook-tree li { cursor: pointer; padding: 0.25em 0.4em; list-style: none; }
+.agenda-status-dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1px solid var(--border); margin-left: auto; flex-shrink: 0; }
+.agenda-status-dot.live, #agenda-list li.live .agenda-status-dot { background: #2a5db0; border-color: #2a5db0; box-shadow: 0 0 4px #2a5db0; }
 #agenda-list, #song-list, #media-list, #songbook-tree { padding-left: 0; }
 .kind-badge { display: inline-block; font-size: 0.72em; font-weight: bold; border-radius: 8px; padding: 0.1em 0.6em; margin-right: 0.5em; background: var(--badge-bg); border: 1px solid var(--border); }
 .kind-badge.k-Song { background: #1d5c2e; color: #fff; }
@@ -289,9 +292,41 @@ body[data-shield="1"] #agenda-list li:not(.selected) { opacity: 0.65; }
 .gallery-thumb.selected { border-color: var(--accent); }
 .gallery-row { display: flex; gap: 0.4em; align-items: center; flex-wrap: wrap; margin: 0.3em 0; }
 .gallery-row button.on { outline: 2px solid var(--accent); }
-/* VideoPsalm-style preview: black, centered white text */
-#live-preview { background: #000; color: #fff; text-align: center; position: relative; }
-#live-preview .vp-slide { text-align: center; align-items: center; position: relative; aspect-ratio: 16/9; overflow: hidden; }
+/* VideoPsalm-style preview: black, centered white text, auto-scaled to box */
+#live-preview {
+  background: #000;
+  color: #fff;
+  text-align: center;
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+#live-preview .vp-slide {
+  text-align: center;
+  align-items: center;
+  position: relative;
+  aspect-ratio: 16/9;
+  width: 100%;
+  height: auto;
+  min-height: 140px;
+  overflow: hidden;
+  font-size: clamp(10px, 4.2cqw, 15px) !important;
+  box-sizing: border-box;
+  padding: 8px;
+}
+#live-preview .vp-slide .vp-body {
+  font-size: inherit;
+  line-height: 1.3;
+}
+#live-preview .vp-slide .vp-header {
+  font-size: 0.75em !important;
+  margin-bottom: 0.2em;
+}
+#live-preview .vp-slide .vp-footer {
+  font-size: 0.65em !important;
+  margin-top: 0.2em;
+}
 /* B-07: the preview is the layout editor — frames are absolutely positioned (geometry comes
    from resolveRectPercent, so preview and projector agree); the overlay + 8 handles live
    inside .vp-slide, i.e. inside the RIGHT-column preview pane, not floating elsewhere. */

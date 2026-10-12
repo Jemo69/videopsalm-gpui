@@ -7,6 +7,7 @@ import * as path from "path";
 import { openLibrary, type Library } from "./core/library";
 import { parseAgenda, serializeAgenda, createAgenda } from "./core/agendaSerde";
 import { importBibleXml } from "./core/bibleImport";
+import { filterSongs, type SearchScope } from "./core/search";
 import type { Agenda } from "./core/schemas";
 
 let controlWin: BrowserWindow | null = null;
@@ -196,16 +197,9 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle("vp:find-songs", (_e, query: string, field?: string) => {
-    const songs = library?.findSongs(query) ?? [];
-    if (!field || field === "all") return songs;
-    const q = query.toLowerCase();
-    return songs.filter((s) => {
-      if (field === "title") return s.title.toLowerCase().startsWith(q);
-      if (field === "author") return s.authors.some((a) => a.toLowerCase().includes(q));
-      if (field === "ccli") return (s.ccli ?? "").includes(query);
-      if (field === "id") return (s.songId ?? "").includes(query);
-      return true;
-    });
+    const all = library?.findSongs("") ?? [];
+    const scope = (field && field !== "all" ? field : "title-lyrics") as SearchScope;
+    return filterSongs(all, query, scope);
   });
   // Lyrics edits: the centre editor is the live source of truth while a song
   // is open; each edit upserts the song so the filmstrip, the projector and a

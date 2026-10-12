@@ -509,7 +509,14 @@ async function refreshAgenda(): Promise<void> {
     const svg = icon.querySelector("svg");
     if (svg) { svg.setAttribute("width", "18"); svg.setAttribute("height", "18"); }
     li.appendChild(icon);
-    li.appendChild(document.createTextNode(` ${it.title}`));
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "agenda-title-text";
+    titleSpan.style.flex = "1";
+    titleSpan.textContent = ` ${it.title}`;
+    li.appendChild(titleSpan);
+    const dot = document.createElement("span");
+    dot.className = "agenda-status-dot" + (it.id === liveItemId ? " live" : "");
+    li.appendChild(dot);
     li.title = `[${it.kind}] ${it.title} — double-click / Enter projects`;
     li.dataset["id"] = it.id;
     li.tabIndex = 0;
@@ -525,6 +532,19 @@ async function refreshAgenda(): Promise<void> {
     });
     list.appendChild(li);
   }
+  if (agenda.items.length === 0) {
+    const emptyDiv = document.createElement("div");
+    emptyDiv.className = "agenda-empty-state";
+    emptyDiv.innerHTML = `
+      <div style="padding:12px;text-align:center;color:var(--dim);font-size:12px;line-height:1.6">
+        <p style="font-weight:bold;color:var(--fg);margin-bottom:6px">The agenda is empty.</p>
+        <p>Open one or drag songs and Bible verses here to add them to the agenda.</p>
+        <p style="margin-top:6px;font-weight:600;color:var(--fg)">Drag documents from your desktop:</p>
+        <p style="font-size:11px;opacity:0.85">Slideshow images, standalone videos, Audio files, PDFs, PowerPoints, MS-Words, MS-Excels, Open Office documents, CCLI songs, web sites, YouTube, Vimeo</p>
+      </div>
+    `;
+    list.appendChild(emptyDiv);
+  }
   renderMediaList();
   // B-32: agenda reloads replace the gallery source list — repaint the grids.
   document.getElementById("media-galleries")?.dispatchEvent(new Event("vp:media-changed"));
@@ -538,6 +558,10 @@ function refreshAgendaListSelection(): void {
     // collapsing them loses the distinction that makes the list readable
     // mid-service (`main.rs:3360-3363`).
     li.classList.toggle("live", id === liveItemId);
+    const dot = li.querySelector(".agenda-status-dot");
+    if (dot) {
+      dot.classList.toggle("live", id === liveItemId);
+    }
   });
 }
 function selectedItem(): AgendaItem | undefined {
