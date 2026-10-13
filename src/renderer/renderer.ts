@@ -252,18 +252,20 @@ const OT_COUNT = 39;
 // stand-ins this replaces read as a clone (UX-RESEARCH 3.3 / 10.3).
 
 // ---------- ribbon tabs (app + format rows) ----------
-document.querySelectorAll("#ribbon-tabs button").forEach((b) =>
-  b.addEventListener("click", () => switchRibbon((b as HTMLElement).dataset["ribbon"] ?? "file"))
-);
+document.querySelectorAll("#ribbon-tabs button").forEach((b) => {
+  b.addEventListener("click", () => switchRibbon((b as HTMLElement).dataset["ribbon"] ?? "file"));
+  b.addEventListener("dblclick", () => toggleRibbonCollapsed());
+});
 function switchRibbon(name: string): void {
   document.querySelectorAll("#ribbon-tabs button").forEach((x) =>
     x.classList.toggle("active", (x as HTMLElement).dataset["ribbon"] === name));
   document.querySelectorAll(".ribbon-panel").forEach((x) =>
     x.classList.toggle("active", (x as HTMLElement).dataset["ribbonPanel"] === name));
 }
-document.querySelectorAll("#ribbon-format-tabs button").forEach((b) =>
-  b.addEventListener("click", () => switchFormat((b as HTMLElement).dataset["format"] ?? "text"))
-);
+document.querySelectorAll("#ribbon-format-tabs button").forEach((b) => {
+  b.addEventListener("click", () => switchFormat((b as HTMLElement).dataset["format"] ?? "text"));
+  b.addEventListener("dblclick", () => toggleRibbonCollapsed());
+});
 function switchFormat(name: string): void {
   document.querySelectorAll("#ribbon-format-tabs button").forEach((x) =>
     x.classList.toggle("active", (x as HTMLElement).dataset["format"] === name));
