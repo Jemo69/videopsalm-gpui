@@ -175,6 +175,7 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 #agenda-list { flex: 1; overflow-y: auto; margin: 0; border: 1px solid var(--border); border-radius: 6px; padding: 0.3em; min-height: 6em; }
 .agenda-tools { display: flex; flex-direction: column; gap: 0.3em; }
 .agenda-tools button { padding: 0.35em 0.5em; }
+.agenda-tools button:disabled { opacity: 0.4; cursor: not-allowed; }
 #library-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 0.6em; border-top: 1px solid var(--border); padding-top: 0.4em; }
 .lib-tabs { display: flex; gap: 0.2em; align-items: center; }
 .lib-tabs button { background: transparent; color: var(--fg); border: 1px solid var(--border); border-radius: 6px 6px 0 0; padding: 0.3em 0.8em; }

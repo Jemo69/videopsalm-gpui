@@ -612,6 +612,11 @@ async function refreshAgenda(): Promise<void> {
     `;
     list.appendChild(emptyDiv);
   }
+  const empty = agenda.items.length === 0;
+  for (const tid of ["agenda-tool-add", "agenda-tool-save", "agenda-tool-duplicate", "agenda-tool-delete", "agenda-tool-up", "agenda-tool-down"]) {
+    const btn = document.getElementById(tid) as HTMLButtonElement | null;
+    if (btn) btn.disabled = empty;
+  }
   renderMediaList();
   // B-32: agenda reloads replace the gallery source list — repaint the grids.
   document.getElementById("media-galleries")?.dispatchEvent(new Event("vp:media-changed"));
