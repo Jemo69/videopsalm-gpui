@@ -4,6 +4,7 @@
 type Agenda = import("../core/schemas").Agenda;
 type AgendaItem = import("../core/schemas").AgendaItem;
 type Song = import("../core/schemas").Song;
+import { formatTemplate, SlideTemplateContext } from "../core/template.js";
 
 function el<T extends HTMLElement>(id: string): T {
   const n = document.getElementById(id);
@@ -34,6 +35,8 @@ interface Prefs {
   libTab: string; testament: string;
   /** Bible search box mode, driven by the magnifier (GPUI `LayoutPrefs.bible_search`). */
   bibleSearch: "reference" | "keyword";
+  /** One-click sort mode: title (A-Z) or number (№) (B-19). */
+  songSort: "title" | "number";
 }
 function defaultPrefs(): Prefs {
   return {
@@ -51,6 +54,7 @@ function defaultPrefs(): Prefs {
     wordHighlight: false, highlightColor: "#ffd54a", transition: "none",
     libTab: "songbooks", testament: "OT",
     bibleSearch: "reference",
+    songSort: "title",
   };
 }
 function loadPrefs(): Prefs {
@@ -160,6 +164,14 @@ function loadExcludedBooks(): string[] {
     const raw = localStorage.getItem("vp:excluded-books");
     if (raw) return JSON.parse(raw) as string[];
   } catch { /* corrupted / blocked storage: start with none excluded */ }
+  return [];
+}
+let hiddenBooks: string[] = loadHiddenBooks();
+function loadHiddenBooks(): string[] {
+  try {
+    const raw = localStorage.getItem("vp:hidden-books");
+    if (raw) return JSON.parse(raw) as string[];
+  } catch { /* corrupted / blocked storage */ }
   return [];
 }
 // Bible search box mode: reference entry, or a keyword/phrase hunt. The
@@ -815,7 +827,7 @@ function backgroundStyle(): { css: string; video: string } {
   }
   return { css: `background-color:${escapeHtml(prefs.bgColor)};`, video: "" };
 }
-function worshipSlide(title: string, bodyText: string, ref: string, bilingual: boolean): string {
+function worshipSlide(title: string, bodyText: string, ref: string, bilingual: boolean, ctx?: SlideTemplateContext): string {
   const font = prefs.styleFont || "system-ui";
   const size = prefs.styleSize || "48";
   const color = prefs.styleColor || "#ffffff";
@@ -824,8 +836,13 @@ function worshipSlide(title: string, bodyText: string, ref: string, bilingual: b
   const slant = prefs.fmtItalic ? "italic" : "normal";
   const decor = prefs.fmtUnderline ? "underline" : "none";
   const bg = backgroundStyle();
-  const head = prefs.headerOn ? `<div class="vp-header" style="${frameBoxCss(getStyleRect(agenda.settings, "header"), "header")}">${escapeHtml(fillTemplate(prefs.headerTemplate || "{title}", title, ref))}</div>` : "";
-  const foot = prefs.footerOn ? `<div class="vp-footer" style="${frameBoxCss(getStyleRect(agenda.settings, "footer"), "footer")}">${escapeHtml(fillTemplate(prefs.footerTemplate || "{ref}", title, ref))}</div>` : "";
+  const tmplCtx: SlideTemplateContext = {
+    title,
+    reference: ref,
+    ...ctx,
+  };
+  const head = prefs.headerOn ? `<div class="vp-header" style="${frameBoxCss(getStyleRect(agenda.settings, "header"), "header")}">${escapeHtml(formatTemplate(prefs.headerTemplate || "{title}", tmplCtx))}</div>` : "";
+  const foot = prefs.footerOn ? `<div class="vp-footer" style="${frameBoxCss(getStyleRect(agenda.settings, "footer"), "footer")}">${escapeHtml(formatTemplate(prefs.footerTemplate || "{ref}", tmplCtx))}</div>` : "";
   const body = `<div class="vp-body${bilingual ? " bilingual" : ""}" style="${frameBoxCss(getStyleRect(agenda.settings, "body"), "body")}">${bodyInner(bodyText, bilingual) || "<p>(empty slide)</p>"}</div>`;
   const hl = prefs.wordHighlight ? " word-hl" : "";
   const trans = prefs.transition && prefs.transition !== "none" ? ` data-transition="${escapeHtml(prefs.transition)}"` : "";
@@ -863,8 +880,25 @@ function slideHtmlFor(kind: string, title: string, bodyText: string, ref?: Agend
     }
     case "Clock":
       return worshipSlide(title, `⏱ ${ref?.text ?? ""}`, refText, false);
-    default:
-      return worshipSlide(title, bodyText, refText, kind === "BibleVerses" && prefs.bilingual);
+    default: {
+      const isSong = kind === "Song";
+      const tmplCtx: SlideTemplateContext = {
+        title,
+        reference: refText,
+        verseRank: slideIndex != null ? slideIndex + 1 : undefined,
+        verseCount: filmSlides.length > 0 ? filmSlides.length : undefined,
+        verseTag: slideIndex != null ? filmLabels[slideIndex] : undefined,
+        author: isSong && currentSong?.authors ? currentSong.authors.join(", ") : undefined,
+        songbook: isSong ? currentSong?.songbookId : undefined,
+        songbookAbbrev: isSong ? currentSong?.songbookId : undefined,
+        ccli: isSong ? currentSong?.ccli : undefined,
+        bibleBook: kind === "BibleVerses" ? (ref as { book?: string } | undefined)?.book : undefined,
+        bibleChapter: kind === "BibleVerses" ? (ref as { chapter?: number } | undefined)?.chapter : undefined,
+        bibleVerse: kind === "BibleVerses" ? (Array.isArray((ref as { verses?: unknown[] } | undefined)?.verses) ? ((ref as { verses: unknown[] }).verses).join(",") : undefined) : undefined,
+        bibleName: kind === "BibleVerses" ? String(prefs.versification) : undefined,
+      };
+      return worshipSlide(title, bodyText, refText, kind === "BibleVerses" && prefs.bilingual, tmplCtx);
+    }
   }
 }
 
@@ -1380,6 +1414,11 @@ el<HTMLInputElement>("lib-bible-search").addEventListener("keydown", (e) => {
   }
 });
 el<HTMLSelectElement>("song-field").addEventListener("change", () => void runSongSearch());
+el<HTMLButtonElement>("song-sort-btn").addEventListener("click", () => {
+  prefs.songSort = prefs.songSort === "number" ? "title" : "number";
+  savePrefs();
+  void runSongSearch();
+});
 el<HTMLButtonElement>("songbook-new").addEventListener("click", () => {
   prefs.songGroup = "personal";
   setHint("Personal songbook selected — imported songs land here. Use “Import samples” to seed it.");
@@ -1390,12 +1429,31 @@ async function runSongSearch(): Promise<void> {
   const field = el<HTMLSelectElement>("song-field").value;
   const songs = (await bridge().findSongs(q, field)) as Song[];
   renderSongbookTree(songs);
+  const sortBtn = document.getElementById("song-sort-btn") as HTMLButtonElement | null;
+  if (sortBtn) {
+    sortBtn.textContent = prefs.songSort === "number" ? "№" : "A-Z";
+    sortBtn.classList.toggle("active", prefs.songSort === "number");
+  }
   // Excluded songbooks drop their songs out of the search entirely, and their
   // rows gray out in the tree — the original's per-songbook exclude behavior.
   const visible = songs
     .filter((s) => !excludedBooks.includes(s.songbookId ?? "personal"))
     .filter((s) => prefs.songGroup === "all"
       || (s.songbookId ?? "personal") === prefs.songGroup);
+
+  if (prefs.songSort === "number") {
+    visible.sort((a, b) => {
+      const na = parseInt(a.songId ?? "", 10);
+      const nb = parseInt(b.songId ?? "", 10);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      if (!isNaN(na)) return -1;
+      if (!isNaN(nb)) return 1;
+      return (a.songId ?? "").localeCompare(b.songId ?? "");
+    });
+  } else {
+    visible.sort((a, b) => a.title.localeCompare(b.title));
+  }
+
   const list = el<HTMLElement>("song-list");
   list.innerHTML = "";
   // Kept so `Ctrl+N` can add the Nth *result* without scraping the DOM, and so
@@ -1448,6 +1506,18 @@ async function runSongSearch(): Promise<void> {
 function renderSongbookTree(songs: Song[]): void {
   const tree = el<HTMLElement>("songbook-tree");
   tree.innerHTML = "";
+  if (hiddenBooks.length > 0) {
+    const showAll = document.createElement("button");
+    showAll.type = "button";
+    showAll.className = "tree-show-all";
+    showAll.textContent = `👁 Show all (${hiddenBooks.length} hidden)`;
+    showAll.addEventListener("click", () => {
+      hiddenBooks = [];
+      try { localStorage.setItem("vp:hidden-books", JSON.stringify(hiddenBooks)); } catch { /* blocked */ }
+      void runSongSearch();
+    });
+    tree.appendChild(showAll);
+  }
   const groups = new Map<string, number>();
   for (const s of songs) groups.set(s.songbookId ?? "personal", (groups.get(s.songbookId ?? "personal") ?? 0) + 1);
   const mk = (id: string, label: string, excluded: boolean): void => {
@@ -1478,12 +1548,28 @@ function renderSongbookTree(songs: Song[]): void {
         void runSongSearch();
       });
       li.appendChild(ex);
+
+      const hideBtn = document.createElement("button");
+      hideBtn.type = "button";
+      hideBtn.className = "book-hide";
+      hideBtn.textContent = "👁";
+      hideBtn.title = "Hide this songbook from tree";
+      hideBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (!hiddenBooks.includes(id)) {
+          hiddenBooks = [...hiddenBooks, id];
+          try { localStorage.setItem("vp:hidden-books", JSON.stringify(hiddenBooks)); } catch { /* blocked */ }
+          void runSongSearch();
+        }
+      });
+      li.appendChild(hideBtn);
     }
     tree.appendChild(li);
   };
   mk("all", `All songbooks (${songs.length})`, false);
   for (const [id, n] of [...groups.entries()].sort()) {
-    mk(id, `${id} (${n})`, excludedBooks.includes(id));
+    if (hiddenBooks.includes(id)) continue;
+    mk(id, `${id} (${n} chants)`, excludedBooks.includes(id));
   }
 }
 /** Which song the centre editor is showing. Re-running the filmstrip refresh
