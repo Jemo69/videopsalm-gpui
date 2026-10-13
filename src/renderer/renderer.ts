@@ -37,6 +37,10 @@ interface Prefs {
   bibleSearch: "reference" | "keyword";
   /** One-click sort mode: title (A-Z) or number (№) (B-19). */
   songSort: "title" | "number";
+  /** Aspect ratio preset simulation (B-12). */
+  aspectRatio: string;
+  /** Target monitor/display index (0 = primary, 1 = external/secondary) (B-12). */
+  projMonitor: number;
 }
 function defaultPrefs(): Prefs {
   return {
@@ -55,6 +59,8 @@ function defaultPrefs(): Prefs {
     libTab: "songbooks", testament: "OT",
     bibleSearch: "reference",
     songSort: "title",
+    aspectRatio: "current",
+    projMonitor: 0,
   };
 }
 function loadPrefs(): Prefs {
@@ -303,6 +309,8 @@ function applyPrefsToDom(): void {
   el<HTMLSelectElement>("bg-kind").value = prefs.bgKind;
   el<HTMLInputElement>("bg-color").value = prefs.bgColor;
   el<HTMLInputElement>("bg-file").value = prefs.bgFile;
+  el<HTMLSelectElement>("proj-monitor").value = String(prefs.projMonitor);
+  el<HTMLSelectElement>("aspect-ratio-select").value = prefs.aspectRatio;
   const dict = prefs.lang === "fr"
     ? { search: "Mots-clés ou numéro à chercher" }
     : { search: "Keywords or number to search" };
@@ -371,6 +379,18 @@ el<HTMLInputElement>("accent").addEventListener("input", (e) => {
 el<HTMLSelectElement>("lang").addEventListener("change", (e) => {
   prefs.lang = (e.target as HTMLSelectElement).value as "en" | "fr";
   savePrefs(); applyPrefsToDom(); populateBibleBooks(); void runSongSearch();
+});
+el<HTMLSelectElement>("proj-monitor").addEventListener("change", (e) => {
+  prefs.projMonitor = parseInt((e.target as HTMLSelectElement).value, 10) || 0;
+  savePrefs();
+  setHint(`Projector monitor set to Display ${prefs.projMonitor + 1}`);
+});
+el<HTMLSelectElement>("aspect-ratio-select").addEventListener("change", (e) => {
+  prefs.aspectRatio = (e.target as HTMLSelectElement).value;
+  savePrefs();
+  syncPresIndicators();
+  void refreshFilmstrip();
+  setHint(`Aspect ratio preview set to ${prefs.aspectRatio}`);
 });
 el<HTMLButtonElement>("toggle-left").addEventListener("click", () => {
   prefs.leftCollapsed = !prefs.leftCollapsed; savePrefs(); applyPrefsToDom();
@@ -2661,6 +2681,14 @@ function syncPresIndicators(): void {
       const c = document.createElement("span");
       c.className = "state-chip base";
       c.textContent = "● BASE SCREEN";
+      chips.appendChild(c);
+    }
+    if (prefs.aspectRatio && prefs.aspectRatio !== "current") {
+      const c = document.createElement("span");
+      c.className = "state-chip ratio";
+      c.style.background = "#3b82f6";
+      c.style.color = "#ffffff";
+      c.textContent = `⛶ ${prefs.aspectRatio}`;
       chips.appendChild(c);
     }
   }
