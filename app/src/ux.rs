@@ -647,10 +647,20 @@ pub struct LayoutPrefs {
     /// Bible search box mode: "reference" (default) or "keyword".
     #[serde(default = "d_bible_search")]
     pub bible_search: String,
+    /// Aspect ratio preset ("current", "4x3.2", "4x3", "16x10", "16x9", "16x8").
+    #[serde(default = "d_aspect_ratio")]
+    pub aspect_ratio: String,
+    /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
+    #[serde(default)]
+    pub projector_display: usize,
 }
 
 fn d_bible_search() -> String {
     "reference".into()
+}
+
+fn d_aspect_ratio() -> String {
+    "current".into()
 }
 
 impl Default for LayoutPrefs {
@@ -687,6 +697,8 @@ impl Default for LayoutPrefs {
             hidden_books: Vec::new(),
             sort_by_number: false,
             bible_search: d_bible_search(),
+            aspect_ratio: d_aspect_ratio(),
+            projector_display: 0,
         }
     }
 }
