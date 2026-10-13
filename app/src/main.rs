@@ -412,6 +412,8 @@ pub(crate) struct Root {
     pub(crate) bg_file: Option<PathBuf>,
     pub(crate) cut_scope: CutScope,
     pub(crate) projector_window: Option<WindowHandle<ProjectorWindow>>,
+    pub(crate) aspect_ratio: String,
+    pub(crate) projector_display: usize,
 
     // Scroll handles. GPUI 0.2.2 *does* provide ScrollHandle + overflow
     // scrolling (the README previously claimed it did not, which is why the
@@ -658,6 +660,8 @@ impl Root {
             bg_file: None,
             cut_scope: CutScope::default(),
             projector_window: None,
+            aspect_ratio: "current".to_string(),
+            projector_display: 0,
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
@@ -832,6 +836,8 @@ impl Root {
             },
             sort_by_number: self.sort_by_number,
             bible_search: self.bible_search.id().to_string(),
+            aspect_ratio: self.aspect_ratio.clone(),
+            projector_display: self.projector_display,
             bg_kind: match self.bg_kind {
                 BackgroundKind::Color => "color".to_string(),
                 BackgroundKind::Image => "image".to_string(),
@@ -897,6 +903,10 @@ impl Root {
             "keyword" => BibleSearch::Keyword,
             _ => BibleSearch::Reference,
         };
+        if !p.aspect_ratio.trim().is_empty() {
+            self.aspect_ratio = p.aspect_ratio.clone();
+        }
+        self.projector_display = p.projector_display;
     }
 
     /// True while the shield is armed: browsing songs must not repopulate the
@@ -4813,7 +4823,18 @@ impl Root {
                     .gap_2()
                     .text_size(px(13.))
                     .child(format!("{} ◈ {} {count}", self.t("preview"), self.style_level))
-                    .children(self.state_chips(ui)),
+                    .children(self.state_chips(ui))
+                    .when(self.aspect_ratio != "current", |d| {
+                        d.child(
+                            div()
+                                .px_1()
+                                .rounded_sm()
+                                .bg(rgb(0x3B82F6))
+                                .text_color(rgb(0xFFFFFF))
+                                .text_size(px(11.))
+                                .child(format!("⛶ {}", self.aspect_ratio)),
+                        )
+                    }),
             )
             // B-07: the preview is the layout editor — frame selector + drag
             // handles wrap the slide body (RIGHT column, below slides+strip).
@@ -5334,6 +5355,38 @@ impl Root {
                         this.toggle_projector_fullscreen(cx);
                     }),
                 ]),
+                // B-12: Single-click monitor switcher
+                row(vec![
+                    label(ui, "projector monitor:", 12.),
+                    btn(ui, cx, "Display 1 (Primary)", self.projector_display == 0, |this, _, _, cx| {
+                        this.projector_display = 0;
+                        this.persist_layout_quiet();
+                        this.set_status(cx, "Projector target set to Display 1 (Primary).");
+                    }),
+                    btn(ui, cx, "Display 2 (External)", self.projector_display == 1, |this, _, _, cx| {
+                        this.projector_display = 1;
+                        this.persist_layout_quiet();
+                        this.set_status(cx, "Projector target set to Display 2 (External).");
+                    }),
+                    btn(ui, cx, "Display 3", self.projector_display == 2, |this, _, _, cx| {
+                        this.projector_display = 2;
+                        this.persist_layout_quiet();
+                        this.set_status(cx, "Projector target set to Display 3.");
+                    }),
+                ]),
+                // B-12: Aspect-ratio simulation presets
+                row({
+                    let mut r = vec![label(ui, "aspect ratio:", 12.)];
+                    for ratio in ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"] {
+                        let active = self.aspect_ratio == ratio;
+                        r.push(btn(ui, cx, ratio, active, move |this, _, _, cx| {
+                            this.aspect_ratio = ratio.to_string();
+                            this.persist_layout_quiet();
+                            this.set_status(cx, format!("Preview aspect ratio set to {ratio}."));
+                        }));
+                    }
+                    r
+                }),
                 row(vec![
                     label(ui, "cut scope (controls 13/14):", 12.),
                     btn(ui, cx, "verse cut", self.cut_scope == CutScope::Verse, |this, _, _, cx| {
