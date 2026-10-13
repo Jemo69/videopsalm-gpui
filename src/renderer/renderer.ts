@@ -521,6 +521,39 @@ async function refreshAgenda(): Promise<void> {
     li.dataset["id"] = it.id;
     li.tabIndex = 0;
     if (it.id === selectedItemId) li.classList.add("selected");
+    // B-18: drag-and-drop reordering for agenda items
+    li.draggable = true;
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer?.setData("text/plain", it.id);
+      li.classList.add("dragging");
+    });
+    li.addEventListener("dragend", () => {
+      li.classList.remove("dragging");
+      document.querySelectorAll("#agenda-list li").forEach((el) => el.classList.remove("drag-over"));
+    });
+    li.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      li.classList.add("drag-over");
+    });
+    li.addEventListener("dragleave", () => {
+      li.classList.remove("drag-over");
+    });
+    li.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      li.classList.remove("drag-over");
+      const fromId = e.dataTransfer?.getData("text/plain");
+      if (!fromId || fromId === it.id) return;
+      const fromIdx = agenda.items.findIndex((x) => x.id === fromId);
+      const toIdx = agenda.items.findIndex((x) => x.id === it.id);
+      if (fromIdx >= 0 && toIdx >= 0) {
+        const [moved] = agenda.items.splice(fromIdx, 1);
+        agenda.items.splice(toIdx, 0, moved);
+        agendaDirty = true;
+        paintDirty();
+        await bridge().setAgenda(agenda);
+        void refreshAgenda();
+      }
+    });
     li.addEventListener("click", () => {
       selectedItemId = it.id;
       refreshAgendaListSelection();
@@ -859,7 +892,7 @@ async function pushPreview(title: string, html: string, next: string, footer: st
   }
   blackedOut = false;
   el<HTMLButtonElement>("tool-blackout").classList.remove("on");
-  await bridge().project({ title, html }, next);
+  await bridge().project({ title, html, wholeSong: filmSlides, activeIndex: activeFilm }, next);
   el<HTMLElement>("live-preview").innerHTML = html;
   // B-32: enforce the selected item's in/out cut range on preview media.
   wireRangeLoop(el<HTMLElement>("live-preview"), previewRange());

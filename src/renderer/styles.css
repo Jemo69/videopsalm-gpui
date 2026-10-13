@@ -70,6 +70,8 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 .hint { opacity: 0.7; font-size: 0.9em; font-weight: normal; }
 #agenda-list li.selected, #song-list li.selected, #media-list li.selected { outline: 2px solid var(--accent); }
 #agenda-list li { cursor: pointer; padding: 0.25em 0.4em; list-style: none; display: flex; align-items: center; gap: 6px; }
+#agenda-list li.dragging { opacity: 0.45; }
+#agenda-list li.drag-over { border-top: 2px solid var(--accent); background: rgba(42, 93, 176, 0.15); }
 #song-list li, #media-list li, #songbook-tree li { cursor: pointer; padding: 0.25em 0.4em; list-style: none; }
 .agenda-status-dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1px solid var(--border); margin-left: auto; flex-shrink: 0; }
 .agenda-status-dot.live, #agenda-list li.live .agenda-status-dot { background: #2a5db0; border-color: #2a5db0; box-shadow: 0 0 4px #2a5db0; }

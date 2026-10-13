@@ -17,7 +17,7 @@ let library: Library | null = null;
 
 let currentAgenda: Agenda = createAgenda("Untitled");
 let currentSlide: { title: string; html: string } = { title: "", html: "" };
-let stageState = { current: "", next: "", clock: "", alert: { visible: false, text: "" } };
+let stageState: { current: string; next: string; clock: string; alert: { visible: boolean; text: string }; wholeSong?: string[]; activeIndex?: number } = { current: "", next: "", clock: "", alert: { visible: false, text: "" } };
 let alertState = { visible: false, text: "" };
 
 function distFile(...parts: string[]): string {
@@ -216,11 +216,17 @@ function registerIpc(): void {
     createStageWindow();
     return true;
   });
-  ipcMain.handle("vp:project", (_e, slide: { title: string; html: string }, next?: string) => {
+  ipcMain.handle("vp:project", (_e, slide: { title: string; html: string; wholeSong?: string[]; activeIndex?: number }, next?: string) => {
     currentSlide = slide;
     createProjectorWindow();
     setTimeout(pushProjector, 150);
-    stageState = { ...stageState, current: slide.title, next: next ?? stageState.next };
+    stageState = {
+      ...stageState,
+      current: slide.title,
+      next: next ?? stageState.next,
+      wholeSong: slide.wholeSong,
+      activeIndex: slide.activeIndex,
+    };
     pushStage();
     controlWin?.webContents.send("vp:projected", slide);
     return true;
