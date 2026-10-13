@@ -3232,10 +3232,16 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                btn(ui, cx, title, active, move |this, _, _, cx| {
-                    this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
-                    this.persist_layout_quiet();
-                    cx.notify();
+                btn(ui, cx, title, active, move |this, ev, _, cx| {
+                    if ev.click_count >= 2 {
+                        // Double-click tab header toggles ribbon collapse (B-14).
+                        this.ribbon_collapsed = !this.ribbon_collapsed;
+                        cx.notify();
+                    } else {
+                        this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }
                 })
             })
             .collect();
