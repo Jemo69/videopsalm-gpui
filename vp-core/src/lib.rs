@@ -23,10 +23,12 @@ pub mod media;
 pub mod pptx;
 pub mod schema;
 pub mod slides;
+pub mod template;
 pub mod themes;
 pub mod verse_splitter;
 
 pub use library::SearchScope;
+pub use template::{format_template, SlideTemplateContext};
 pub use schema::{
     Agenda, AgendaItem, Background, BodyStyle, BibleRef, HeaderFooter, ItemKind, ItemRef, Rect, Song,
     Style, Versification, NORMALIZED_SPACE,

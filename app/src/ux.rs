@@ -638,6 +638,12 @@ pub struct LayoutPrefs {
     /// Songbook ids excluded from instant find.
     #[serde(default)]
     pub excluded_books: Vec<String>,
+    /// Songbook ids hidden completely from the tree.
+    #[serde(default)]
+    pub hidden_books: Vec<String>,
+    /// One-click sort by song number rather than title.
+    #[serde(default)]
+    pub sort_by_number: bool,
     /// Bible search box mode: "reference" (default) or "keyword".
     #[serde(default = "d_bible_search")]
     pub bible_search: String,
@@ -678,6 +684,8 @@ impl Default for LayoutPrefs {
             show_style_explorer: false,
             show_shortcuts: false,
             excluded_books: Vec::new(),
+            hidden_books: Vec::new(),
+            sort_by_number: false,
             bible_search: d_bible_search(),
         }
     }

@@ -67,7 +67,7 @@ use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
 };
-use vp_core::slides::{Slide, compute_item_slides};
+use vp_core::slides::{Slide, compute_item_slides_templated};
 use vp_core::themes::{self, Theme};
 use vp_core::verse_splitter::SplitOptions;
 
@@ -346,6 +346,10 @@ pub(crate) struct Root {
     /// Songbooks excluded from instant find: they gray out in the tree and
     /// their songs drop out of the result list while searching.
     excluded_books: HashSet<String>,
+    /// Songbooks hidden completely from the tree (B-19).
+    hidden_books: HashSet<String>,
+    /// One-click sort by song number rather than title (B-19).
+    sort_by_number: bool,
     /// Bible search box mode: reference entry or keyword/phrase hunt.
     bible_search: BibleSearch,
     /// Cached keyword-search hits (`book`, `chapter`, `verse`, text).
@@ -621,6 +625,8 @@ impl Root {
             testament: Testament::NT,
             sel_book: 43,
             excluded_books: HashSet::new(),
+            hidden_books: HashSet::new(),
+            sort_by_number: false,
             bible_search: BibleSearch::Reference,
             bible_hits: Vec::new(),
             bible_context: false,
@@ -819,6 +825,12 @@ impl Root {
                 v.sort();
                 v
             },
+            hidden_books: {
+                let mut v: Vec<String> = self.hidden_books.iter().cloned().collect();
+                v.sort();
+                v
+            },
+            sort_by_number: self.sort_by_number,
             bible_search: self.bible_search.id().to_string(),
             bg_kind: match self.bg_kind {
                 BackgroundKind::Color => "color".to_string(),
@@ -879,6 +891,8 @@ impl Root {
         self.show_style_explorer = p.show_style_explorer;
         self.show_shortcuts = p.show_shortcuts;
         self.excluded_books = p.excluded_books.iter().cloned().collect();
+        self.hidden_books = p.hidden_books.iter().cloned().collect();
+        self.sort_by_number = p.sort_by_number;
         self.bible_search = match p.bible_search.as_str() {
             "keyword" => BibleSearch::Keyword,
             _ => BibleSearch::Reference,
@@ -1047,13 +1061,29 @@ impl Root {
             }
         }
         let songs = self.projected_song_map(&projected);
-        compute_item_slides(
+        let header_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.header.template.as_str())
+            .filter(|t| !t.is_empty());
+        let footer_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.footer.template.as_str())
+            .filter(|t| !t.is_empty());
+        compute_item_slides_templated(
             &projected,
             &songs,
             &self.bibles,
             &self.opts(),
             true,
             self.whole_ref_header,
+            header_tpl,
+            footer_tpl,
         )
     }
 
@@ -1629,6 +1659,26 @@ impl Root {
                     .collect();
                 if query.trim().is_empty() {
                     self.results = (0..self.songs.len()).collect();
+                }
+                if self.sort_by_number {
+                    let songs = &self.songs;
+                    self.results.sort_by(|&a, &b| {
+                        let sa = &songs[a];
+                        let sb = &songs[b];
+                        let na = sa.song_id.parse::<u64>().ok();
+                        let nb = sb.song_id.parse::<u64>().ok();
+                        match (na, nb) {
+                            (Some(x), Some(y)) => x.cmp(&y),
+                            (Some(_), None) => std::cmp::Ordering::Less,
+                            (None, Some(_)) => std::cmp::Ordering::Greater,
+                            (None, None) => sa.song_id.cmp(&sb.song_id),
+                        }
+                    });
+                } else if query.trim().is_empty() {
+                    let songs = &self.songs;
+                    self.results.sort_by(|&a, &b| {
+                        songs[a].title.to_lowercase().cmp(&songs[b].title.to_lowercase())
+                    });
                 }
             }
             Err(e) => self.status = format!("find error: {e}"),
@@ -3855,47 +3905,59 @@ impl Root {
                 .excluded_books
                 .iter()
                 .all(|b| b == "book-main");
-        rows.push(
-            div()
-                .flex()
-                .flex_row()
-                .gap_1()
-                .items_center()
-                .px_1()
-                .text_size(px(12.))
-                .text_color(ui.accent)
-                .child("▤ songbooks")
-                .child(btn(ui, cx, "all", self.excluded_books.is_empty(), |this, _, _, cx| {
-                    this.excluded_books.clear();
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .items_center()
+            .px_1()
+            .text_size(px(12.))
+            .text_color(ui.accent)
+            .child("▤ songbooks")
+            .child(btn(ui, cx, "all", self.excluded_books.is_empty(), |this, _, _, cx| {
+                this.excluded_books.clear();
+                let q = this.search_field.read(cx).text();
+                this.refresh_search(&q, cx);
+                this.persist_layout_quiet();
+            }))
+            .child(btn(
+                ui,
+                cx,
+                if all_excluded { "⊘ none" } else { "⊘ off" },
+                !self.excluded_books.is_empty(),
+                |this, _, _, cx| {
+                    if this.excluded_books.len() == 1 && this.excluded_books.contains("book-main")
+                    {
+                        this.excluded_books.clear();
+                    } else {
+                        this.excluded_books.clear();
+                        this.excluded_books.insert("book-main".into());
+                    }
                     let q = this.search_field.read(cx).text();
                     this.refresh_search(&q, cx);
                     this.persist_layout_quiet();
-                }))
-                .child(btn(
-                    ui,
-                    cx,
-                    if all_excluded { "⊘ none" } else { "⊘ off" },
-                    !self.excluded_books.is_empty(),
-                    |this, _, _, cx| {
-                        if this.excluded_books.len() == 1 && this.excluded_books.contains("book-main")
-                        {
-                            this.excluded_books.clear();
-                        } else {
-                            this.excluded_books.clear();
-                            this.excluded_books.insert("book-main".into());
-                        }
-                        let q = this.search_field.read(cx).text();
-                        this.refresh_search(&q, cx);
-                        this.persist_layout_quiet();
-                    },
-                )),
-        );
+                },
+            ));
+        if !self.hidden_books.is_empty() {
+            header = header.child(btn(ui, cx, "👁 show all", false, |this, _, _, cx| {
+                this.hidden_books.clear();
+                this.persist_layout_quiet();
+                cx.notify();
+            }));
+        }
+        rows.push(header);
+
         for book in library::list_songbooks(&self.db).unwrap_or_default() {
+            if self.hidden_books.contains(&book.id) {
+                continue;
+            }
             let excluded = self.excluded_books.contains(&book.id);
             let scoped = self.songbook_filter.as_deref() == Some(book.id.as_str());
-            let name = format!("{} {}", book.abbrev, book.name);
+            let count = self.songs.iter().filter(|s| s.songbook_id == book.id).count();
+            let name = format!("{} {} ({} chants)", book.abbrev, book.name, count);
             let id_toggle = book.id.clone();
             let id_scope = book.id.clone();
+            let id_hide = book.id.clone();
             rows.push(
                 div()
                     .flex()
@@ -3920,6 +3982,11 @@ impl Root {
                         let q = this.search_field.read(cx).text();
                         this.refresh_search(&q, cx);
                         this.persist_layout_quiet();
+                    }))
+                    .child(btn(ui, cx, "👁", false, move |this, _, _, cx| {
+                        this.hidden_books.insert(id_hide.clone());
+                        this.persist_layout_quiet();
+                        cx.notify();
                     })),
             );
         }
@@ -3978,6 +4045,13 @@ impl Root {
                     }),
                     btn(ui, cx, &self.t("numbers"), self.show_number, |this, _, _, cx| {
                         this.show_number = !this.show_number;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, if self.sort_by_number { "№ Sort" } else { "A-Z Sort" }, self.sort_by_number, |this, _, _, cx| {
+                        this.sort_by_number = !this.sort_by_number;
+                        let q = this.search_field.read(cx).text();
+                        this.refresh_search(&q, cx);
                         this.persist_layout_quiet();
                         cx.notify();
                     }),

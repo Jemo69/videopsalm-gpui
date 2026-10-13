@@ -41,10 +41,43 @@ pub fn compute_item_slides(
     bilingual_suppress_empty: bool,
     whole_reference_header: bool,
 ) -> Vec<Slide> {
+    compute_item_slides_templated(
+        item,
+        songs,
+        bibles,
+        opts,
+        bilingual_suppress_empty,
+        whole_reference_header,
+        None,
+        None,
+    )
+}
+
+/// Compute the slides for an agenda item with optional header and footer template formatters (B-21).
+pub fn compute_item_slides_templated(
+    item: &AgendaItem,
+    songs: &HashMap<String, Song>,
+    bibles: &BibleLibrary,
+    opts: &SplitOptions,
+    bilingual_suppress_empty: bool,
+    whole_reference_header: bool,
+    header_template: Option<&str>,
+    footer_template: Option<&str>,
+) -> Vec<Slide> {
     match item.kind {
-        ItemKind::Song | ItemKind::SongPowerPoint => song_slides(item, songs, opts),
+        ItemKind::Song | ItemKind::SongPowerPoint => {
+            song_slides(item, songs, opts, header_template, footer_template)
+        }
         ItemKind::Bible | ItemKind::BibleVerses => {
-            bible_slides(item, bibles, opts, bilingual_suppress_empty, whole_reference_header)
+            bible_slides(
+                item,
+                bibles,
+                opts,
+                bilingual_suppress_empty,
+                whole_reference_header,
+                header_template,
+                footer_template,
+            )
         }
         ItemKind::Alert => vec![Slide::text("Alert", vec![alert_text(item)], String::new())],
         ItemKind::Clock => vec![Slide::text("Clock", vec![clock_text(item)], String::new())],
@@ -122,6 +155,8 @@ fn song_slides(
     item: &AgendaItem,
     songs: &HashMap<String, Song>,
     opts: &SplitOptions,
+    header_template: Option<&str>,
+    footer_template: Option<&str>,
 ) -> Vec<Slide> {
     let song_id = match &item.reference {
         ItemRef::Song { song_id } => song_id.clone(),
@@ -143,21 +178,48 @@ fn song_slides(
     } else {
         verses.sort_by_key(|v| v.order);
     }
-    let footer = song.authors.join(", ");
+    let default_footer = song.authors.join(", ");
+    let total_verses = verses.len();
     let mut slides = Vec::new();
-    for v in verses {
+    for (v_idx, v) in verses.iter().enumerate() {
         let plain: Vec<String> = v.lines.iter().map(|l| strip_chords(l)).collect();
-        for (i, chunk) in split_verse(&plain, opts).iter().enumerate() {
-            let header = if chunk.len() > 1 || i > 0 {
-                format!("{} — {} ({}/{})", song.title, v.id, i + 1, split_verse(&plain, opts).len())
+        let chunks = split_verse(&plain, opts);
+        let chunk_count = chunks.len();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let default_header = if chunk_count > 1 || i > 0 {
+                format!("{} — {} ({}/{})", song.title, v.id, i + 1, chunk_count)
             } else {
                 format!("{} — {}", song.title, v.id)
             };
-            slides.push(Slide::text(header, chunk.clone(), footer.clone()));
+
+            let mut ctx = crate::template::SlideTemplateContext::new()
+                .with_song(
+                    &song.title,
+                    Some(&default_footer),
+                    Some(&song.songbook_id),
+                    Some(&song.songbook_id),
+                )
+                .with_verse(v_idx + 1, total_verses, Some(&v.id));
+            if !song.ccli.is_empty() {
+                ctx.ccli = Some(&song.ccli);
+            }
+            if !song.copyright.is_empty() {
+                ctx.copyright = Some(&song.copyright);
+            }
+
+            let header = match header_template {
+                Some(tpl) if !tpl.is_empty() => crate::template::format_template(tpl, &ctx),
+                _ => default_header,
+            };
+            let footer = match footer_template {
+                Some(tpl) if !tpl.is_empty() => crate::template::format_template(tpl, &ctx),
+                _ => default_footer.clone(),
+            };
+            slides.push(Slide::text(header, chunk.clone(), footer));
         }
     }
     if slides.is_empty() {
-        slides.push(Slide::text(song.title.clone(), vec!["(no lyrics)".to_string()], footer));
+        slides.push(Slide::text(song.title.clone(), vec!["(no lyrics)".to_string()], default_footer));
     }
     slides
 }
@@ -170,6 +232,8 @@ fn bible_slides(
     opts: &SplitOptions,
     bilingual_suppress_empty: bool,
     whole_reference_header: bool,
+    header_template: Option<&str>,
+    footer_template: Option<&str>,
 ) -> Vec<Slide> {
     let bref = match &item.reference {
         ItemRef::Bible { bible_ref } => bible_ref.clone(),
@@ -196,12 +260,33 @@ fn bible_slides(
             footer = format!("{} + {}", primary.translation_id, second.translation_id);
         }
     }
-    let header = if whole_reference_header || item.title.is_empty() {
-        format_header(&bref)
+    let full_ref = format_header(&bref);
+    let verse_list = compact_verses(&bref.verses);
+    let default_header = if whole_reference_header || item.title.is_empty() {
+        full_ref.clone()
     } else {
         item.title.clone()
     };
-    let sub = format!("{} {}", footer, compact_verses(&bref.verses));
+    let default_sub = format!("{} {}", footer, verse_list);
+
+    let ctx = crate::template::SlideTemplateContext::new()
+        .with_bible(
+            &bref.book,
+            bref.chapter,
+            &verse_list,
+            Some(&primary.translation_id),
+            &full_ref,
+        );
+
+    let header = match header_template {
+        Some(tpl) if !tpl.is_empty() => crate::template::format_template(tpl, &ctx),
+        _ => default_header,
+    };
+    let sub = match footer_template {
+        Some(tpl) if !tpl.is_empty() => crate::template::format_template(tpl, &ctx),
+        _ => default_sub,
+    };
+
     split_verse(&lines, opts)
         .into_iter()
         .map(|chunk| Slide::text(header.clone(), chunk, sub.clone()))
@@ -354,4 +439,24 @@ mod tests {
         let slides = compute_item_slides(&item, &songs(), &bibles(), &opts(), true, true);
         assert!(slides[0].lines[0].contains("not found"));
     }
+
+    #[test]
+    fn compute_item_slides_templated_expands_tokens() {
+        let agenda = Agenda::from_json(include_str!("../../assets/samples/agenda/sample-agenda.json")).unwrap();
+        let item = &agenda.items[0]; // Holy, Holy, Holy
+        let slides = compute_item_slides_templated(
+            item,
+            &songs(),
+            &bibles(),
+            &opts(),
+            true,
+            true,
+            Some("{title} — {position 3/5}"),
+            Some("{songbook} | {author}"),
+        );
+        assert_eq!(slides[0].header, "Amazing Grace — 1/2");
+        assert_eq!(slides[1].header, "Amazing Grace — 2/2");
+        assert!(slides[0].footer.contains("John Newton"));
+    }
 }
+
