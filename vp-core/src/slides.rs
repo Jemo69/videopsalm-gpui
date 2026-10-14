@@ -239,10 +239,7 @@ fn bible_slides(
         ItemRef::Bible { bible_ref } => bible_ref.clone(),
         other => return ref_mismatch(item, other),
     };
-    let Some(primary) = bibles
-        .translations()
-        .get(&bref.translation_id)
-        .or_else(|| bibles.current())
+    let Some(primary) = bibles.best_translation_for(&bref.translation_id, &bref.book, bref.chapter)
     else {
         return vec![Slide::text(
             format_header(&bref),

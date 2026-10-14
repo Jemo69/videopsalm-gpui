@@ -77,10 +77,11 @@ use preview_resize::{DragGhost, FrameDrag, FrameId};
 use projector_window::{ProjectorSnapshot, ProjectorWindow};
 use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
-    BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, bible_hit_rows,
-    chapter_count, digit_slide_index, filmstrip_label, font_families, kind_badge,
-    presentation_end_blocked, presentation_start_index, route_pres_key, section_name, shortcut_help,
-    slide_verse_id, style_levels, tool_strip, transitions, verse_shortcut_target,
+    BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, apply_verse_grid_click,
+    bible_hit_rows, chapter_count, default_verse_count, digit_slide_index, filmstrip_label,
+    font_families, kind_badge, presentation_end_blocked, presentation_start_index, route_pres_key,
+    section_name, shortcut_help, slide_verse_id, style_levels, tool_strip, transitions,
+    verse_shortcut_target,
 };
 
 actions!(
@@ -392,6 +393,7 @@ pub(crate) struct Root {
     /// non-contiguous one in the tab row.
     song_misc: bool,
     sel_book: u8,
+    verse_anchor: Option<u32>,
     // CENTER pane: highlighted verse block + projection set
     // ((agenda item id, verse key) pairs excluded from projection).
     sel_block: Option<String>,
@@ -545,6 +547,22 @@ impl Root {
             }
         }
         bibles.add_favorite("SAMPLE-EN");
+        if boot_imports > 0 {
+            if !bibles.switch_to("KJV") && !bibles.switch_to("ASV") {
+                if let Some(id) = bibles
+                    .translations()
+                    .keys()
+                    .find(|k| *k != "SAMPLE-EN" && *k != "SAMPLE-FR")
+                    .cloned()
+                {
+                    bibles.switch_to(&id);
+                }
+            }
+        }
+        let default_tid = bibles
+            .current()
+            .map(|t| t.translation_id.clone())
+            .unwrap_or_else(|| "SAMPLE-EN".to_string());
 
         let agenda =
             Agenda::from_json(AGENDA_SAMPLE).unwrap_or_else(|_| Agenda::new("New agenda"));
@@ -598,7 +616,7 @@ impl Root {
             bibles,
             book_query: "John".into(),
             chapter: 3,
-            biref: parse_reference("John 3:16-18", "SAMPLE-EN", Versification::En).ok(),
+            biref: parse_reference("John 3:16-18", &default_tid, Versification::En).ok(),
             bilingual: true,
             alert_visible: false,
             clock_mode: ClockMode::Countdown,
@@ -626,6 +644,7 @@ impl Root {
             // Boot reference is John 3:16-18, hence New Testament / John.
             testament: Testament::NT,
             sel_book: 43,
+            verse_anchor: Some(16),
             excluded_books: HashSet::new(),
             hidden_books: HashSet::new(),
             sort_by_number: false,
@@ -1199,9 +1218,11 @@ impl Root {
             ItemRef::Bible { bible_ref } => {
                 let lines = self
                     .bibles
-                    .translations()
-                    .get(&bible_ref.translation_id)
-                    .or_else(|| self.bibles.current())
+                    .best_translation_for(
+                        &bible_ref.translation_id,
+                        &bible_ref.book,
+                        bible_ref.chapter,
+                    )
                     .map(|t| t.resolve(bible_ref))
                     .unwrap_or_default();
                 if lines.is_empty() {
@@ -1300,8 +1321,10 @@ impl Root {
         self.sel_block = Some(verse_no.to_string());
     }
 
-    /// Selecting an agenda item drives the CENTER slides panel: preload
-    /// the title edit field and clear the block highlight.
+    /// Selecting an agenda item drives the CENTER slides panel AND keeps the
+    /// centre editor in sync with the selected song/Bible item: preload
+    /// the title edit field, clear the block highlight, and load the song's
+    /// document when the item is a Song.
     ///
     /// While the shield is armed the panel refuses to follow the selection —
     /// that is the whole point of the shield: you browse for the next song
@@ -1322,11 +1345,42 @@ impl Root {
         }
         self.sel_item = Some(idx);
         self.sel_block = None;
-        if let Some(item) = self.agenda.items.get(idx) {
+        if let Some(item) = self.agenda.items.get(idx).cloned() {
             let title = item.title.clone();
             self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
+            match &item.reference {
+                ItemRef::Song { song_id } => {
+                    if let Some(si) = self.songs.iter().position(|s| &s.id == song_id) {
+                        if self.sel_song != Some(si) {
+                            self.sel_song = Some(si);
+                            let doc = lyrics_doc::document_from_verses(&self.songs[si].verses);
+                            self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
+                        }
+                    }
+                }
+                ItemRef::Bible { bible_ref } => {
+                    self.biref = Some(bible_ref.clone());
+                    self.book_query = bible_ref.book.clone();
+                    self.chapter = bible_ref.chapter;
+                    if let Some(b) = match_book(&bible_ref.book) {
+                        self.sel_book = b.number;
+                        self.testament = if b.number <= 39 {
+                            Testament::OT
+                        } else {
+                            Testament::NT
+                        };
+                    }
+                    let spec = compact_verses(&bible_ref.verses);
+                    self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
+                }
+                _ => {}
+            }
         }
-        cx.notify();
+        if punch_through {
+            self.goto_item_slide(cx, idx, 0);
+        } else {
+            cx.notify();
+        }
     }
 
     /// Duplicate the selected agenda item (LEFT agenda ▣ button).
@@ -1426,9 +1480,11 @@ impl Root {
                         Testament::NT
                     };
                 }
+                self.verse_anchor = r.verses.first().copied();
                 let spec = compact_verses(&r.verses);
                 self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
                 self.biref = Some(r);
+                self.sync_bible_to_slides_panel(cx);
                 self.status = "Ready.".into();
                 cx.notify();
             }
@@ -1453,13 +1509,97 @@ impl Root {
         };
         self.book_query = name;
         self.chapter = 1;
-        self.rebuild_biref_with_verses(cx, Some(""));
+        self.verse_anchor = Some(1);
+        self.rebuild_biref_with_verses(cx, Some("1"));
+        self.sync_bible_to_slides_panel(cx);
     }
 
     /// Pick a chapter from the number grid (keeps the verse selection).
     fn pick_chapter(&mut self, cx: &mut Context<Self>, chapter: u32) {
         self.chapter = chapter.max(1);
         self.rebuild_biref_with_verses(cx, None);
+        self.sync_bible_to_slides_panel(cx);
+    }
+
+    /// Pick a verse from the 3rd-column number grid (supports plain click,
+    /// `Shift+click` contiguous range, and `Ctrl+click` non-contiguous list).
+    fn pick_verse(&mut self, cx: &mut Context<Self>, verse: u32, shift: bool, ctrl: bool) {
+        let current: Vec<u32> = self
+            .biref
+            .as_ref()
+            .map(|r| r.verses.clone())
+            .unwrap_or_default();
+        let (next, anchor) =
+            apply_verse_grid_click(&current, self.verse_anchor, verse, shift, ctrl);
+        self.verse_anchor = Some(anchor);
+        let spec = compact_verses(&next);
+        self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
+        self.rebuild_biref_with_verses(cx, Some(&spec));
+        self.sync_bible_to_slides_panel(cx);
+    }
+
+    /// One-click translation switch (UX-RESEARCH §3.4 / §6.2): swaps the
+    /// active translation AND immediately re-renders the current selection
+    /// (both in the slides panel and on the live projector if a Bible item is live).
+    fn switch_bible_translation(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.bibles.switch_to(id) {
+            return;
+        }
+        self.rebuild_biref_with_verses(cx, None);
+        self.sync_bible_to_slides_panel(cx);
+        for item in self.agenda.items.iter_mut() {
+            if let ItemRef::Bible { bible_ref } = &mut item.reference {
+                bible_ref.translation_id = id.to_string();
+            }
+        }
+        self.set_status(cx, format!("Translation: {id}"));
+    }
+
+    /// Keep the slides panel showing the currently selected Bible passage
+    /// whenever the operator picks a book, chapter, verse, or reference in the
+    /// Bibles browser (unless the shield is armed).
+    fn sync_bible_to_slides_panel(&mut self, cx: &mut Context<Self>) {
+        if self.shield_blocks_browse() && self.live_item.is_some() {
+            return;
+        }
+        let Some(r) = self.biref.clone() else {
+            return;
+        };
+        let header = format_header(&r);
+        if self.left_tab == LeftTab::Bibles && self.bible_search == BibleSearch::Reference {
+            let sf = self.search_field.clone();
+            if sf.read(cx).text() != header {
+                sf.update(cx, |f, cx| f.set_text(&header, cx));
+            }
+        }
+        // If the currently selected agenda item is already a Bible item, update it
+        // in place so the slides panel immediately reflects the new selection.
+        if let Some(sel) = self.sel_item {
+            if let Some(item) = self.agenda.items.get_mut(sel) {
+                if matches!(item.kind, ItemKind::Bible | ItemKind::BibleVerses) {
+                    item.title = header.clone();
+                    item.reference = ItemRef::Bible { bible_ref: r };
+                    self.title_field.update(cx, |f, cx| f.set_text(&header, cx));
+                    return;
+                }
+            }
+        }
+        // Otherwise point `sel_item` at the first Bible item in the agenda and update it
+        // so the operator sees the verses in the slides panel immediately.
+        if let Some(idx) = self
+            .agenda
+            .items
+            .iter()
+            .position(|it| matches!(it.kind, ItemKind::Bible | ItemKind::BibleVerses))
+        {
+            if let Some(item) = self.agenda.items.get_mut(idx) {
+                item.title = header.clone();
+                item.reference = ItemRef::Bible { bible_ref: r };
+            }
+            self.sel_item = Some(idx);
+            self.sel_block = None;
+            self.title_field.update(cx, |f, cx| f.set_text(&header, cx));
+        }
     }
 
     /// Animation ribbon: store the transition in the agenda style (level
@@ -1697,10 +1837,35 @@ impl Root {
     }
 
     fn select_song(&mut self, cx: &mut Context<Self>, idx: usize) {
+        self.select_song_ex(cx, idx, false);
+    }
+
+    fn select_song_ex(&mut self, cx: &mut Context<Self>, idx: usize, punch_through: bool) {
+        if self.shield_blocks_browse() && self.live_item.is_some() && !punch_through {
+            self.set_status(
+                cx,
+                "Shield on — Ctrl+B to release, or double-click the song.",
+            );
+            return;
+        }
         self.sel_song = Some(idx);
-        if let Some(song) = self.songs.get(idx) {
+        if let Some(song) = self.songs.get(idx).cloned() {
             let doc = lyrics_doc::document_from_verses(&song.verses);
             self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
+            // Keep the slides panel in step with the selected library song so
+            // the editor and the slides panel never desync (Stage 04).
+            if let Some(ag_idx) = self.agenda.items.iter().position(|it| {
+                matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id)
+            }) {
+                self.sel_item = Some(ag_idx);
+                self.sel_block = None;
+                let title = self.agenda.items[ag_idx].title.clone();
+                self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
+                if punch_through {
+                    self.goto_item_slide(cx, ag_idx, 0);
+                    return;
+                }
+            }
         }
         cx.notify();
     }
@@ -4119,8 +4284,7 @@ impl Root {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
-                            this.bibles.switch_to(&id2);
-                            this.rebuild_biref_with_verses(cx, None);
+                            this.switch_bible_translation(&id2, cx);
                         }),
                     ),
             );
@@ -4140,8 +4304,7 @@ impl Root {
             let is_cur = id == current_id;
             let id2 = id.clone();
             fav_row.push(btn(ui, cx, &id, is_cur, move |this, _, _, cx| {
-                this.bibles.switch_to(&id2);
-                this.rebuild_biref_with_verses(cx, None);
+                this.switch_bible_translation(&id2, cx);
             }));
         }
         fav_row.push(btn(ui, cx, &self.t("fav_add"), false, |this, _, _, cx| {
@@ -4283,6 +4446,53 @@ impl Root {
                 }),
             ]),
         ];
+        // Verse number grid (B-10/B-29): clickable numbers, Shift/Ctrl multi-select.
+        {
+            let book_name = BOOKS
+                .iter()
+                .find(|b| b.number == self.sel_book)
+                .map(|b| b.name_en)
+                .unwrap_or("John");
+            let n_verses = self
+                .bibles
+                .chapter_verse_count(book_name, self.chapter)
+                .unwrap_or_else(|| default_verse_count(self.sel_book, self.chapter));
+            let selected: std::collections::HashSet<u32> = self
+                .biref
+                .as_ref()
+                .map(|r| r.verses.iter().copied().collect())
+                .unwrap_or_default();
+            let mut vgrid: Vec<Div> = Vec::new();
+            for v in 1..=n_verses {
+                let active = selected.contains(&v);
+                let label_text = format!("{v}");
+                vgrid.push(mini(ui, cx, &label_text, active, move |this, ev, _, cx| {
+                    this.pick_verse(cx, v, ev.modifiers.shift, ev.modifiers.control);
+                }));
+            }
+            if vgrid.is_empty() {
+                vgrid.push(label(ui, "(?)", 12.));
+            }
+            out.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .min_h(px(24.))
+                    .max_h(px(132.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_1()
+                            .min_h(px(24.))
+                            .id("scroll:verses")
+                            .overflow_y_scroll()
+                            .children(vgrid),
+                    ),
+            );
+        }
         // Keyword/phrase results, listed instantly as you type. Clicking one
         // adopts it as the current reference and returns to reference mode.
         // Every hit renders inside a bounded scroller (R-6): the old

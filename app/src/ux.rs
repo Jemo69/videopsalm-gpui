@@ -557,6 +557,61 @@ pub fn chapter_count(book_number: u8) -> u32 {
     CHAPTERS.get(book_number as usize - 1).copied().unwrap_or(0)
 }
 
+/// Fallback verse count for `(book_number, chapter)` when no installed
+/// translation carries that chapter (B-10/B-29/B-34 3rd-column verse grid).
+pub fn default_verse_count(book_number: u8, chapter: u32) -> u32 {
+    match (book_number, chapter) {
+        (1, 1) => 31,   // Genesis 1
+        (19, 23) => 6,  // Psalm 23
+        (19, 117) => 2, // Psalm 117
+        (19, 119) => 176, // Psalm 119
+        (40, 26) => 75, // Matthew 26
+        (43, 3) => 36,  // John 3
+        (45, 3) => 31,  // Romans 3
+        (46, 2) => 16,  // 1 Corinthians 2
+        (55, 3) => 17,  // 2 Timothy 3
+        (58, 11) => 40, // Hebrews 11
+        _ => 31,
+    }
+}
+
+/// Compute the updated verse selection after clicking `clicked` in the 3rd-column
+/// Bible verse number grid (`bibles-tab.png`, `OBSERVATIONS.md` §4):
+/// - Plain click selects `[clicked]` and sets anchor to `clicked`.
+/// - `Shift+click` selects contiguous range `anchor..=clicked` (or `clicked..=anchor`).
+/// - `Ctrl+click` toggles `clicked` in the selection (non-contiguous list like `1,9`).
+pub fn apply_verse_grid_click(
+    current: &[u32],
+    anchor: Option<u32>,
+    clicked: u32,
+    shift: bool,
+    ctrl: bool,
+) -> (Vec<u32>, u32) {
+    if shift {
+        let a = anchor.or_else(|| current.first().copied()).unwrap_or(clicked);
+        let lo = a.min(clicked);
+        let hi = a.max(clicked);
+        ((lo..=hi).collect(), a)
+    } else if ctrl {
+        let mut next: Vec<u32> = current.to_vec();
+        if let Some(pos) = next.iter().position(|&v| v == clicked) {
+            if next.len() > 1 {
+                next.remove(pos);
+            }
+        } else {
+            next.push(clicked);
+            next.sort_unstable();
+            next.dedup();
+        }
+        if next.is_empty() {
+            next.push(clicked);
+        }
+        (next, clicked)
+    } else {
+        (vec![clicked], clicked)
+    }
+}
+
 /// Verse id from a projector slide header. Song slides render as
 /// `"{title} — {verse}"` (optionally `"{title} — {verse} (i/n)"`); Bible
 /// and other headers carry no `—` marker and yield `None`.
@@ -1172,5 +1227,32 @@ mod tests {
         assert_eq!(p.align, "center");
         assert_eq!(p.transition, "none");
         assert!(!p.bold && !p.italic && !p.underline);
+    }
+
+    #[test]
+    fn verse_grid_click_shift_range_and_ctrl_non_contiguous() {
+        // Plain click selects single verse and sets anchor.
+        let (sel, anchor) = apply_verse_grid_click(&[16, 17, 18], None, 8, false, false);
+        assert_eq!(sel, vec![8]);
+        assert_eq!(anchor, 8);
+
+        // Shift+click selects contiguous range 8..=10 (bibles-tab.png Hebrews 11:8-10).
+        let (sel, anchor) = apply_verse_grid_click(&sel, Some(anchor), 10, true, false);
+        assert_eq!(sel, vec![8, 9, 10]);
+        assert_eq!(anchor, 8);
+
+        // Ctrl+click toggles non-contiguous verse (OBSERVATIONS §4 Hebrews 11:1,9).
+        let (sel, anchor) = apply_verse_grid_click(&[1], Some(1), 9, false, true);
+        assert_eq!(sel, vec![1, 9]);
+        assert_eq!(anchor, 9);
+
+        // Ctrl+click on an already-selected verse removes it when >1 verse is selected.
+        let (sel, _) = apply_verse_grid_click(&sel, Some(anchor), 1, false, true);
+        assert_eq!(sel, vec![9]);
+
+        // Canonical chapter verse counts for documented screenshot chapters.
+        assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
+        assert_eq!(default_verse_count(43, 3), 36);  // John 3
+        assert_eq!(default_verse_count(19, 23), 6);  // Psalm 23
     }
 }
