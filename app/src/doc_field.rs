@@ -15,14 +15,14 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-#[cfg(test)]
 use crate::lyrics_doc;
+
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, IntoElement,
-    KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, SharedString,
-    UTF16Selection, Window, actions, div, hsla, prelude::*, px, rgb, rgba,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, GlobalElementId,
+    IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    SharedString, UTF16Selection, Window, actions, div, hsla, prelude::*, px, rgb, rgba,
 };
 
 
@@ -103,6 +103,10 @@ impl DocField {
         }
     }
 
+    pub fn text(&self) -> String {
+        self.content.to_string()
+    }
+
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         // Unlike the single-line `TextField`, newlines are **kept**: this is a
         // document, and the blank lines are the slide boundaries.
@@ -139,7 +143,82 @@ impl DocField {
             .unwrap_or(self.content.len())
     }
 
+    fn cursor_offset(&self) -> usize {
+        if self.selection_reversed {
+            self.sel.start
+        } else {
+            self.sel.end
+        }
+    }
+
     /// Vertical move: same column, adjacent line.
+    fn vertical_offset(&self, offset: usize, delta_lines: isize) -> usize {
+        let start = self.line_start(offset);
+        let col_chars = self.content[start..offset].chars().count();
+        let line_idx = self.content[..start].matches('\n').count();
+        let target_line = if delta_lines < 0 {
+            line_idx.saturating_sub(delta_lines.unsigned_abs())
+        } else {
+            line_idx + (delta_lines as usize)
+        };
+        let target_start = line_start_of(self.content.as_str(), target_line);
+        let target_end = self.line_end(target_start);
+        let slice = &self.content[target_start..target_end];
+        let byte_col = slice
+            .char_indices()
+            .nth(col_chars)
+            .map(|(b, _)| b)
+            .unwrap_or(slice.len());
+        (target_start + byte_col).min(target_end)
+    }
+
+    fn doc_left(&mut self, _: &DocLeft, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.sel.is_empty() {
+            let prev = prev_boundary(&self.content, self.cursor_offset());
+            self.move_to(prev, false, cx);
+        } else {
+            self.move_to(self.sel.start, false, cx);
+        }
+    }
+
+    fn doc_right(&mut self, _: &DocRight, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.sel.is_empty() {
+            let next = next_boundary(&self.content, self.cursor_offset());
+            self.move_to(next, false, cx);
+        } else {
+            self.move_to(self.sel.end, false, cx);
+        }
+    }
+
+    fn doc_up(&mut self, _: &DocUp, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_offset(self.cursor_offset(), -1);
+        self.move_to(target, false, cx);
+    }
+
+    fn doc_down(&mut self, _: &DocDown, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_offset(self.cursor_offset(), 1);
+        self.move_to(target, false, cx);
+    }
+
+    fn select_left(&mut self, _: &DocSelectLeft, _window: &mut Window, cx: &mut Context<Self>) {
+        let prev = prev_boundary(&self.content, self.cursor_offset());
+        self.move_to(prev, true, cx);
+    }
+
+    fn select_right(&mut self, _: &DocSelectRight, _window: &mut Window, cx: &mut Context<Self>) {
+        let next = next_boundary(&self.content, self.cursor_offset());
+        self.move_to(next, true, cx);
+    }
+
+    fn select_up(&mut self, _: &DocSelectUp, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_offset(self.cursor_offset(), -1);
+        self.move_to(target, true, cx);
+    }
+
+    fn select_down(&mut self, _: &DocSelectDown, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_offset(self.cursor_offset(), 1);
+        self.move_to(target, true, cx);
+    }
 
     /// `Enter` — a **line break inside the verse**. Not a new slide.
     ///
@@ -148,16 +227,19 @@ impl DocField {
     /// intervening line empty, and that is what splits the verse.
     fn enter(&mut self, _: &DocEnter, _window: &mut Window, cx: &mut Context<Self>) {
         self.replace(self.sel.clone(), "\n");
+        self.emit(cx);
         cx.notify();
     }
 
     fn backspace(&mut self, _: &DocBackspace, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.sel.is_empty() {
             self.replace(self.sel.clone(), "");
+            self.emit(cx);
         } else if self.sel.start > 0 {
             // Delete one character, so a whole blank line is removed in one go.
             let prev = prev_boundary(&self.content, self.sel.start);
             self.replace(prev..self.sel.start, "");
+            self.emit(cx);
         }
         cx.notify();
     }
@@ -165,9 +247,11 @@ impl DocField {
     fn delete(&mut self, _: &DocDelete, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.sel.is_empty() {
             self.replace(self.sel.clone(), "");
+            self.emit(cx);
         } else if self.sel.end < self.content.len() {
             let next = next_boundary(&self.content, self.sel.end);
             self.replace(self.sel.end..next, "");
+            self.emit(cx);
         }
         cx.notify();
     }
@@ -180,12 +264,21 @@ impl DocField {
     }
 
     fn move_to(&mut self, offset: usize, extend: bool, cx: &mut Context<Self>) {
-        self.sel = if extend {
-            self.sel.start..offset
+        if extend {
+            let anchor = if self.selection_reversed {
+                self.sel.end
+            } else {
+                self.sel.start
+            };
+            if offset < anchor {
+                self.selection_reversed = true;
+                self.sel = offset..anchor;
+            } else {
+                self.selection_reversed = false;
+                self.sel = anchor..offset;
+            }
         } else {
-            offset..offset
-        };
-        if !extend {
+            self.sel = offset..offset;
             self.selection_reversed = false;
         }
         cx.notify();
@@ -241,9 +334,14 @@ impl DocField {
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Explicitly focus the document handle before stopping propagation:
+        // `track_focus` relies on event bubbling, so `cx.stop_propagation()`
+        // without `window.focus` prevented clicking from ever focusing the
+        // lyrics editor!
+        window.focus(&self.focus_handle);
         self.selection_reversed = event.modifiers.shift;
         if let Some(pos) = self.hit_test(event.position) {
             self.move_to(pos, event.modifiers.shift, cx);
@@ -411,9 +509,11 @@ impl EntityInputHandler for DocField {
 }
 
 impl Render for DocField {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.content.clone();
         let sel = self.sel.clone();
+        let cursor = self.cursor_offset();
+        let focused = self.focus_handle.is_focused(window);
         let empty = content.is_empty();
         let placeholder = self.placeholder.clone();
 
@@ -427,6 +527,14 @@ impl Render for DocField {
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::enter))
+            .on_action(cx.listener(Self::doc_left))
+            .on_action(cx.listener(Self::doc_right))
+            .on_action(cx.listener(Self::doc_up))
+            .on_action(cx.listener(Self::doc_down))
+            .on_action(cx.listener(Self::select_left))
+            .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
@@ -436,6 +544,9 @@ impl Render for DocField {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .p(px(8.))
+            .rounded_sm()
+            .border_2()
+            .border_color(if focused { rgb(0x2A5DB0) } else { rgb(0xCCCCCC) })
             .bg(rgb(0xFFFFFF))
             // Hardcoded dark ink: the document surface is white in every
             // theme, so inheriting the theme foreground would put near-white
@@ -450,21 +561,66 @@ impl Render for DocField {
             // would hide the structure from the operator.
             .children(
                 if empty {
-                    vec![div().text_color(hsla(0., 0., 0., 0.4)).child(placeholder.to_string())]
+                    vec![
+                        div()
+                            .text_color(hsla(0., 0., 0., 0.4))
+                            .child(if focused {
+                                format!("| {placeholder}")
+                            } else {
+                                placeholder.to_string()
+                            }),
+                    ]
                 } else {
                     content
                         .split('\n')
                         .enumerate()
                         .map(|(i, line)| {
-                            let selected = sel.start <= line_start_of(content.as_str(), i)
-                                && line_start_of(content.as_str(), i) + line.len() <= sel.end;
-                            let d = div().h(px(20.)).w_full().child(if line.is_empty() {
+                            let start = line_start_of(content.as_str(), i);
+                            let end = start + line.len();
+                            let selected = !sel.is_empty() && sel.start <= start && end <= sel.end;
+                            let cursor_on_line = focused && sel.is_empty() && cursor >= start && cursor <= end;
+                            // SCREENSHOT-1.29-LAYOUT.md: "The tag is rendered with a
+                            // coloured highlight box (`Verse 1` on a pink/red background).
+                            // That is how the editor distinguishes a verse tag from a lyric line."
+                            let is_tag = crate::lyrics_doc::is_tag_line(line);
+                            let display_line = if cursor_on_line {
+                                let local = (cursor - start).min(line.len());
+                                let safe = line
+                                    .char_indices()
+                                    .map(|(b, _)| b)
+                                    .find(|&b| b >= local)
+                                    .unwrap_or(line.len());
+                                format!("{}|{}", &line[..safe], &line[safe..])
+                            } else if line.is_empty() {
                                 " ".to_string()
                             } else {
                                 line.to_string()
-                            });
+                            };
+                            let d = if is_tag {
+                                div()
+                                    .h(px(22.))
+                                    .w_full()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .px_1()
+                                            .rounded_sm()
+                                            .bg(rgb(0xFCE7F3))
+                                            .border_1()
+                                            .border_color(rgb(0xF472B6))
+                                            .text_color(rgb(0x9D174D))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(display_line),
+                                    )
+                            } else {
+                                div().h(px(20.)).w_full().child(display_line)
+                            };
                             if selected {
                                 d.bg(rgba(0x3311ff30))
+                            } else if cursor_on_line {
+                                d.bg(rgba(0x2a5db014))
                             } else {
                                 d
                             }

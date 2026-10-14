@@ -203,6 +203,62 @@ impl BibleLibrary {
     pub fn remove_favorite(&mut self, id: &str) {
         self.favorites.retain(|f| f != id);
     }
+
+    /// Pick the translation to resolve `(book, chapter)`: prefers
+    /// `preferred_id`, then `current()`, then any installed translation that
+    /// actually carries non-empty verses for `(book, chapter)` (preferring
+    /// full Bibles like `KJV`/`ASV` when a 2-chapter sample lacks the book).
+    pub fn best_translation_for(
+        &self,
+        preferred_id: &str,
+        book: &str,
+        chapter: u32,
+    ) -> Option<&Translation> {
+        let has_chapter = |t: &Translation| {
+            t.chapter(book, chapter)
+                .map(|v| !v.is_empty() && v.iter().any(|s| !s.is_empty()))
+                .unwrap_or(false)
+        };
+        if let Some(t) = self.translations.get(preferred_id) {
+            if has_chapter(t) {
+                return Some(t);
+            }
+        }
+        if let Some(t) = self.current() {
+            if has_chapter(t) {
+                return Some(t);
+            }
+        }
+        for id in ["KJV", "ASV", "NIV"] {
+            if let Some(t) = self.translations.get(id) {
+                if has_chapter(t) {
+                    return Some(t);
+                }
+            }
+        }
+        let mut keys: Vec<&String> = self.translations.keys().collect();
+        keys.sort();
+        for k in keys {
+            if let Some(t) = self.translations.get(k) {
+                if has_chapter(t) {
+                    return Some(t);
+                }
+            }
+        }
+        self.translations
+            .get(preferred_id)
+            .or_else(|| self.current())
+    }
+
+    /// Number of verses in `(book, chapter)` across the current or fallback
+    /// installed translations (used by the 3rd-column verse number grid, B-10/B-29).
+    pub fn chapter_verse_count(&self, book: &str, chapter: u32) -> Option<u32> {
+        let cur = self.current_id.as_deref().unwrap_or("");
+        let t = self.best_translation_for(cur, book, chapter)?;
+        t.chapter(book, chapter)
+            .map(|v| v.len() as u32)
+            .filter(|&n| n > 0)
+    }
 }
 
 #[cfg(test)]
@@ -263,5 +319,29 @@ mod tests {
         assert_eq!(lib.favorites.len(), 1);
         lib.remove_favorite("SAMPLE-EN");
         assert!(lib.favorites.is_empty());
+    }
+
+    #[test]
+    fn best_translation_falls_back_when_sample_lacks_book() {
+        let mut lib = BibleLibrary::default();
+        lib.install(Translation::from_json(SAMPLE).unwrap());
+        let kjv = Translation::from_json(
+            r#"{
+                "translationId": "KJV", "language": "en",
+                "books": [
+                    {"name": "Genesis", "chapters": [["In the beginning", "And the earth"]]}
+                ]
+            }"#,
+        )
+        .unwrap();
+        lib.install(kjv);
+        // John 3 is in SAMPLE-EN, so SAMPLE-EN wins when preferred.
+        let t_john = lib.best_translation_for("SAMPLE-EN", "John", 3).unwrap();
+        assert_eq!(t_john.translation_id, "SAMPLE-EN");
+        assert_eq!(lib.chapter_verse_count("John", 3), Some(3));
+        // Genesis 1 is NOT in SAMPLE-EN, so it falls back to KJV instead of returning placeholders.
+        let t_gen = lib.best_translation_for("SAMPLE-EN", "Genesis", 1).unwrap();
+        assert_eq!(t_gen.translation_id, "KJV");
+        assert_eq!(lib.chapter_verse_count("Genesis", 1), Some(2));
     }
 }
