@@ -451,6 +451,7 @@ pub(crate) struct Root {
     _lyrics_doc_subs: Vec<Subscription>,
     pptx_field: gpui::Entity<TextField>,
     bible_xml_field: gpui::Entity<TextField>,
+    native_path_field: gpui::Entity<TextField>,
     clock_field: gpui::Entity<TextField>,
     pub(crate) search_scope: SearchScope,
     pub(crate) show_scope_grid: bool,
@@ -469,6 +470,27 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Merge native songs into the in-memory library by id: unknown ids are
+/// appended, known ids are replaced in place (the fresh scan carries the
+/// current write-back locator). Returns `(added, replaced)`.
+fn merge_native_songs(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize, usize) {
+    let mut added = 0;
+    let mut replaced = 0;
+    for song in incoming {
+        match songs.iter().position(|s| s.id == song.id) {
+            Some(i) => {
+                songs[i] = song;
+                replaced += 1;
+            }
+            None => {
+                songs.push(song);
+                added += 1;
+            }
+        }
+    }
+    (added, replaced)
 }
 
 impl Root {
@@ -590,6 +612,8 @@ impl Root {
         });
         let pptx_field = cx.new(|cx| TextField::new("slides.pptx path...", cx));
         let bible_xml_field = cx.new(|cx| TextField::new("bible.xml path...", cx));
+        let native_path_field =
+            cx.new(|cx| TextField::new("VideoPsalm folder or .vpagd path...", cx));
         let clock_field = cx.new(|cx| TextField::new("300", cx));
         // B-07: the invisible preview-drag ghost (a resize shows no chip).
         let drag_ghost = cx.new(|_| DragGhost);
@@ -702,6 +726,7 @@ impl Root {
             _lyrics_doc_subs: Vec::new(),
             pptx_field: pptx_field.clone(),
             bible_xml_field: bible_xml_field.clone(),
+            native_path_field: native_path_field.clone(),
             clock_field: clock_field.clone(),
             search_scope: SearchScope::default(),
             show_scope_grid: false,
@@ -1926,7 +1951,27 @@ impl Root {
             Ok(()) => {
                 self.song_dirty = false;
                 let n = lyrics_doc::slide_count(&doc);
-                self.set_status(cx, format!("Saved {} — {} slide(s).", song.title, n));
+                // Native write-through: a song imported from a real
+                // `SongBooks/*.json` or `.vpc` file saves back into that
+                // file, preserving unknown fields (the Electron port's
+                // E-005 contract; lyrics always apply, metadata fills gaps).
+                let native = match mutable.source.as_ref() {
+                    Some(s) if s.format == "videopsalm" && !s.file.is_empty() => {
+                        let file = s.file.clone();
+                        match vp_core::native_folder::save_song_to_file(&file, mutable, &[]) {
+                            Ok(_) => format!(" + songbook"),
+                            Err(e) => {
+                                self.set_status(
+                                    cx,
+                                    format!("Saved {} to library; songbook write-back failed: {e}", song.title),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    _ => String::new(),
+                };
+                self.set_status(cx, format!("Saved {} — {} slide(s){native}.", song.title, n));
             }
             Err(e) => self.set_status(cx, format!("Could not save: {e}")),
         }
@@ -2565,6 +2610,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
             || self.media_range_field.read(cx).focus_handle(cx).is_focused(window)
             || self.pptx_field.read(cx).focus_handle(cx).is_focused(window)
             || self.bible_xml_field.read(cx).focus_handle(cx).is_focused(window)
+            || self.native_path_field.read(cx).focus_handle(cx).is_focused(window)
             || self.clock_field.read(cx).focus_handle(cx).is_focused(window)
         {
             return true;
@@ -2862,6 +2908,142 @@ fn apply_lyrics_document(&mut self, document: &str) {
                 self.set_status(cx, format!("Imported {id}: {books} books"));
             }
             Err(e) => self.set_status(cx, format!("Import failed: {e}")),
+        }
+    }
+
+    /// Open a native VideoPsalm document folder (`Documents/VideoPsalm`):
+    /// songbooks (plain `.json` and encrypted `.vpc`), media galleries,
+    /// and style backgrounds are discovered; songs merge into the library
+    /// by id so a second scan never duplicates. The path field sits next
+    /// to the button; empty means `$HOME/Documents/VideoPsalm`.
+    fn open_native_folder(&mut self, cx: &mut Context<Self>) {
+        let typed = self.native_path_field.read(cx).text();
+        let folder = if typed.trim().is_empty() {
+            match std::env::var("HOME") {
+                Ok(home) if !home.is_empty() => format!("{home}/Documents/VideoPsalm"),
+                _ => {
+                    self.set_status(cx, "Enter the VideoPsalm folder path.");
+                    return;
+                }
+            }
+        } else {
+            typed.trim().to_string()
+        };
+        let scan = vp_core::native_folder::scan_folder(&folder);
+        let (added, kept) = merge_native_songs(&mut self.songs, scan.songs);
+        let mut failed = 0;
+        for s in &self.songs {
+            if vp_core::library::upsert_song(&self.db, s).is_err() {
+                failed += 1;
+            }
+        }
+        self.song_dirty = false;
+        let mut msg = format!(
+            "VideoPsalm folder: {} song(s) ({} new), {} book(s), {} image(s), {} video(s).",
+            added + kept,
+            added,
+            scan.songbooks.len(),
+            scan.images.len(),
+            scan.videos.len()
+        );
+        if failed > 0 {
+            msg.push_str(&format!(" {failed} library write(s) failed."));
+        }
+        for w in scan.errors.iter().take(3) {
+            msg.push_str(&format!(" [{w}]"));
+        }
+        self.set_status(cx, msg);
+        cx.notify();
+    }
+
+    /// Import a native VideoPsalm service plan (`.vpagd`, a ZIP of per-item
+    /// projections). Plan songs join the library only when it lacks them;
+    /// plan media is extracted next to the plan file.
+    fn import_native_plan(&mut self, cx: &mut Context<Self>) {
+        let path = self.native_path_field.read(cx).text();
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            self.set_status(cx, "Enter the .vpagd plan path to import.");
+            return;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.set_status(cx, format!("Cannot read file: {e}"));
+                return;
+            }
+        };
+        let stem = std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "plan".to_string());
+        let parent = std::path::Path::new(&path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let media_dir = parent.join(format!("{stem}-media"));
+        match vp_core::native_agenda::read_plan_bytes(&bytes, &stem, &media_dir) {
+            Ok(imported) => {
+                let (added, _) = merge_native_songs(&mut self.songs, imported.songs);
+                for s in &self.songs {
+                    let _ = vp_core::library::upsert_song(&self.db, s);
+                }
+                let n = imported.items.len();
+                self.agenda = Agenda {
+                    version: 1,
+                    title: imported.title.clone(),
+                    items: imported.items,
+                    settings: Default::default(),
+                };
+                self.agenda_dirty = true;
+                self.sel_item = None;
+                self.live_item = None;
+                let _ = vp_core::library::push_recent(&self.db, &path, now_secs());
+                let mut msg = format!(
+                    "Imported {n} item(s) from {} ({added} song(s) new).",
+                    imported.title
+                );
+                for w in imported.warnings.iter().take(3) {
+                    msg.push_str(&format!(" [{w}]"));
+                }
+                self.set_status(cx, msg);
+                cx.notify();
+            }
+            Err(e) => self.set_status(cx, format!("Import failed: {e}")),
+        }
+    }
+
+    /// Export the agenda back to the native `.vpagd` shape, so the plan
+    /// opens in VideoPsalm itself (`Agenda.LoadFromFile`). Songs resolve
+    /// against the library; verse texts resolve against installed Bibles.
+    fn export_native_plan(&mut self, cx: &mut Context<Self>) {
+        let path = self.native_path_field.read(cx).text();
+        let path = if path.trim().is_empty() || !path.trim().to_lowercase().ends_with(".vpagd") {
+            let safe: String = self
+                .agenda
+                .title
+                .chars()
+                .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
+                .collect();
+            let file = if safe.trim().is_empty() { "agenda.vpagd".to_string() } else { format!("{}.vpagd", safe.trim()) };
+            file
+        } else {
+            path.trim().to_string()
+        };
+        let songs = self.song_map();
+        match vp_core::native_agenda::write_plan_file(&path, &self.agenda, &songs, &self.bibles) {
+            Ok(built) => {
+                let _ = vp_core::library::push_recent(&self.db, &path, now_secs());
+                let mut msg = format!(
+                    "Exported {} item(s) to {path}.",
+                    self.agenda.items.len()
+                );
+                for w in built.warnings.iter().take(3) {
+                    msg.push_str(&format!(" [{w}]"));
+                }
+                self.set_status(cx, msg);
+            }
+            Err(e) => self.set_status(cx, format!("Export failed: {e}")),
         }
     }
 
@@ -3952,6 +4134,20 @@ impl Root {
                         this.open_agenda(cx);
                     }),
                     controls,
+                ]),
+                // Native VideoPsalm interop (E-005..E-008): folder scan and
+                // `.vpagd` plan import/export through the typed path field.
+                row(vec![
+                    div().flex_1().child(self.native_path_field.clone()),
+                    btn(ui, cx, "Open folder", false, |this, _, _, cx| {
+                        this.open_native_folder(cx);
+                    }),
+                    btn(ui, cx, "Open plan", false, |this, _, _, cx| {
+                        this.import_native_plan(cx);
+                    }),
+                    btn(ui, cx, "Save plan", false, |this, _, _, cx| {
+                        this.export_native_plan(cx);
+                    }),
                 ]),
                 label(ui, &format!("Recent: {recents}"), 12.),
             ],
@@ -5993,6 +6189,36 @@ mod tests {
         // branches render regardless, so a live projection is untouched.
         assert!(viewer_chrome_visible(false));
         assert!(!viewer_chrome_visible(true));
+    }
+
+    #[test]
+    fn native_song_merge_dedupes_by_id() {
+        let old = Song {
+            id: "videopsalm:b:s".into(),
+            title: "Old".into(),
+            ..Default::default()
+        };
+        let new = Song {
+            id: "videopsalm:b:s".into(),
+            title: "New".into(),
+            ..Default::default()
+        };
+        let fresh = Song {
+            id: "videopsalm:b:t".into(),
+            title: "Fresh".into(),
+            ..Default::default()
+        };
+        let mut songs = vec![old];
+        // A rescan replaces in place (fresh write-back locator wins) and
+        // appends only unknown ids — a second scan never duplicates.
+        let (added, replaced) = merge_native_songs(&mut songs, vec![new, fresh]);
+        assert_eq!((added, replaced), (1, 1));
+        assert_eq!(songs.len(), 2);
+        assert_eq!(songs[0].title, "New");
+        let again = songs.clone();
+        let (added, replaced) = merge_native_songs(&mut songs, again);
+        assert_eq!((added, replaced), (0, 2));
+        assert_eq!(songs.len(), 2);
     }
 
     #[test]
