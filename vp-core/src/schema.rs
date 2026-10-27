@@ -77,6 +77,15 @@ pub struct SongVerse {
     pub lines: Vec<String>,
     #[serde(default)]
     pub order: i32,
+    /// Native VideoPsalm invariant tag (`V`, `C`, `P`, `B`, …). Absent on
+    /// local songs; preserved so an Electron-exported native song keeps its
+    /// verse identity when Rust reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Native VideoPsalm verse number (`V1` → `1`). `None`/0 is the bare
+    /// `V`/`C` label.
+    #[serde(default, rename = "tagId", skip_serializing_if = "Option::is_none")]
+    pub tag_id: Option<i32>,
 }
 
 /// Chord notation system.
@@ -143,6 +152,23 @@ pub struct SongChords {
     pub chordpro: Option<String>,
 }
 
+/// Where a song came from. Only the native VideoPsalm format uses this today;
+/// `file` lets the writer locate the operator's actual songbook.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SongSource {
+    pub format: String,
+    pub file: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub songbook_guid: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub songbook_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub song_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub guid: String,
+}
+
 /// A song in a songbook.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,6 +198,16 @@ pub struct Song {
     /// object, so a song with no chords round-trips byte-identically.
     #[serde(default)]
     pub chords: SongChords,
+    /// Native VideoPsalm `Sequence` alternatives (`V1 C V2 C, C V1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<String>,
+    /// Selected native `Sequence` entry; VideoPsalm's default is -1/absent
+    /// (document order), so `None` is distinct from a selected `Some(0)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse_order_index: Option<i32>,
+    /// Native write-through origin, when this song came from a real songbook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SongSource>,
     // Searchable metadata. Each of these is a named scope in the original's
     // twelve-field "Find words in:" panel, so both ports must carry them.
     // The searchable-metadata fields are omitted from JSON when empty,
@@ -1185,6 +1221,16 @@ mod tests {
         assert_eq!(songs[0].references, vec!["Isaiah 53:5"]);
         assert_eq!(songs[0].memo1, "slow");
         assert_eq!(songs[0].memo3, "");
+        // Native fields shared with Electron: verse identity, sequence order,
+        // and the write-through origin.
+        assert_eq!(songs[0].verses[0].tag.as_deref(), Some("V"));
+        assert_eq!(songs[0].verses[0].tag_id, Some(1));
+        assert_eq!(songs[0].sequence.as_deref(), Some("V1 C V2 C"));
+        assert_eq!(songs[0].verse_order_index, Some(0));
+        let source = songs[0].source.as_ref().expect("native source");
+        assert_eq!(source.format, "videopsalm");
+        assert_eq!(source.songbook_guid, "book-guid");
+        assert_eq!(source.guid, "song-guid");
         let back = serde_json::to_value(&songs).unwrap();
         assert_eq!(back, f["songs"]);
     }

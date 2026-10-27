@@ -20,6 +20,7 @@ pub mod geometry;
 pub mod i18n;
 pub mod library;
 pub mod media;
+pub mod native_songbook;
 pub mod pptx;
 pub mod schema;
 pub mod slides;

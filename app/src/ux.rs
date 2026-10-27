@@ -215,7 +215,10 @@ pub enum PresKey {
     /// widget, so F5 always restarts; play/pause stays one click away on the
     /// Message-tab transport button, which the help row says.
     StartPres,
-    /// Save the agenda (Ctrl+S).
+    /// Save the document being edited (Ctrl+S).
+    ///
+    /// The agenda, or the song when the lyrics document has focus — see
+    /// [`save_target`].
     Save,
     /// Focus the song instant-find box (Alt+S).
     FocusSongs,
@@ -318,6 +321,69 @@ pub fn section_name(letter: char) -> Option<&'static str> {
         .iter()
         .find(|(c, _)| *c == letter.to_ascii_uppercase())
         .map(|(_, n)| *n)
+}
+
+/// What `Ctrl+S` saves.
+///
+/// The original's Save is **per-document**: in the songs tab it saves the
+/// song, in the agenda it saves the agenda. The two share an icon there — a
+/// documented confusion hazard ("the agenda save and the songs/styles save
+/// share an icon", OBSERVATIONS-lyrics-editor.md §Save) — so this port keeps
+/// them as two separate actions.
+///
+/// `Alt+S` is Songbooks in both contexts and never Save: the 1.27 beta
+/// restored it after Save hijacked it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SaveTarget {
+    /// The agenda document.
+    Agenda,
+    /// The song document — the lyrics editor.
+    SongDocument,
+}
+
+/// Which document `Ctrl+S` saves, given what currently has focus.
+///
+/// `song_document_focused` is true while the lyrics document holds focus.
+pub fn save_target(song_document_focused: bool) -> SaveTarget {
+    if song_document_focused {
+        SaveTarget::SongDocument
+    } else {
+        SaveTarget::Agenda
+    }
+}
+
+/// True for the keys that are **ordinary text entry** in a field: the slide
+/// vocabulary.
+///
+/// While the lyrics document has focus these are suppressed, so that typing
+/// a `1` or a `V` in a lyric line does not jump a slide, and `Enter` stays a
+/// line break inside the verse rather than "next slide"
+/// (OBSERVATIONS-lyrics-editor.md: *"`Enter` is a line break within the verse.
+/// It does NOT create a slide."*).
+///
+/// The `Ctrl`/`Alt` chords are deliberately **not** in this set: they are
+/// app-level accelerators in the original and stay live while a field has
+/// focus.
+pub fn is_slide_vocabulary_key(key: PresKey) -> bool {
+    matches!(
+        key,
+        PresKey::Next
+            | PresKey::Prev
+            | PresKey::Digit(_)
+            | PresKey::Section(_)
+            | PresKey::ToggleBase
+            | PresKey::EndPres
+            | PresKey::SongStart
+            | PresKey::SongEnd
+            | PresKey::PeekNext
+            | PresKey::PeekPrev
+            | PresKey::PeekItemNext
+            | PresKey::PeekItemPrev
+            | PresKey::StartPres
+            | PresKey::FocusSlides
+            | PresKey::PptxNext
+            | PresKey::Help
+    )
 }
 
 /// Route a raw keystroke name (the form GPUI's `KeyBinding::new` takes)
@@ -424,7 +490,8 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("F5", "start presentation from the beginning (play/pause: Message-tab transport)"),
         ("X", "next PowerPoint slide"),
         ("F6", "focus the slide panel"),
-        ("Ctrl+S", "save the agenda"),
+        // Save is per-document: the song in the editor, otherwise the agenda.
+        ("Ctrl+S", "save (the song in the editor, otherwise the agenda)"),
         ("Alt+S / Alt+B", "jump to Songbooks / Bibles"),
         // 1.10: "add one of those songs by pressing Ctrl+song position" —
         // never view switches, which the original does not bind.
@@ -1101,6 +1168,65 @@ mod tests {
         assert_eq!(route_pres_key("ctrl-/"), Some(PresKey::RangeShrinkEnd));
         assert_eq!(route_pres_key("shift-*"), Some(PresKey::RangeExtendStart));
         assert_eq!(route_pres_key("shift-/"), Some(PresKey::RangeShrinkStart));
+    }
+
+    #[test]
+    fn ctrl_s_saves_the_document_being_edited() {
+        // Save is per-document (OBSERVATIONS-lyrics-editor.md §Save): the song
+        // in the songs tab, the agenda in the agenda. The original gives the
+        // two the same icon — a documented confusion hazard — so this port
+        // keeps them apart.
+        assert_eq!(save_target(false), SaveTarget::Agenda);
+        assert_eq!(save_target(true), SaveTarget::SongDocument);
+        // `Alt+S` is Songbooks in both contexts and never Save.
+        assert_eq!(route_pres_key("alt-s"), Some(PresKey::FocusSongs));
+    }
+
+    #[test]
+    fn the_slide_vocabulary_is_suppressed_inside_the_lyrics_document() {
+        // Typing a lyric line must never move the show: `1` is a slide jump,
+        // `V` a section jump, `X` a PowerPoint step, and Enter/space/arrows
+        // step the slides. The document owns those keys.
+        for key in [
+            PresKey::Next,
+            PresKey::Prev,
+            PresKey::Digit(1),
+            PresKey::Section('V'),
+            PresKey::ToggleBase,
+            PresKey::EndPres,
+            PresKey::SongStart,
+            PresKey::SongEnd,
+            PresKey::PeekNext,
+            PresKey::PeekPrev,
+            PresKey::PeekItemNext,
+            PresKey::PeekItemPrev,
+            PresKey::StartPres,
+            PresKey::FocusSlides,
+            PresKey::PptxNext,
+            PresKey::Help,
+        ] {
+            assert!(is_slide_vocabulary_key(key), "{key:?} must be suppressed");
+        }
+        // The Ctrl/Alt chords stay live: they are app-level accelerators in
+        // the original, and the Electron port keeps them live while a field
+        // has focus.
+        for key in [
+            PresKey::Save,
+            PresKey::ToggleProjector,
+            PresKey::ToggleText,
+            PresKey::ToggleShield,
+            PresKey::ToggleMode,
+            PresKey::ToggleFreeze,
+            PresKey::ToggleRibbon,
+            PresKey::KeyTips,
+            PresKey::FocusSongs,
+            PresKey::FocusBibles,
+            PresKey::AddResult(1),
+            PresKey::RangeExtendEnd,
+            PresKey::RangeShrinkEnd,
+        ] {
+            assert!(!is_slide_vocabulary_key(key), "{key:?} must stay live");
+        }
     }
 
     #[test]

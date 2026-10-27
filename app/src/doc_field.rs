@@ -15,8 +15,6 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::lyrics_doc;
-
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
@@ -103,6 +101,7 @@ impl DocField {
         }
     }
 
+    #[allow(dead_code)]
     pub fn text(&self) -> String {
         self.content.to_string()
     }
@@ -735,6 +734,9 @@ fn line_start_of(s: &str, n: usize) -> usize {
     start
 }
 
+/// The app asks the document whether it has focus, so that `Ctrl+S` can save
+/// the song rather than the agenda while the operator is editing lyrics, and
+/// so the single-key slide jumps stay out of the way of typing.
 impl Focusable for DocField {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -749,6 +751,7 @@ impl Focusable for DocField {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lyrics_doc;
 
     /// `line_start`/`line_end` are the primitives cursor movement is built on,
     /// so they are tested against a document rather than through a window.
