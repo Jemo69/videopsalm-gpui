@@ -911,11 +911,7 @@ mod tests {
     /// committed; this port must read it.
     #[test]
     fn reads_typescript_written_plan() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../electron-app/tests/fixtures/sunday.vpagd"
-        );
-        let bytes = std::fs::read(path).expect("fixture must exist; generate it with the Electron suite");
+        let bytes = crate::cross_port_fixture("sunday.vpagd");
         let dir = std::env::temp_dir().join(format!("vp-plan-{}-3", std::process::id()));
         let imported = read_plan_bytes(&bytes, "Sunday.vpagd", &dir).unwrap();
         assert!(imported.items.len() >= 4, "items: {:?}", imported.items.iter().map(|i| &i.kind).collect::<Vec<_>>());

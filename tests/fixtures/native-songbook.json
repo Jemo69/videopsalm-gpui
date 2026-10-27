@@ -1,0 +1,68 @@
+{
+  "comment": "A real VideoPsalm songbook in the native pseudo-JSON dialect, plus the shared Song fields both ports must derive from it. Read by electron-app/tests/videopsalm.test.ts and gpui-app/vp-core/src/native_songbook.rs.",
+  "file": "/tmp/SongBooks/SB1.json",
+  "native": "{Abbreviation:\"SB1\",Copyright:\"Public domain\",Songs:[{ID:3,Composer:\"Unknown\",Author:\"Martin Luther\",Capo:-1,Copyright:\"Public\nDomain\",Theme:\"tema1\ntema2\",CCLI:\"12345\",Alias:\"A safe stronghold\",Memo1:\"This is\nthe first comment\n\",Memo2:\"This is\nthe second comment\n\",Memo3:\"This is\nthe third comment\n\",Reference:\"reference\",CustomField:\"kept\",Guid:\"jtCkrJdPIUOmECjaQylg/g\",Verses:[{\nText:\"As safe a stronghold our God is still,\nA trusty shield and weapon;\nHe’ll help us clear from all the ill\nThat hath us now o’ertaken.\"},{ID:2,\nText:\"With \\\"force\\\" of arms we nothing can,\nFull soon were we down-ridden;\nBut for us fights \\\\ the proper Man.\"}],AudioFile:\"282.mp3\",IsAudioFileEnabled:1,\nText:\"A Safe Stronghold Our God is Still\",Sequence:\"V1 V2\",VerseOrderIndex:0}],Guid:\"khiHU2blX0Kb41dGdbDLhA\",VersionDate:\"20121012000000\",\nText:\"SongBook1\"}",
+  "expected": {
+    "songbook": {
+      "name": "SongBook1",
+      "abbrev": "SB1",
+      "guid": "khiHU2blX0Kb41dGdbDLhA",
+      "songCount": 1
+    },
+    "song": {
+      "id": "videopsalm:khiHU2blX0Kb41dGdbDLhA:jtCkrJdPIUOmECjaQylg/g",
+      "title": "A Safe Stronghold Our God is Still",
+      "authors": [
+        "Martin Luther"
+      ],
+      "composer": "Unknown",
+      "ccli": "12345",
+      "copyright": "Public Domain",
+      "themes": [
+        "tema1",
+        "tema2"
+      ],
+      "references": [
+        "reference"
+      ],
+      "memo1": "This is\nthe first comment\n",
+      "songId": "3",
+      "songbookId": "SB1",
+      "sequence": "V1 V2",
+      "verseOrderIndex": 0,
+      "verses": [
+        {
+          "id": "1",
+          "order": 1,
+          "tag": "V",
+          "tagId": 1,
+          "lines": [
+            "As safe a stronghold our God is still,",
+            "A trusty shield and weapon;",
+            "He’ll help us clear from all the ill",
+            "That hath us now o’ertaken."
+          ]
+        },
+        {
+          "id": "2",
+          "order": 2,
+          "tag": "V",
+          "tagId": 2,
+          "lines": [
+            "With \"force\" of arms we nothing can,",
+            "Full soon were we down-ridden;",
+            "But for us fights \\ the proper Man."
+          ]
+        }
+      ],
+      "source": {
+        "format": "videopsalm",
+        "file": "/tmp/SongBooks/SB1.json",
+        "songbookGuid": "khiHU2blX0Kb41dGdbDLhA",
+        "songbookName": "SB1",
+        "songId": "3",
+        "guid": "jtCkrJdPIUOmECjaQylg/g"
+      }
+    }
+  }
+}

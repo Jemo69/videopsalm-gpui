@@ -969,7 +969,7 @@ mod tests {
     /// must produce the same songbook metadata and the same shared `Song`
     /// fields in both implementations.
     const NATIVE_FIXTURE: &str =
-        include_str!("../../../electron-app/tests/fixtures/native-songbook.json");
+        include_str!("../../tests/fixtures/native-songbook.json");
 
     #[test]
     fn derives_the_same_shared_song_fields_as_the_other_port() {

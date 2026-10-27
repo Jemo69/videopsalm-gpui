@@ -938,7 +938,7 @@ mod tests {
     /// parses the same file and asserts the same things, which is what turns
     /// AGENTS.md rule 3 from a convention into a checked invariant.
     const FIXTURE: &str =
-        include_str!("../../../electron-app/tests/fixtures/cross-port-schema.json");
+        include_str!("../../tests/fixtures/cross-port-schema.json");
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(FIXTURE).expect("cross-port fixture must be valid JSON")
