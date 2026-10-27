@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Song</title>
+  <!-- Original badge: one sung note (head plus stem plus flag) on a plate.
+       Songs are sung from verses, so the badge is a single note. -->
+  <rect x="3" y="3" width="18" height="18" rx="4.5" fill="#1F2937" stroke="#9AA3B2" stroke-width="1.2"/>
+  <circle cx="9.2" cy="16.4" r="3" fill="#7DD3FC"/>
+  <rect x="11.4" y="5.2" width="2" height="11.6" rx="1" fill="#7DD3FC"/>
+  <path d="M13.4 5.2c2.4 0 3.8 1.2 4.4 3-1-.9-2.3-1.3-4.4-1.3z" fill="#7DD3FC"/>
+</svg>

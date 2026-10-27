@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>CCLI song</title>
+  <!-- Original badge: a ring with a centred dot. Licensed, counted, one song. -->
+  <rect x="3" y="3" width="18" height="18" rx="4.5" fill="#1F2937" stroke="#9AA3B2" stroke-width="1.2"/>
+  <circle cx="12" cy="12" r="5.8" stroke="#C084FC" stroke-width="2"/>
+  <circle cx="12" cy="12" r="1.7" fill="#C084FC"/>
+</svg>

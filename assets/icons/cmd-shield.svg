@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Shield</title>
+  <!-- Original mark: a shield plate with two rules behind bars. Deliberately
+       NOT a cross on a shield — a cross reads as "Bible", which is an agenda
+       kind, not a live state. -->
+  <path d="M12 2.9 19 5.3v6.2c0 4.2-2.9 7.9-7 9.7-4.1-1.8-7-5.5-7-9.7V5.3z" fill="#5E35B1" fill-opacity="0.16" stroke="#5E35B1" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M8.4 11.1h7.2" stroke="#5E35B1" stroke-width="2.1" stroke-linecap="round"/>
+  <path d="M8.4 14.5h4.6" stroke="#5E35B1" stroke-width="2.1" stroke-linecap="round" opacity="0.5"/>
+</svg>

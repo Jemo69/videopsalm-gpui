@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Alert</title>
+  <!-- Original badge: a warning triangle with a bar and a dot. -->
+  <rect x="3" y="3" width="18" height="18" rx="4.5" fill="#1F2937" stroke="#9AA3B2" stroke-width="1.2"/>
+  <path d="M12 5.8 18.2 17.4H5.8z" stroke="#FBBF24" stroke-width="1.7" stroke-linejoin="round"/>
+  <rect x="11.1" y="9.4" width="1.8" height="3.8" rx="0.9" fill="#FBBF24"/>
+  <circle cx="12" cy="15.2" r="1.1" fill="#FBBF24"/>
+</svg>

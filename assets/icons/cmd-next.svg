@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Next slide</title>
+  <!-- Original mark: a double chevron pointing down. The upper chevron is
+       drawn lighter so the pair reads as depth, not as two identical strokes. -->
+  <path d="M6.4 9.2 12 14.8 17.6 9.2" stroke="#1E88E5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M6.4 4.4 12 10 17.6 4.4" stroke="#1E88E5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+</svg>

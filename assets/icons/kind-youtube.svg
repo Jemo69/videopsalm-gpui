@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Online video</title>
+  <!-- Original badge: a play wedge cut out of a red rounded bar. -->
+  <rect x="3" y="3" width="18" height="18" rx="4.5" fill="#1F2937" stroke="#9AA3B2" stroke-width="1.2"/>
+  <rect x="5" y="7.2" width="14" height="10" rx="2.6" fill="#F87171"/>
+  <path d="M10.6 9.8v4.9l4.4-2.45z" fill="#1F2937"/>
+</svg>

@@ -38,6 +38,7 @@ mod lyrics_doc;
 mod media_gallery;
 mod preview_resize;
 mod projector_window;
+mod smoke;
 mod style_explorer;
 mod text_field;
 mod ux;
@@ -472,25 +473,10 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// Merge native songs into the in-memory library by id: unknown ids are
-/// appended, known ids are replaced in place (the fresh scan carries the
-/// current write-back locator). Returns `(added, replaced)`.
+/// Merge native songs into the in-memory library by id (same by-id rule as
+/// the headless smoke pass — one implementation, in `smoke`).
 fn merge_native_songs(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize, usize) {
-    let mut added = 0;
-    let mut replaced = 0;
-    for song in incoming {
-        match songs.iter().position(|s| s.id == song.id) {
-            Some(i) => {
-                songs[i] = song;
-                replaced += 1;
-            }
-            None => {
-                songs.push(song);
-                added += 1;
-            }
-        }
-    }
-    (added, replaced)
+    smoke::merge_into_library(songs, incoming)
 }
 
 impl Root {
@@ -6141,6 +6127,20 @@ impl Root {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Headless smoke mode for automated checks (mirrors Electron's
+    // `window.vpTest`): no window opens, the summary goes to stdout.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--smoke") {
+        let folder = args.get(i + 1).cloned().unwrap_or_default();
+        match smoke::run_smoke(&folder) {
+            Ok(summary) => println!("{summary}"),
+            Err(e) => {
+                eprintln!("smoke FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // Lane G: serve the drawn icon set to `img()` as embedded assets, so the
     // strip SVGs render offline from the binary (no fetch, no asset dir).
     Application::new().with_assets(icons::VpIconAssets).run(|cx: &mut App| {

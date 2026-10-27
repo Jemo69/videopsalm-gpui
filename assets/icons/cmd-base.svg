@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Base screen</title>
+  <!-- Original mark: the blank/base screen as a solid disc inside a soft rim.
+       A plain dot was indistinguishable from the agenda status dot, so the
+       rim carries the "this is a screen state" reading. -->
+  <circle cx="12" cy="12" r="8.4" stroke="#1E88E5" stroke-width="1.5" opacity="0.45"/>
+  <circle cx="12" cy="12" r="5.1" fill="#1E88E5"/>
+</svg>
