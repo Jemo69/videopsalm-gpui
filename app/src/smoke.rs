@@ -182,7 +182,7 @@ pub fn merge_into_library(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize,
 mod tests {
     use super::*;
 
-    fn choir_book(dir: &Path) -> PathBuf {
+    fn choir_book(dir: &Path) -> std::path::PathBuf {
         std::fs::create_dir_all(dir.join("SongBooks")).unwrap();
         let file = dir.join("SongBooks").join("Choir.json");
         std::fs::write(
