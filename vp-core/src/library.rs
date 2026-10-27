@@ -565,6 +565,7 @@ mod tests {
                 id: "V1".into(),
                 lines: vec![lyrics.into()],
                 order: 1,
+                ..Default::default()
             }],
             authors: vec![author.into()],
             composer: "Composer X".into(),
@@ -584,6 +585,7 @@ mod tests {
             memo3: String::new(),
             created_at: String::new(),
             updated_at: String::new(),
+            ..Default::default()
         }
     }
 

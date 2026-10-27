@@ -77,11 +77,11 @@ use preview_resize::{DragGhost, FrameDrag, FrameId};
 use projector_window::{ProjectorSnapshot, ProjectorWindow};
 use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
-    BibleSearch, LayoutPrefs, PresKey, RibbonTab, TOOL_STRIP_PENCIL_INDEX, apply_verse_grid_click,
-    bible_hit_rows, chapter_count, default_verse_count, digit_slide_index, filmstrip_label,
-    font_families, kind_badge, presentation_end_blocked, presentation_start_index, route_pres_key,
-    section_name, shortcut_help, slide_verse_id, style_levels, tool_strip, transitions,
-    verse_shortcut_target,
+    BibleSearch, LayoutPrefs, PresKey, RibbonTab, SaveTarget, TOOL_STRIP_PENCIL_INDEX,
+    apply_verse_grid_click, bible_hit_rows, chapter_count, default_verse_count, digit_slide_index,
+    filmstrip_label, font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
+    presentation_start_index, route_pres_key, save_target, section_name, shortcut_help,
+    slide_verse_id, style_levels, tool_strip, transitions, verse_shortcut_target,
 };
 
 actions!(
@@ -2572,6 +2572,14 @@ fn apply_lyrics_document(&mut self, document: &str) {
         false
     }
 
+    /// True while the lyrics document — the song being edited — has focus.
+    ///
+    /// This is what decides what `Ctrl+S` saves: the song document here, the
+    /// agenda everywhere else (OBSERVATIONS-lyrics-editor.md §Save).
+    fn song_document_focused(&self, window: &Window, cx: &App) -> bool {
+        self.lyrics_doc.read(cx).focus_handle(cx).is_focused(window)
+    }
+
     fn focus_root(&self, window: &mut Window) {
         self.focus.focus(window);
     }
@@ -2869,6 +2877,28 @@ fn apply_lyrics_document(&mut self, document: &str) {
         let Some(key) = route_pres_key(keystroke) else {
             return;
         };
+        // Save is per-document: with the lyrics document open, `Ctrl+S` saves
+        // the song; everywhere else it saves the agenda. This is checked
+        // *before* the typing gate, because the gate would otherwise swallow
+        // the key while the operator is editing lyrics.
+        if key == PresKey::Save {
+            match save_target(self.song_document_focused(window, cx)) {
+                SaveTarget::SongDocument => {
+                    self.save_song_document(cx);
+                    return;
+                }
+                SaveTarget::Agenda => {}
+            }
+        }
+        // The lyrics document: the slide vocabulary is suppressed, so typing a
+        // `1` or a `V` in a lyric line never jumps a slide — and `Enter`
+        // stays a line break inside the verse, never "next slide"
+        // (OBSERVATIONS-lyrics-editor.md). The `Ctrl`/`Alt` chords stay live:
+        // they are app-level accelerators in the original, and the Electron
+        // port keeps them live while a field has focus.
+        if self.song_document_focused(window, cx) && is_slide_vocabulary_key(key) {
+            return;
+        }
         // While a text field has focus only the non-character shortcuts work,
         // so on-the-fly lyric edits are never interrupted.
         let typing = self.editing(window, cx);
@@ -3438,7 +3468,7 @@ impl Root {
             // (B-32): click-to-assign at the Images/Videos style level with
             // the Luminosité steppers beside each grid.
             .when(self.ribbon == RibbonTab::Background, |d| {
-                d.child(media_gallery::background_tab(ui, cx))
+                d.child(media_gallery::background_tab(self, ui, cx))
             })
             // The style explorer opens from the Styles-group launcher above
             // (§5.3), over whichever tab is active — it is not a tab itself.

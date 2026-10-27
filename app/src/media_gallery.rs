@@ -154,16 +154,13 @@ pub fn gallery_folder(state: &GalleryState, kind: MediaFileKind) -> String {
 /// The vendor docks galleries as an expandable flyout off the Background tab
 /// (RESEARCH §9); v1 renders them inline in the tab body with the same rows,
 /// collapsed to a one-line summary by Close and restored by clicking it.
-pub(crate) fn background_tab(ui: &UI, cx: &mut Context<Root>) -> Div {
-    let collapsed = cx.entity().read(cx).galleries.collapsed;
+pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
+    let collapsed = root.galleries.collapsed;
     if collapsed {
-        let (ni, nv) = {
-            let r = cx.entity().read(cx);
-            (
-                r.galleries.library.images().count(),
-                r.galleries.library.videos().count(),
-            )
-        };
+        let (ni, nv) = (
+            root.galleries.library.images().count(),
+            root.galleries.library.videos().count(),
+        );
         return section(
             ui,
             "Background — galleries",
@@ -188,9 +185,9 @@ pub(crate) fn background_tab(ui: &UI, cx: &mut Context<Root>) -> Div {
                 "Backgrounds are a style-level property: pick a thumbnail to assign it. Search filters file names as you type.",
                 12.,
             )]),
-            gallery_panel(ui, cx, MediaFileKind::Image),
-            gallery_panel(ui, cx, MediaFileKind::Video),
-            import_row(ui, cx),
+            gallery_panel(root, ui, cx, MediaFileKind::Image),
+            gallery_panel(root, ui, cx, MediaFileKind::Video),
+            import_row(root, ui, cx),
             row(vec![btn(
                 ui,
                 cx,
@@ -206,7 +203,7 @@ pub(crate) fn background_tab(ui: &UI, cx: &mut Context<Root>) -> Div {
 }
 
 /// One gallery: caption grid + the documented control stack (RESEARCH §3).
-fn gallery_panel(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
+fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     let title = match kind {
         MediaFileKind::Image => "Images (background = cover, never stretched)",
         MediaFileKind::Video => "Videos (background loops under lyrics)",
@@ -214,34 +211,30 @@ fn gallery_panel(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     let mut kids: Vec<Div> = Vec::new();
 
     // Search row (§2.1 row 5).
-    let (filter_text, count) = {
-        let r = cx.entity().read(cx);
-        match kind {
-            MediaFileKind::Image => (r.galleries.image_filter.clone(), r.galleries.filtered_images().len()),
-            MediaFileKind::Video => (r.galleries.video_filter.clone(), r.galleries.filtered_videos().len()),
-        }
+    let (filter_text, count) = match kind {
+        MediaFileKind::Image => (root.galleries.image_filter.clone(), root.galleries.filtered_images().len()),
+        MediaFileKind::Video => (root.galleries.video_filter.clone(), root.galleries.filtered_videos().len()),
     };
     kids.push(row(vec![
         label(ui, "Search:", 12.),
-        div_field(ui, cx, &filter_text, kind),
+        div_field(root, ui, cx, &filter_text, kind),
     ]));
 
     // Thumbnail grid. The video gallery leads with the black sentinel (§7).
     let mut thumbs: Vec<Div> = Vec::new();
     if kind == MediaFileKind::Video {
-        let assigned = cx.entity().read(cx).bg_kind == BackgroundKind::Color;
+        let assigned = root.bg_kind == BackgroundKind::Color;
         thumbs.push(thumb_btn(ui, cx, kind, BLACK_SENTINEL_ID, "■ black (remove bg)", assigned));
     }
     let entries: Vec<(String, String, bool)> = {
-        let r = cx.entity().read(cx);
         let shown = match kind {
-            MediaFileKind::Image => r.galleries.filtered_images(),
-            MediaFileKind::Video => r.galleries.filtered_videos(),
+            MediaFileKind::Image => root.galleries.filtered_images(),
+            MediaFileKind::Video => root.galleries.filtered_videos(),
         };
         shown
             .into_iter()
             .map(|e| {
-                let assigned = r.bg_file.as_deref() == Some(e.path.as_path());
+                let assigned = root.bg_file.as_deref() == Some(e.path.as_path());
                 (e.id.clone(), e.caption(), assigned)
             })
             .collect()
@@ -263,7 +256,7 @@ fn gallery_panel(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     );
 
     // Control stack (§3): Delete · Explore · Rebuild · Luminosité · Keep-open.
-    let selected = cx.entity().read(cx).galleries.selection(kind).map(str::to_string);
+    let selected = root.galleries.selection(kind).map(str::to_string);
     let sel_label = selected.clone().unwrap_or_default();
     kids.push(row(vec![
         btn(
@@ -307,8 +300,8 @@ fn gallery_panel(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
             this.set_status(cx, "Thumbnails are rendered from the files directly — nothing cached, nothing to rebuild.");
         },
     )]));
-    kids.push(luminosity_row(ui, cx, kind));
-    let pin = cx.entity().read(cx).galleries.keep_open;
+    kids.push(luminosity_row(root, ui, cx, kind));
+    let pin = root.galleries.keep_open;
     kids.push(row(vec![btn(
         ui,
         cx,
@@ -323,7 +316,6 @@ fn gallery_panel(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     section(ui, title, kids)
 }
 
-/// One thumbnail: filename caption, highlighted when assigned (S3).
 fn thumb_btn(
     ui: &UI,
     cx: &mut Context<Root>,
@@ -346,12 +338,11 @@ fn thumb_btn(
 /// Luminosité row: the documented ⊟/⊞ steppers over a signed, zero-centred,
 /// integer-valued track (RESEARCH §§3–4). Bounds are undocumented, so the
 /// model stores a raw f32 and the steppers move ±1 with no invented clamp.
-fn luminosity_row(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
+fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     let level = GalleryState::luminosity_level(kind);
     let chain = GalleryState::chain(kind);
     let (value, source) = {
-        let r = cx.entity().read(cx);
-        let p = media::resolve_luminosity(&r.cascade, chain);
+        let p = media::resolve_luminosity(&root.cascade, chain);
         (p.value, p.source)
     };
     let shown = value.round() as i32;
@@ -371,10 +362,10 @@ fn luminosity_row(ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
 /// Shared import row: a path field plus per-kind Import buttons. v1 adds by
 /// path (no embedded file picker, no folder watching — there is no live
 /// gallery folder in this port).
-fn import_row(ui: &UI, cx: &mut Context<Root>) -> Div {
+fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
     row(vec![
         label(ui, "Import file path:", 12.),
-        div().flex_1().child(cx.entity().read(cx).gallery_import_field.clone()),
+        div().flex_1().child(root.gallery_import_field.clone()),
         btn(ui, cx, "+ Import image", false, |this, _, _, cx| {
             import_path(this, cx, MediaFileKind::Image);
         }),
@@ -389,11 +380,11 @@ fn div_grid() -> Div {
 }
 
 /// Filter text field for one gallery (search-as-you-type, RESEARCH §8).
-fn div_field(ui: &UI, cx: &mut Context<Root>, current: &str, kind: MediaFileKind) -> Div {
+fn div_field(root: &Root, ui: &UI, _cx: &mut Context<Root>, current: &str, kind: MediaFileKind) -> Div {
     let _ = current;
     let field = match kind {
-        MediaFileKind::Image => cx.entity().read(cx).gallery_image_filter.clone(),
-        MediaFileKind::Video => cx.entity().read(cx).gallery_video_filter.clone(),
+        MediaFileKind::Image => root.gallery_image_filter.clone(),
+        MediaFileKind::Video => root.gallery_video_filter.clone(),
     };
     div()
         .flex_1()

@@ -5968,6 +5968,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha1_smol",
 ]
 
 [[package]]

@@ -40,6 +40,7 @@ gpui-app/
     src/pptx.rs         .pptx zip listing → placeholder pages
     src/i18n.rs         JSON locale loader
     src/themes.rs       4 open themes + Style derivation
+    src/native_songbook.rs native VideoPsalm songbook dialect + Song mapping
   app/                  GPUI native app (control + projector + stage)
     src/main.rs         Root view, ribbon toolbar, 3-pane control, projector/stage, clock ticker, boot
     src/ux.rs           pure UX helpers (ribbon tabs, filmstrip labels, kind badges, layout prefs) + tests
@@ -114,16 +115,22 @@ displays is a drag, not a switcher):
     highlighted selection. Every list scrolls (`ScrollHandle` +
     `overflow_y_scroll`) and shows all rows — an earlier version capped them at
     10/12/20/60 rows, which hid real data.
-  - CENTER: slides panel for the selected agenda item (small title edit
+  - CENTER: the song editor — ONE multi-line document for the whole song,
+    the original's WYSIWYG lyrics editor (not a per-verse grid): tabs
+    `Lyrics | Files | Chords | Miscellaneous`, `Save song`, transpose ±1 +
+    ABC↔DoReMi, `Numéro`/`Titre` above the document, reference / copyright /
+    author / composer below, and a live "N slides" readout. `Enter` is a line
+    break inside a verse and a **blank line** is the slide boundary, so the
+    slide count moves as you type. Edits reach the slide panel on every
+    keystroke; the disk needs `Save` (`Ctrl+S`).
+  - RIGHT: slides panel for the selected agenda item (small title edit
     field above; song verses as labeled V1/V2/V3 + C chorus blocks each
     with a ☑/☐ include-checkbox driving the projection set and a
     selection highlight; Bible verses as a numbered selectable list;
     slide buttons for other kinds with `1..0` + `V/C/B/E/O` shortcuts;
-    max lines/chars steppers) + lyrics/chord editor (per-line editing
-    incl. during projection, verse add/remove/reorder, +line, transpose
-    ±1, ABC↔DoReMi, max lines/chars steppers).
-  - RIGHT: vertical tool strip (unicode buttons: ✓▸ project-check,
-    ◉ blackout, ▤ slides, ⚠ alert, ❄ freeze, ▣ stage, ✎ edit) + large
+    max lines/chars steppers) + vertical tool strip (unicode buttons: ✓▸
+    project-check, ◉ blackout, ▤ slides, ⚠ alert, ❄ freeze, ▣ stage, ✎ edit) +
+    large
     preview (black, centered white text honoring the Font ribbon,
     top-right ref header, bottom translation/author footer ref line per
     slide, chord-symbols line when enabled) + stage mini (current + next,
@@ -141,7 +148,9 @@ displays is a drag, not a switcher):
   one session-global background (per-level assignment honestly unmet).
 - **Stage** — current + next, whole-song option, big clock.
 
-Keys (single-key shortcuts fire when no text field is focused, so typing
+Keys (single-key shortcuts fire when no text field is focused — the lyrics
+document counts as one, so typing a `1` or a `V` in a lyric line never jumps
+a slide, and `Enter` stays a line break inside the verse — so typing
 — including on-the-fly lyric edits — is never hijacked; click a slide
 row or press `F6` to leave edit focus; every shortcut also has an
 on-screen button equivalent):
@@ -154,7 +163,7 @@ on-screen button equivalent):
 | `F6` | focus slide panel (toggles Projector view) |
 | `I` / `O` | media in/out-point stub (pins 0 / 30s range locally) |
 | `X` | advance live PowerPoint item (stub; status note otherwise) |
-| `Ctrl+S` | save agenda |
+| `Ctrl+S` | save — the song in the editor, otherwise the agenda |
 | `Alt+S` / `Alt+B` | jump to songbooks (instant-find field) / bibles (book field) |
 | `Ctrl+F1` | collapse / restore the ribbon |
 | `Alt` | reveal ribbon KeyTips |
@@ -189,8 +198,9 @@ chord-transpose (9), reference parser incl. range adjust (9), agenda
 serde/ops (4), schema shapes incl. style transition default (4), SQLite
 library + instant find (4), slides incl. sample-agenda acceptance (6),
 pptx zip parsing (3), media stub (2), i18n (1), themes (2), geometry,
-cascade, galleries. Counts re-verified 2026-10-10 by running the suites:
-**143 vp-core tests, all passing; plus 87 app tests** (`app/src/ux.rs`:
+cascade, galleries, native VideoPsalm songbook dialect + mapping (10).
+Counts re-verified 2026-10-20 by running the suites:
+**171 vp-core tests, all passing; plus 88 app tests** (`app/src/ux.rs`:
 ribbon tabs, filmstrip labels, digit/verse shortcuts, kind badges,
 layout-prefs serde + old-file compat, style levels, transitions, font
 families, chapter counts, slide verse ids, tool-strip glyphs, F5/KeyTips/

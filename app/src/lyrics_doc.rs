@@ -286,6 +286,7 @@ pub fn verses_from_document(document: &str, existing: &[vp_core::schema::SongVer
                 id,
                 lines,
                 order: existing.get(i).map(|v| v.order).unwrap_or(0),
+                ..Default::default()
             }
         })
         .collect()
@@ -378,8 +379,8 @@ mod tests {
     #[test]
     fn writing_back_keeps_verse_ids_so_agenda_refs_survive() {
         let existing = vec![
-            vp_core::schema::SongVerse { id: "V1".into(), lines: vec!["a".into()], order: 1 },
-            vp_core::schema::SongVerse { id: "V2".into(), lines: vec!["b".into()], order: 2 },
+            vp_core::schema::SongVerse { id: "V1".into(), lines: vec!["a".into()], order: 1, ..Default::default() },
+            vp_core::schema::SongVerse { id: "V2".into(), lines: vec!["b".into()], order: 2, ..Default::default() },
         ];
         let out = verses_from_document("a\n\nb", &existing);
         assert_eq!(out[0].id, "V1");
