@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Bible</title>
+  <!-- Original badge: a plain cross on a plate. A cross reads as Bible
+       content (never put one on the shield, where it would read as state). -->
+  <rect x="3" y="3" width="18" height="18" rx="4.5" fill="#1F2937" stroke="#9AA3B2" stroke-width="1.2"/>
+  <rect x="10.6" y="5.4" width="2.8" height="13.2" rx="1.4" fill="#EAB308"/>
+  <rect x="7" y="9.4" width="10" height="2.8" rx="1.4" fill="#EAB308"/>
+</svg>

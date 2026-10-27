@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Switch Edit / Viewer mode</title>
+  <!-- Original mark: a pencil inside four frame corners. It changes the MODE,
+       not the projection — the corners say "this is a different window". -->
+  <path d="M4.6 9.1V5.7a1.1 1.1 0 0 1 1.1-1.1h3.4M14.9 4.6h3.4a1.1 1.1 0 0 1 1.1 1.1v3.4M19.4 14.9v3.4a1.1 1.1 0 0 1-1.1 1.1h-3.4M9.1 19.4H5.7a1.1 1.1 0 0 1-1.1-1.1v-3.4"
+        stroke="#8BC34A" stroke-width="1.7" stroke-linecap="round" opacity="0.7"/>
+  <path d="m8.85 15.55-.85 2.75 2.75-.85 8.05-8.05a1.94 1.94 0 0 0-2.75-2.75z" fill="#8BC34A" fill-opacity="0.24" stroke="#8BC34A" stroke-width="1.8" stroke-linejoin="round"/>
+</svg>

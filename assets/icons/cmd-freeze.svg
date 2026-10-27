@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Freeze the projected slide</title>
+  <!-- Original mark: six crystal axes on one centre, each with paired barbs.
+       Freeze means "hold this slide while you browse elsewhere", so the mark
+       is a held crystal rather than a snow cloud. -->
+  <g stroke="#00ACC1" stroke-width="1.85" stroke-linecap="round">
+    <path d="M12 3.1v17.8"/>
+    <path d="m4.22 7.55 15.56 9"/>
+    <path d="M19.78 7.55 4.22 16.55"/>
+  </g>
+  <g stroke="#00ACC1" stroke-width="1.6" stroke-linecap="round" opacity="0.8">
+    <path d="M12 6.9 9.9 4.8M12 6.9l2.1-2.1"/>
+    <path d="M12 17.1 9.9 19.2M12 17.1l2.1 2.1"/>
+    <path d="m7.3 10.1-2.8-.4M7.3 13.9l-2.8.4"/>
+    <path d="m16.7 10.1 2.8-.4M16.7 13.9l2.8.4"/>
+  </g>
+</svg>

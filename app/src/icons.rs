@@ -32,9 +32,11 @@ use vp_core::schema::ItemKind;
 ///
 /// Test-only: the runtime resolves artwork through [`VpIconAssets`] + [`art`],
 /// never by parsing this JSON. Keeping it out of the shipping binary.
+// In-repo copy (`gpui-app/assets/icons/`): the standalone GitHub repo
+// builds and tests without the monorepo around it.
 #[cfg(test)]
 pub const MANIFEST_JSON: &str =
-    include_str!("../../../assets/icons/manifest.json");
+    include_str!("../../assets/icons/manifest.json");
 
 /// One row of the icon table: manifest id → SVG file in `assets/icons/`.
 macro_rules! icon_table {
@@ -44,7 +46,7 @@ macro_rules! icon_table {
 
         fn bytes_for_file(file: &str) -> Option<&'static [u8]> {
             match file {
-                $( $file => Some(include_bytes!(concat!("../../../assets/icons/", $file))), )*
+                $( $file => Some(include_bytes!(concat!("../../assets/icons/", $file))), )*
                 _ => None,
             }
         }
