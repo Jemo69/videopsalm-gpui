@@ -582,11 +582,7 @@ mod tests {
     /// cannot decrypt it, the two ports disagree on the container.
     #[test]
     fn decrypts_typescript_written_fixture() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../electron-app/tests/fixtures/videopsalm-aes.vpc"
-        );
-        let bytes = std::fs::read(path).expect("fixture must exist; run the Electron suite once");
+        let bytes = crate::cross_port_fixture("videopsalm-aes.vpc");
         let entry = read_vpac_entry(&bytes, VPC_PASSWORD).expect("fixture must decrypt with the fixed password");
         assert!(entry.encrypted);
         let root = native_songbook::parse(&String::from_utf8_lossy(&entry.data))

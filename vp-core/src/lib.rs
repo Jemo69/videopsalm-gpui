@@ -31,6 +31,31 @@ pub mod template;
 pub mod themes;
 pub mod verse_splitter;
 
+/// Test-only helper: load a shared cross-port fixture.
+///
+/// Each port ships its own copy (`gpui-app/tests/fixtures/` here,
+/// `electron-app/tests/fixtures/` there) so the repos build and test
+/// standalone. When the monorepo layout is present the two copies are
+/// asserted byte-identical, which is what keeps the pin honest.
+#[cfg(test)]
+pub(crate) fn cross_port_fixture(name: &str) -> Vec<u8> {
+    let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures")
+        .join(name);
+    let local = std::fs::read(&here)
+        .unwrap_or_else(|_| panic!("in-repo fixture missing: {}", here.display()));
+    let upstream = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../electron-app/tests/fixtures")
+        .join(name);
+    if let Ok(upstream_bytes) = std::fs::read(&upstream) {
+        assert!(
+            local == upstream_bytes,
+            "fixture {name} drifted from the Electron copy"
+        );
+    }
+    local
+}
+
 pub use library::SearchScope;
 pub use template::{format_template, SlideTemplateContext};
 pub use schema::{

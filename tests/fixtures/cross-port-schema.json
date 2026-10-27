@@ -1,0 +1,1006 @@
+{
+  "comment": "Cross-port schema fixture (AGENTS.md rule 3). Parsed by gpui-app/vp-core/src/schema.rs and electron-app/tests/crossPort.test.ts; both must agree on every literal below.",
+  "enums": {
+    "chordNotations": [
+      "ABC",
+      "DoReMi"
+    ],
+    "flowTypes": [
+      "default",
+      "manual",
+      "auto",
+      "AutoAdvance",
+      "Loop"
+    ],
+    "itemKinds": [
+      "Song",
+      "BibleVerses",
+      "Bible",
+      "Image",
+      "Video",
+      "Audio",
+      "Pdf",
+      "PowerPoint",
+      "PowerPointSlide",
+      "SongPowerPoint",
+      "Excel",
+      "Word",
+      "YouTube",
+      "WebSite",
+      "CCLI",
+      "Alert",
+      "Clock"
+    ],
+    "versifications": [
+      "EN",
+      "RU",
+      "FR"
+    ],
+    "aligns": [
+      "left",
+      "center",
+      "right"
+    ],
+    "backgroundKinds": [
+      "color",
+      "image",
+      "videoLoop",
+      "camera"
+    ],
+    "transitions": [
+      "none",
+      "fade",
+      "slide",
+      "zoom"
+    ]
+  },
+  "geometry": {
+    "normalizedSpace": 10000,
+    "textSizeSpace": 1000,
+    "rectFull": {
+      "x": 0,
+      "y": 0,
+      "w": 10000,
+      "h": 10000
+    },
+    "rectDefaultBody": {
+      "x": 0,
+      "y": 0,
+      "w": 10000,
+      "h": 9300
+    },
+    "rectDefaultHeader": {
+      "x": 0,
+      "y": 0,
+      "w": 10000,
+      "h": 700
+    },
+    "rectDefaultFooter": {
+      "x": 0,
+      "y": 9300,
+      "w": 10000,
+      "h": 700
+    },
+    "aspectRatios": [
+      {
+        "label": "4x3.2",
+        "num": 5,
+        "den": 4,
+        "viewport1920": {
+          "width": 1920,
+          "height": 1536
+        }
+      },
+      {
+        "label": "4x3",
+        "num": 4,
+        "den": 3,
+        "viewport1920": {
+          "width": 1920,
+          "height": 1440
+        }
+      },
+      {
+        "label": "16x10",
+        "num": 16,
+        "den": 10,
+        "viewport1920": {
+          "width": 1920,
+          "height": 1200
+        }
+      },
+      {
+        "label": "16x9",
+        "num": 16,
+        "den": 9,
+        "viewport1920": {
+          "width": 1920,
+          "height": 1080
+        }
+      },
+      {
+        "label": "16x8",
+        "num": 16,
+        "den": 8,
+        "viewport1920": {
+          "width": 1920,
+          "height": 960
+        }
+      }
+    ],
+    "resolveBody9300Fill": [
+      {
+        "viewport": {
+          "width": 1024,
+          "height": 768
+        },
+        "mode": "fill",
+        "percent": {
+          "x": 0.0,
+          "y": 0.0,
+          "w": 100.0,
+          "h": 93.0
+        },
+        "pixels": {
+          "x": 0,
+          "y": 0,
+          "w": 1024,
+          "h": 714
+        }
+      },
+      {
+        "viewport": {
+          "width": 1920,
+          "height": 1080
+        },
+        "mode": "fill",
+        "percent": {
+          "x": 0.0,
+          "y": 0.0,
+          "w": 100.0,
+          "h": 93.0
+        },
+        "pixels": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1004
+        }
+      }
+    ],
+    "resolveBody9300Letterbox4x3": {
+      "percent": {
+        "x": 12.5,
+        "y": 0.0,
+        "w": 75.0,
+        "h": 93.0
+      },
+      "pixels": {
+        "x": 128,
+        "y": 0,
+        "w": 768,
+        "h": 714
+      }
+    },
+    "textSize70At1080p": 75.6,
+    "textSize100At1080p": 108.0
+  },
+  "songs": [
+    {
+      "id": "song-cross-abc",
+      "title": "Amazing Grace",
+      "verses": [
+        {
+          "id": "V1",
+          "lines": [
+            "Amazing grace! how sweet the sound",
+            "[G]How precious did that [C]grace appear"
+          ],
+          "order": 1,
+          "tag": "V",
+          "tagId": 1
+        },
+        {
+          "id": "V2",
+          "lines": [
+            "Was blind, but now I see."
+          ],
+          "order": 2,
+          "tag": "V",
+          "tagId": 2
+        }
+      ],
+      "authors": [
+        "John Newton"
+      ],
+      "composer": "Traditional",
+      "ccli": "2762838",
+      "songId": "00000001",
+      "songbookId": "book-main",
+      "color": "#2a5db0",
+      "icon": "hymn",
+      "chords": {
+        "notation": "ABC",
+        "transpose": 2,
+        "overlays": [
+          {
+            "verseId": "V1",
+            "line": 0,
+            "chord": "G",
+            "pos": 24
+          },
+          {
+            "verseId": "V1",
+            "line": 1,
+            "chord": "C",
+            "pos": 25
+          }
+        ],
+        "chordpro": "[G]How precious did that [C]grace appear"
+      },
+      "copyright": "Public domain",
+      "themes": [
+        "grace",
+        "salvation"
+      ],
+      "references": [
+        "Isaiah 53:5"
+      ],
+      "memo1": "slow",
+      "memo2": "pickup on line 3",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "updatedAt": "2026-01-02T03:04:05Z",
+      "sequence": "V1 C V2 C",
+      "verseOrderIndex": 0,
+      "source": {
+        "format": "videopsalm",
+        "file": "/tmp/SongBooks/Book.json",
+        "songbookGuid": "book-guid",
+        "songbookName": "Book",
+        "songId": "3",
+        "guid": "song-guid"
+      }
+    },
+    {
+      "id": "song-cross-doremi",
+      "title": "Holy Holy Holy",
+      "verses": [
+        {
+          "id": "V1",
+          "lines": [
+            "[Do]Holy, [Re]holy, [Do]holy, [Mi]Lord God Al[Do]mighty"
+          ],
+          "order": 1
+        }
+      ],
+      "authors": [
+        "Reginald Heber"
+      ],
+      "composer": "John B. Dykes",
+      "ccli": "1142518",
+      "songbookId": "book-main",
+      "color": "#FACC15",
+      "icon": "12",
+      "chords": {
+        "notation": "DoReMi",
+        "transpose": 0,
+        "overlays": [
+          {
+            "verseId": "V1",
+            "line": 0,
+            "chord": "Do",
+            "pos": 0
+          }
+        ]
+      },
+      "createdAt": "2026-10-06",
+      "updatedAt": "2026-10-06"
+    }
+  ],
+  "bibleRefs": [
+    {
+      "translationId": "SAMPLE-EN",
+      "book": "John",
+      "chapter": 3,
+      "verses": [
+        16,
+        17,
+        18
+      ],
+      "versification": "EN"
+    },
+    {
+      "translationId": "SAMPLE-RU",
+      "book": "Psalm",
+      "chapter": 23,
+      "verses": [
+        1
+      ],
+      "versification": "RU"
+    },
+    {
+      "translationId": "SAMPLE-FR",
+      "book": "Jean",
+      "chapter": 1,
+      "verses": [
+        1
+      ],
+      "versification": "FR"
+    }
+  ],
+  "styles": [
+    {
+      "level": "Song",
+      "body": {
+        "font": "Sans",
+        "size": 48.0,
+        "color": "#FFFFFF",
+        "align": "left",
+        "margins": {
+          "top": 40.0,
+          "right": 60.0,
+          "bottom": 40.0,
+          "left": 60.0
+        },
+        "rect": {
+          "x": 0,
+          "y": 1000,
+          "w": 9000,
+          "h": 8000
+        }
+      },
+      "header": {
+        "template": "{{title}}",
+        "font": "Sans",
+        "size": 28.0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 1200
+        }
+      },
+      "footer": {
+        "template": "{{page}}",
+        "font": "Sans",
+        "size": 24.0,
+        "rect": {
+          "x": 2000,
+          "y": 9000,
+          "w": 8000,
+          "h": 1000
+        }
+      },
+      "background": {
+        "kind": "color",
+        "color": "#000000",
+        "image": null,
+        "videoLoop": null,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 10000
+        }
+      },
+      "transition": "none"
+    },
+    {
+      "level": "Bible",
+      "body": {
+        "font": "Sans",
+        "size": 48.0,
+        "color": "#FFFFFF",
+        "align": "center",
+        "margins": {
+          "top": 40.0,
+          "right": 60.0,
+          "bottom": 40.0,
+          "left": 60.0
+        },
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 9300
+        }
+      },
+      "header": {
+        "template": "{{title}}",
+        "font": "Sans",
+        "size": 28.0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 700
+        }
+      },
+      "footer": {
+        "template": "{{page}}",
+        "font": "Sans",
+        "size": 24.0,
+        "rect": {
+          "x": 0,
+          "y": 9300,
+          "w": 10000,
+          "h": 700
+        }
+      },
+      "background": {
+        "kind": "image",
+        "color": "#101010",
+        "image": "assets/backgrounds/welcome.png",
+        "videoLoop": null,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 10000
+        }
+      },
+      "transition": "fade"
+    },
+    {
+      "level": "Verse",
+      "body": {
+        "font": "Sans",
+        "size": 48.0,
+        "color": "#FFFFFF",
+        "align": "right",
+        "margins": {
+          "top": 40.0,
+          "right": 60.0,
+          "bottom": 40.0,
+          "left": 60.0
+        },
+        "rect": {
+          "x": 500,
+          "y": 1000,
+          "w": 9000,
+          "h": 8000
+        }
+      },
+      "header": {
+        "template": "{{title}}",
+        "font": "Sans",
+        "size": 28.0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 700
+        }
+      },
+      "footer": {
+        "template": "{{page}}",
+        "font": "Sans",
+        "size": 24.0,
+        "rect": {
+          "x": 0,
+          "y": 9300,
+          "w": 10000,
+          "h": 700
+        }
+      },
+      "background": {
+        "kind": "videoLoop",
+        "color": "#202020",
+        "image": null,
+        "videoLoop": "assets/media/loop.mp4",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 10000
+        }
+      },
+      "transition": "slide"
+    },
+    {
+      "level": "Agenda",
+      "body": {
+        "font": "Sans",
+        "size": 48.0,
+        "color": "#FFFFFF",
+        "align": "center",
+        "margins": {
+          "top": 40.0,
+          "right": 60.0,
+          "bottom": 40.0,
+          "left": 60.0
+        },
+        "rect": {
+          "x": 1000,
+          "y": 1500,
+          "w": 8000,
+          "h": 7500
+        }
+      },
+      "header": {
+        "template": "{{title}}",
+        "font": "Sans",
+        "size": 28.0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 700
+        }
+      },
+      "footer": {
+        "template": "{{page}}",
+        "font": "Sans",
+        "size": 24.0,
+        "rect": {
+          "x": 0,
+          "y": 9300,
+          "w": 10000,
+          "h": 700
+        }
+      },
+      "background": {
+        "kind": "camera",
+        "color": "#303030",
+        "image": null,
+        "videoLoop": null,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 10000
+        }
+      },
+      "transition": "zoom"
+    }
+  ],
+  "agenda": {
+    "version": 1,
+    "title": "Cross-port fixture (every kind, every flow, every optional field)",
+    "items": [
+      {
+        "id": "item-cross-00",
+        "kind": "Song",
+        "title": "Song item 0",
+        "ref": {
+          "songId": "song-cross-abc"
+        },
+        "flowType": "default",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": [
+            "V2",
+            "V1"
+          ],
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null,
+          "pptxImport": true,
+          "linkCardOnly": false
+        }
+      },
+      {
+        "id": "item-cross-01",
+        "kind": "BibleVerses",
+        "title": "BibleVerses item 1",
+        "ref": {
+          "bibleRef": {
+            "translationId": "SAMPLE-EN",
+            "book": "John",
+            "chapter": 3,
+            "verses": [
+              16,
+              17,
+              18
+            ],
+            "versification": "EN"
+          }
+        },
+        "flowType": "manual",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": "SAMPLE-FR"
+        }
+      },
+      {
+        "id": "item-cross-02",
+        "kind": "Bible",
+        "title": "Bible item 2",
+        "ref": {
+          "bibleRef": {
+            "translationId": "SAMPLE-RU",
+            "book": "Psalm",
+            "chapter": 23,
+            "verses": [
+              1
+            ],
+            "versification": "RU"
+          }
+        },
+        "flowType": "auto",
+        "autoAdvanceMs": 30000,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": "SAMPLE-FR"
+        }
+      },
+      {
+        "id": "item-cross-03",
+        "kind": "Image",
+        "title": "Image item 3",
+        "ref": {
+          "file": "assets/image/03.bin"
+        },
+        "flowType": "AutoAdvance",
+        "autoAdvanceMs": 30000,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-04",
+        "kind": "Video",
+        "title": "Video item 4",
+        "ref": {
+          "file": "assets/video/04.bin"
+        },
+        "flowType": "Loop",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-05",
+        "kind": "Audio",
+        "title": "Audio item 5",
+        "ref": {
+          "file": "assets/audio/05.bin"
+        },
+        "flowType": "default",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-06",
+        "kind": "Pdf",
+        "title": "Pdf item 6",
+        "ref": {
+          "file": "assets/pdf/06.bin"
+        },
+        "flowType": "manual",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-07",
+        "kind": "PowerPoint",
+        "title": "PowerPoint item 7",
+        "ref": {
+          "file": "assets/powerpoint/07.bin"
+        },
+        "flowType": "auto",
+        "autoAdvanceMs": 30000,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": 1,
+          "endSlide": 12,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-08",
+        "kind": "PowerPointSlide",
+        "title": "PowerPointSlide item 8",
+        "ref": {
+          "file": "assets/powerpointslide/08.bin"
+        },
+        "flowType": "AutoAdvance",
+        "autoAdvanceMs": 30000,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": 1,
+          "endSlide": 12,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-09",
+        "kind": "SongPowerPoint",
+        "title": "SongPowerPoint item 9",
+        "ref": {
+          "file": "assets/slides/song-ppt/slide1.png"
+        },
+        "flowType": "Loop",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": [
+            "V2",
+            "V1"
+          ],
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-10",
+        "kind": "Excel",
+        "title": "Excel item 10",
+        "ref": {
+          "file": "assets/excel/10.bin"
+        },
+        "flowType": "default",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-11",
+        "kind": "Word",
+        "title": "Word item 11",
+        "ref": {
+          "file": "assets/word/11.bin"
+        },
+        "flowType": "manual",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-12",
+        "kind": "YouTube",
+        "title": "YouTube item 12",
+        "ref": {
+          "url": "https://example.org/cross-port"
+        },
+        "flowType": "auto",
+        "autoAdvanceMs": 30000,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-13",
+        "kind": "WebSite",
+        "title": "WebSite item 13",
+        "ref": {
+          "url": "https://example.org/cross-port"
+        },
+        "flowType": "AutoAdvance",
+        "autoAdvanceMs": 30000,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-14",
+        "kind": "CCLI",
+        "title": "CCLI item 14",
+        "ref": {
+          "text": "CCLI payload 14"
+        },
+        "flowType": "Loop",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-15",
+        "kind": "Alert",
+        "title": "Alert item 15",
+        "ref": {
+          "text": "Alert payload 15"
+        },
+        "flowType": "default",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      },
+      {
+        "id": "item-cross-16",
+        "kind": "Clock",
+        "title": "Clock item 16",
+        "ref": {
+          "text": "Clock payload 16"
+        },
+        "flowType": "manual",
+        "autoAdvanceMs": null,
+        "overrides": {
+          "verseOrder": null,
+          "startSlide": null,
+          "endSlide": null,
+          "secondTranslationId": null
+        }
+      }
+    ],
+    "settings": {
+      "style": {
+        "level": "Song",
+        "body": {
+          "font": "Sans",
+          "size": 48.0,
+          "color": "#FFFFFF",
+          "align": "left",
+          "margins": {
+            "top": 40.0,
+            "right": 60.0,
+            "bottom": 40.0,
+            "left": 60.0
+          }
+        },
+        "header": {
+          "template": "{{title}}",
+          "font": "Sans",
+          "size": 28.0
+        },
+        "footer": {
+          "template": "{{page}}",
+          "font": "Sans",
+          "size": 24.0
+        },
+        "background": {
+          "kind": "color",
+          "color": "#000000",
+          "image": null,
+          "videoLoop": null
+        },
+        "transition": "none"
+      },
+      "bilingualSuppressEmpty": true,
+      "wholeReferenceHeader": true,
+      "lang": "en"
+    }
+  },
+  "legacyAliases": {
+    "chordNotations": {
+      "latin": "ABC",
+      "doremi": "DoReMi",
+      "Latin": "ABC",
+      "DoReMiSolfege": "DoReMi"
+    },
+    "flowTypes": {
+      "Default": "default",
+      "Manual": "manual",
+      "Auto": "auto",
+      "autoAdvance": "AutoAdvance",
+      "loop": "Loop"
+    },
+    "song": {
+      "id": "song-legacy-aliases",
+      "title": "Legacy literal spellings",
+      "verses": [
+        {
+          "id": "V1",
+          "lines": [
+            "[G]Line one"
+          ],
+          "order": 1
+        }
+      ],
+      "authors": [],
+      "composer": "",
+      "ccli": "",
+      "songbookId": "legacy",
+      "color": "",
+      "icon": "",
+      "chords": {
+        "notation": "latin",
+        "transpose": 0,
+        "overlays": [
+          {
+            "verseId": "V1",
+            "line": 0,
+            "chord": "G",
+            "pos": 0
+          }
+        ],
+        "chordpro": "[G]Line one"
+      },
+      "createdAt": "2026-01-01T00:00:00Z",
+      "updatedAt": "2026-01-01T00:00:00Z"
+    },
+    "agenda": {
+      "version": 1,
+      "title": "Legacy literal spellings",
+      "items": [
+        {
+          "id": "item-legacy-00",
+          "kind": "Video",
+          "title": "Looping intro",
+          "ref": {
+            "file": "assets/media/intro.mp4"
+          },
+          "flowType": "Manual",
+          "autoAdvanceMs": null,
+          "overrides": {
+            "verseOrder": null,
+            "startSlide": null,
+            "endSlide": null,
+            "secondTranslationId": null
+          }
+        },
+        {
+          "id": "item-legacy-01",
+          "kind": "Alert",
+          "title": "Alert",
+          "ref": {
+            "text": "hello"
+          },
+          "flowType": "loop",
+          "autoAdvanceMs": null,
+          "overrides": {
+            "verseOrder": null,
+            "startSlide": null,
+            "endSlide": null,
+            "secondTranslationId": null
+          }
+        },
+        {
+          "id": "item-legacy-02",
+          "kind": "Clock",
+          "title": "Clock",
+          "ref": {
+            "text": "countdown:300"
+          },
+          "flowType": "Default",
+          "autoAdvanceMs": null,
+          "overrides": {
+            "verseOrder": null,
+            "startSlide": null,
+            "endSlide": null,
+            "secondTranslationId": null
+          }
+        }
+      ],
+      "settings": {
+        "style": null,
+        "bilingualSuppressEmpty": false,
+        "wholeReferenceHeader": false
+      }
+    }
+  }
+}
