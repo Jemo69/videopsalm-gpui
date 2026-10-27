@@ -5,6 +5,18 @@ type Agenda = import("../core/schemas").Agenda;
 type AgendaItem = import("../core/schemas").AgendaItem;
 type Song = import("../core/schemas").Song;
 import { formatTemplate, SlideTemplateContext } from "../core/template.js";
+import { fileUrl } from "../core/fileUrl.js";
+import { bibleItemText } from "../core/agendaItemText.js";
+import {
+  documentFromVerses,
+  hasVerseTagLine,
+  insertVerseTag,
+  renderLyricsDocument,
+  renderVerses,
+  slidesFromLyricsDocument,
+  slidesFromVerses,
+  versesFromLyricsDocument,
+} from "../core/lyrics-document.js";
 
 function el<T extends HTMLElement>(id: string): T {
   const n = document.getElementById(id);
@@ -41,6 +53,10 @@ interface Prefs {
   aspectRatio: string;
   /** Target monitor/display index (0 = primary, 1 = external/secondary) (B-12). */
   projMonitor: number;
+  /** Selected VideoPsalm document folder (native Songbooks/Images/Videos). */
+  videopsalmFolder: string;
+  /** Media discovered under that folder; shown in the background galleries. */
+  videopsalmMedia: { path: string; kind: "image" | "video" }[];
 }
 function defaultPrefs(): Prefs {
   return {
@@ -61,6 +77,8 @@ function defaultPrefs(): Prefs {
     songSort: "title",
     aspectRatio: "current",
     projMonitor: 0,
+    videopsalmFolder: "",
+    videopsalmMedia: [],
   };
 }
 function loadPrefs(): Prefs {
@@ -324,6 +342,7 @@ function applyPrefsToDom(): void {
   renderBibleBookList();
   renderChapterGrid();
   updateTransBadge();
+  updateVpFolderChrome();
 }
 
 function syncFormatControls(): void {
@@ -649,6 +668,67 @@ el<HTMLButtonElement>("agenda-open").addEventListener("click", async () => {
   const res = (await bridge().openAgenda()) as { agenda: Agenda } | null;
   if (res) { selectedItemId = null; await refreshAgenda(); }
 });
+/**
+ * Import a native VideoPsalm service plan (`.vpagd`): a ZIP of per-item
+ * projections. The plan's songs are added to the library when the operator's
+ * own songbook does not already have them, and its media is extracted next to
+ * the plan file.
+ */
+el<HTMLButtonElement>("agenda-open-vp").addEventListener("click", async () => {
+  const res = (await bridge().openVideopsalmAgenda()) as {
+    ok?: boolean;
+    canceled?: boolean;
+    error?: string;
+    agenda?: Agenda;
+    songCount?: number;
+    itemCount?: number;
+    media?: string[];
+    warnings?: string[];
+  } | null;
+  if (!res || res.canceled) return;
+  if (!res.ok || !res.agenda) {
+    setHint(`VideoPsalm plan: ${res?.error ?? "could not be imported"}`);
+    return;
+  }
+  agenda = res.agenda;
+  selectedItemId = null;
+  await bridge().setAgenda(agenda);
+  await refreshAgenda();
+  await runSongSearch();
+  const media = res.media?.length ? `, ${res.media.length} media file(s)` : "";
+  setHint(
+    `Imported ${res.itemCount ?? res.agenda.items.length} item(s) from ${res.agenda.title}` +
+    `${res.songCount ? `, ${res.songCount} song(s) added` : ""}${media}.` +
+    (res.warnings?.length ? ` ${res.warnings.length} note(s) — see the status.` : "")
+  );
+  for (const warning of res.warnings ?? []) setHint(warning);
+});
+/**
+ * Export the agenda back to the native `.vpagd` shape. The plan stays
+ * editable here afterwards — the export is a copy, not a move.
+ */
+el<HTMLButtonElement>("agenda-save-vp").addEventListener("click", async () => {
+  agenda.title = el<HTMLInputElement>("agenda-title").value || agenda.title;
+  await bridge().setAgenda(agenda);
+  const res = (await bridge().saveVideopsalmAgenda()) as {
+    ok?: boolean;
+    canceled?: boolean;
+    error?: string;
+    file?: string;
+    itemCount?: number;
+    warnings?: string[];
+  } | null;
+  if (!res || res.canceled) return;
+  if (!res.ok) {
+    setHint(`VideoPsalm plan: ${res?.error ?? "could not be exported"}`);
+    return;
+  }
+  setHint(
+    `Exported ${res.itemCount ?? agenda.items.length} item(s) to ${res.file ?? "plan.vpagd"}` +
+    (res.warnings?.length ? ` (${res.warnings.length} note(s)).` : ".")
+  );
+  for (const warning of res.warnings ?? []) setHint(warning);
+});
 async function saveAgendaNow(): Promise<void> {
   agenda.title = el<HTMLInputElement>("agenda-title").value || agenda.title;
   await bridge().setAgenda(agenda);
@@ -844,12 +924,12 @@ function backgroundStyle(): { css: string; video: string } {
   const filt = brightnessFilter(agendaCascade(), prefs.bgKind);
   const fe = filt ? `filter:${filt};` : "";
   if (prefs.bgKind === "image" && prefs.bgFile) {
-    return { css: `background-image:url("file://${escapeHtml(prefs.bgFile)}");background-color:${escapeHtml(prefs.bgColor)};${fe}`, video: "" };
+    return { css: `background-image:url('${fileUrl(prefs.bgFile)}');background-color:${escapeHtml(prefs.bgColor)};${fe}`, video: "" };
   }
   if (prefs.bgKind === "videoLoop" && prefs.bgFile) {
     return {
       css: `background-color:${escapeHtml(prefs.bgColor)};${fe}`,
-      video: `<video class="vp-bgvideo" src="file://${escapeHtml(prefs.bgFile)}" autoplay muted loop></video>`,
+      video: `<video class="vp-bgvideo" src="${fileUrl(prefs.bgFile)}" autoplay muted loop></video>`,
     };
   }
   return { css: `background-color:${escapeHtml(prefs.bgColor)};`, video: "" };
@@ -880,17 +960,17 @@ function slideHtmlFor(kind: string, title: string, bodyText: string, ref?: Agend
   switch (kind) {
     case "Image":
       return worshipSlide(title, "", refText, false) +
-        (ref?.file ? `<img src="file://${escapeHtml(ref.file)}" />` : `<p>[image: no file]</p>`);
+        (ref?.file ? `<img src="${fileUrl(ref.file)}" />` : `<p>[image: no file]</p>`);
     case "Video":
       return (ref?.file
-        ? `<video src="file://${escapeHtml(ref.file)}" controls autoplay loop></video>`
+        ? `<video src="${fileUrl(ref.file)}" controls autoplay loop></video>`
         : worshipSlide(title, "[video: no file]", refText, false));
     case "Audio":
       return worshipSlide(title, "", refText, false) +
-        (ref?.file ? `<audio src="file://${escapeHtml(ref.file)}" controls autoplay></audio>` : `<p>[audio: no file]</p>`);
+        (ref?.file ? `<audio src="${fileUrl(ref.file)}" controls autoplay></audio>` : `<p>[audio: no file]</p>`);
     case "Pdf":
       return worshipSlide(title, "", refText, false) +
-        (ref?.file ? `<embed src="file://${escapeHtml(ref.file)}" type="application/pdf" width="90%" height="60%" />` : `<p>[pdf: no file]</p>`);
+        (ref?.file ? `<embed src="${fileUrl(ref.file)}" type="application/pdf" width="90%" height="60%" />` : `<p>[pdf: no file]</p>`);
     case "YouTube":
     case "WebSite":
       // Link card only — no autoplay embed by default (SPEC §3).
@@ -909,6 +989,10 @@ function slideHtmlFor(kind: string, title: string, bodyText: string, ref?: Agend
       return worshipSlide(title, `⏱ ${ref?.text ?? ""}`, refText, false);
     default: {
       const isSong = kind === "Song";
+      // A Bible item carries its reference in `ref.bibleRef` (the shared
+      // schema); older files put the fields directly on `ref`.
+      const bibleRef = (ref as { bibleRef?: BibleRef } | undefined)?.bibleRef
+        ?? (ref as unknown as BibleRef | undefined);
       const tmplCtx: SlideTemplateContext = {
         title,
         reference: refText,
@@ -919,9 +1003,9 @@ function slideHtmlFor(kind: string, title: string, bodyText: string, ref?: Agend
         songbook: isSong ? currentSong?.songbookId : undefined,
         songbookAbbrev: isSong ? currentSong?.songbookId : undefined,
         ccli: isSong ? currentSong?.ccli : undefined,
-        bibleBook: kind === "BibleVerses" ? (ref as { book?: string } | undefined)?.book : undefined,
-        bibleChapter: kind === "BibleVerses" ? (ref as { chapter?: number } | undefined)?.chapter : undefined,
-        bibleVerse: kind === "BibleVerses" ? (Array.isArray((ref as { verses?: unknown[] } | undefined)?.verses) ? ((ref as { verses: unknown[] }).verses).join(",") : undefined) : undefined,
+        bibleBook: kind === "BibleVerses" ? bibleRef?.book : undefined,
+        bibleChapter: kind === "BibleVerses" ? bibleRef?.chapter : undefined,
+        bibleVerse: kind === "BibleVerses" ? (bibleRef?.verses?.length ? bibleRef.verses.join(",") : undefined) : undefined,
         bibleName: kind === "BibleVerses" ? String(prefs.versification) : undefined,
       };
       return worshipSlide(title, bodyText, refText, kind === "BibleVerses" && prefs.bilingual, tmplCtx);
@@ -932,9 +1016,22 @@ function slideHtmlFor(kind: string, title: string, bodyText: string, ref?: Agend
 // ---------- projection (freeze-aware; preview overlays updated always) ----------
 async function itemBodyText(it: AgendaItem): Promise<string> {
   if (it.kind === "Song" && it.ref?.songId) {
-    const songs = (await bridge().findSongs("")) as Song[];
-    const s = songs.find((x) => x.id === it.ref!.songId);
-    if (s) return s.verses.map((v) => v.lines.join("\n")).join("\n\n");
+    // The open editor is immediately newer than the debounced library save;
+    // projecting from the library copy here made in-flight edits look dead
+    // when an agenda row was selected. Tags are metadata, so render only the
+    // lyric lines.
+    const s = currentSong?.id === it.ref.songId
+      ? currentSong
+      : ((await bridge().findSongs("")) as Song[]).find((x) => x.id === it.ref!.songId);
+    if (s) return renderVerses(s.verses);
+  }
+  if (it.kind === "BibleVerses") {
+    // A Bible item projects the passage from the installed translation; the
+    // plan's own text is the fallback.
+    const ref = it.ref?.bibleRef;
+    const store = bibles.byId(ref?.translationId) ?? bibles.current();
+    const text = bibleItemText(ref, store, it.ref?.text);
+    if (text) return text;
   }
   return it.ref?.text ?? "";
 }
@@ -953,19 +1050,31 @@ async function pushPreview(title: string, html: string, next: string, footer: st
   }
   blackedOut = false;
   el<HTMLButtonElement>("tool-blackout").classList.remove("on");
-  await bridge().project({ title, html, wholeSong: filmSlides, activeIndex: activeFilm }, next);
+  await bridge().project({ title, html, wholeSong: filmSlides, activeIndex: activeFilm }, next, prefs.projMonitor);
   el<HTMLElement>("live-preview").innerHTML = html;
   // B-32: enforce the selected item's in/out cut range on preview media.
   wireRangeLoop(el<HTMLElement>("live-preview"), previewRange());
 }
 async function projectItem(it: AgendaItem, slideIndex?: number): Promise<void> {
   liveItemId = it.id;
+  // The slide panel must show *this* item: the next-slide key steps through
+  // the filmstrip, so a plan item projected without its filmstrip would step
+  // through the previous item's slides.
+  if (filmSourceId !== `item:${it.id}`) {
+    selectedItemId = it.id;
+    await refreshFilmstrip();
+  }
   refreshAgendaListSelection();
   const body = await itemBodyText(it);
   const next = agenda.items[agenda.items.findIndex((x) => x.id === it.id) + 1]?.title ?? "";
   const footer = it.kind === "BibleVerses" ? String(prefs.versification) : (it.ref?.songId ?? it.kind);
   if (slideIndex !== undefined && body) {
-    const slides = splitSlides(body);
+    // Prefer the already-parsed filmstrip body. It knows that a one-space
+    // line is an empty slide, while the generic `splitSlides` helper (used
+    // for Bible text) treats whitespace-only lines as separators.
+    const slides = filmSourceId === `item:${it.id}` && filmSlides.length
+      ? filmSlides
+      : splitSlides(body);
     const target = Math.min(slideIndex, slides.length - 1);
     const html = slideHtmlFor(it.kind, it.title, slides[target] ?? "", it.ref, slideIndex);
     activeFilm = slideIndex;
@@ -973,6 +1082,22 @@ async function projectItem(it: AgendaItem, slideIndex?: number): Promise<void> {
     paintFilmstrip();
     await pushPreview(it.title, html, next, footer);
     return;
+  }
+  // A song goes on screen one verse at a time, like the original: double-
+  // clicking the agenda row shows the first verse, and the operator steps
+  // through the rest. Projecting the whole song on one screen overflows the
+  // frame and makes the congregation read a wall of text.
+  if (it.kind === "Song" && body) {
+    const slides = filmSourceId === `item:${it.id}` && filmSlides.length
+      ? filmSlides
+      : splitSlides(body);
+    if (slides.length > 1) {
+      activeFilm = 0;
+      selectedSlide = 0;
+      paintFilmstrip();
+      await pushPreview(it.title, slideHtmlFor(it.kind, it.title, slides[0], it.ref, 0), next, footer);
+      return;
+    }
   }
   // Whole-item projection honors unchecked (excluded) verses when the filmstrip
   // currently shows this item's slides.
@@ -985,7 +1110,14 @@ async function projectItem(it: AgendaItem, slideIndex?: number): Promise<void> {
   const html = slideHtmlFor(it.kind, it.title, text, it.ref);
   await pushPreview(it.title, html, next, footer);
 }
-el<HTMLButtonElement>("btn-projector").addEventListener("click", () => void bridge().openProjector());
+el<HTMLButtonElement>("btn-projector").addEventListener("click", () => void bridge().openProjector(prefs.projMonitor));
+// The projector shrinks a verse that is too long for the frame. Say so, so the
+// operator can split it (or raise the size) instead of discovering it live.
+bridge().onFit((info) => {
+  const fit = info as { shrunk?: boolean; factor?: number };
+  if (!fit?.shrunk) return;
+  setHint(`Lyrics shrunk to ${Math.round((fit.factor ?? 1) * 100)}% to fit the frame — split the verse or raise the size.`);
+});
 el<HTMLButtonElement>("btn-stage").addEventListener("click", () => void bridge().openStage());
 el<HTMLButtonElement>("btn-stop").addEventListener("click", async () => {
   await bridge().stop();
@@ -1221,12 +1353,18 @@ async function refreshFilmstrip(): Promise<void> {
   if (!it) {
     if (currentSong) {
       const raw = el<HTMLTextAreaElement>("lyrics-editor").value;
-      const slides = splitSlides(raw);
+      const tagged = songUsesTaggedLyrics(currentSong, raw);
+      const parsed = slidesFromLyricsDocument(raw, tagged, currentSong.sequence, currentSong.verseOrderIndex);
+      // Tagged songs carry their own V1/C label on every slide, including
+      // both halves of a verse split by a blank line. Untagged local songs
+      // keep the legacy id/text-derived label.
+      const labels = parsed.map((s, i) => (tagged ? s.label : labelFor(i, s.body, currentSong).label));
+      const bodies = parsed.map((s, i) => (tagged ? s.body : labelFor(i, s.body, currentSong).body));
       setSlides(`song:${currentSong.id}`,
-        slides,
-        slides.map((s, i) => labelFor(i, s, currentSong).label),
-        slides.map((s, i) => labelFor(i, s, currentSong).body),
-        slides.map((_, i) => footerFor(i, currentSong, undefined, "")),
+        parsed.map((s) => s.body),
+        labels,
+        bodies,
+        parsed.map((_, i) => footerFor(i, currentSong, undefined, "")),
         currentSong.title, currentSong.songbookId ?? "SONG", false);
       showEditPane("song", currentSong.title);
       return;
@@ -1260,8 +1398,8 @@ async function refreshFilmstrip(): Promise<void> {
   const body = editingThisSong
     ? el<HTMLTextAreaElement>("lyrics-editor").value
     : await itemBodyText(it);
-  const slides = splitSlides(body);
   if (it.kind === "BibleVerses") {
+    const slides = splitSlides(body);
     const refText = it.title;
     setSlides(`item:${it.id}`, slides,
       slides.map((s, i) => bibleVerseLabel(s, i)),
@@ -1269,26 +1407,44 @@ async function refreshFilmstrip(): Promise<void> {
       slides.map((s) => `${refText} · v${bibleVerseNumber(s)} (${prefs.versification})`),
       it.title, String(prefs.versification), true);
     showEditPane("bible", it.title);
-  } else {
-    let song: Song | null = null;
-    if (it.kind === "Song" && it.ref?.songId) {
-      song = currentSong?.id === it.ref.songId
-        ? currentSong
-        : ((await bridge().findSongs("").catch(() => [])) as Song[])
-            .find((x) => x.id === it.ref!.songId) ?? null;
-    }
-    setSlides(`item:${it.id}`, slides,
-      slides.map((s, i) => labelFor(i, s, song).label),
-      slides.map((s, i) => labelFor(i, s, song).body),
-      slides.map((_, i) => footerFor(i, song, it, "")),
+    return;
+  }
+
+  let song: Song | null = null;
+  if (it.kind === "Song" && it.ref?.songId) {
+    song = currentSong?.id === it.ref.songId
+      ? currentSong
+      : ((await bridge().findSongs("").catch(() => [])) as Song[])
+          .find((x) => x.id === it.ref!.songId) ?? null;
+  }
+  if (song) {
+    const tagged = songUsesTaggedLyrics(song, editingThisSong ? body : undefined);
+    const parsed = editingThisSong
+      ? slidesFromLyricsDocument(body, tagged, song.sequence, song.verseOrderIndex)
+      : slidesFromVerses(song.verses, song.sequence, song.verseOrderIndex);
+    const labels = parsed.map((s, i) => (tagged ? s.label : labelFor(i, s.body, song).label));
+    const bodies = parsed.map((s, i) => (tagged ? s.body : labelFor(i, s.body, song).body));
+    setSlides(`item:${it.id}`, parsed.map((s) => s.body),
+      labels,
+      bodies,
+      parsed.map((_, i) => footerFor(i, song, it, "")),
       it.title, it.ref?.songId ?? it.kind, false);
     // Selecting a Song in the agenda loads it into the editor, exactly like
     // clicking it in the library does — otherwise the centre pane shows an
     // empty "Lyrics: Amazing Grace" with nothing to edit.
-    if (song) currentSong = song;
+    currentSong = song;
     showEditPane("song", it.title);
     fillLyricsEditor();
+    return;
   }
+
+  const slides = splitSlides(body);
+  setSlides(`item:${it.id}`, slides,
+    slides.map((s, i) => labelFor(i, s, null).label),
+    slides.map((s, i) => labelFor(i, s, null).body),
+    slides.map((_, i) => footerFor(i, null, it, "")),
+    it.title, it.ref?.songId ?? it.kind, false);
+  showEditPane("song", it.title);
 }
 
 function bibleVerseNumber(text: string): string {
@@ -1605,18 +1761,48 @@ function renderSongbookTree(songs: Song[]): void {
  *  refreshFilmstrip, which re-filled the textarea from the stored song and
  *  wiped the character just typed. */
 let editorSongId: string | null = null;
+function fileBase(file: string): string {
+  return file.split(/[\\/]/).pop() || file;
+}
+function updateSongSourceBadge(song: Song | null): void {
+  const badge = document.getElementById("song-source");
+  if (!badge) return;
+  badge.className = "hint song-source";
+  if (song?.source?.format === "videopsalm") {
+    badge.textContent = `VideoPsalm · ${fileBase(song.source.file)} · edits save back to this file`;
+    badge.classList.add("native");
+  } else {
+    badge.textContent = song ? "Local library song — edits are saved in the app library" : "";
+  }
+}
+function setSongSaveStatus(text: string, error = false): void {
+  const badge = document.getElementById("song-source");
+  if (!badge) return;
+  badge.textContent = text;
+  badge.className = "hint song-source" + (error ? " error" : currentSong?.source ? " native" : "");
+}
+function songUsesTaggedLyrics(song: Song, text?: string): boolean {
+  return song.source?.format === "videopsalm"
+    || song.verses.some((v) => v.tag)
+    || (text !== undefined && hasVerseTagLine(text));
+}
 function fillLyricsEditor(): void {
   if (!currentSong) return;
   if (editorSongId === currentSong.id) return; // already loaded; keep live edits
   editorSongId = currentSong.id;
   el<HTMLTextAreaElement>("lyrics-editor").value =
     currentSong.chords?.chordpro ??
-    currentSong.verses.map((v) => v.lines.join("\n")).join("\n\n");
+    documentFromVerses(currentSong.verses, songUsesTaggedLyrics(currentSong));
+  el<HTMLInputElement>("song-title-edit").value = currentSong.title;
+  updateSongSourceBadge(currentSong);
 }
 function showSong(s: Song): void {
   currentSong = s;
   el<HTMLElement>("song-title").textContent = s.title;
+  el<HTMLInputElement>("song-title-edit").value = s.title;
   fillLyricsEditor();
+  fillSongMeta(s);
+  updateSongSourceBadge(s);
   el<HTMLElement>("song-preview").hidden = false;
   showEditPane("song", s.title);
   renderSongPreview();
@@ -1625,17 +1811,89 @@ function showSong(s: Song): void {
  *  pane's own subtitle: "edits apply live, even during projection"). Each
  *  keystroke writes the text back into the song object and repaints the
  *  filmstrip from it; the library upsert is debounced so fast typing doesn't
- *  hammer the store, and the edit still survives a restart. */
+ *  hammer the store, and the edit still survives a restart. For native
+ *  VideoPsalm songs the main process also writes the same edit back into the
+ *  operator's real `Songbooks/*.json` file. */
 let saveSongTimer: ReturnType<typeof setTimeout> | undefined;
+/** True while an edit is still waiting to be written to disk. */
+let saveSongPending = false;
+interface SaveSongResult {
+  ok?: boolean;
+  native?: boolean;
+  file?: string;
+  error?: string;
+}
+async function saveCurrentSong(): Promise<void> {
+  const song = currentSong;
+  if (!song) return;
+  if (song.source?.format === "videopsalm") setSongSaveStatus(`Saving to ${fileBase(song.source.file)}…`);
+  let result: SaveSongResult = {};
+  try {
+    result = (await bridge().saveSong(song, [...metaEdits])) as SaveSongResult;
+  } catch (e) {
+    result = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (currentSong?.id !== song.id) return;
+  saveSongPending = false;
+  if (result.ok) {
+    metaEdits = new Set();
+    if (result.native) {
+      setSongSaveStatus(`Saved to ${fileBase(result.file ?? song.source?.file ?? "")}`);
+    } else {
+      updateSongSourceBadge(currentSong);
+    }
+  } else {
+    setSongSaveStatus(`Save failed: ${result.error ?? "unknown error"}`, true);
+  }
+}
+function scheduleSongSave(): void {
+  saveSongPending = true;
+  clearTimeout(saveSongTimer);
+  saveSongTimer = setTimeout(() => { void saveCurrentSong(); }, 300);
+}
+
+/**
+ * A service does not wait for a debounce. Two safety nets keep an edit from
+ * being lost: leaving the window writes it out, and closing the window uses
+ * a blocking write so the operator's songbook is up to date even when the
+ * app is quit right after typing.
+ */
+window.addEventListener("blur", () => {
+  if (saveSongPending && currentSong) void saveCurrentSong();
+});
+window.addEventListener("beforeunload", () => {
+  if (!saveSongPending || !currentSong) return;
+  saveSongPending = false;
+  try {
+    bridge().saveSongSync(currentSong);
+  } catch {
+    // The window is closing; there is no status bar left to report to.
+  }
+});
+/**
+ * `Ctrl+S` with the song document open: save **the song**, not the agenda.
+ *
+ * The original's Save is per-document (OBSERVATIONS-lyrics-editor.md §Save),
+ * and the agenda save and the song save share an icon there — a documented
+ * confusion hazard. Here they are separate actions.
+ *
+ * The text on screen is the live source of truth, so the flush comes first:
+ * the pending edit is written into the song, the debounced copy is cancelled,
+ * and the save runs now instead of 300 ms later.
+ */
+async function saveSongDocumentNow(): Promise<void> {
+  applyLyricsEdit();
+  clearTimeout(saveSongTimer);
+  await saveCurrentSong();
+}
 function applyLyricsEdit(): void {
   const song = currentSong;
   if (!song) return;
   const text = el<HTMLTextAreaElement>("lyrics-editor").value;
-  song.verses = text.split(/\n[ \t]*\n/).map((block, i) => ({
-    id: song.verses[i]?.id ?? String(i + 1),
-    lines: block.split("\n"),
-    order: i + 1,
-  }));
+  // Blank lines are slide breaks inside a native verse; the V1/C/B heading
+  // lines are the verse boundaries. Keep that distinction on save or a
+  // multi-slide verse becomes several native verses.
+  song.verses = versesFromLyricsDocument(text, song.verses, songUsesTaggedLyrics(song, text));
   if (/\[[^\]]+\]/.test(text)) {
     song.chords = {
       notation: song.chords?.notation ?? "ABC",
@@ -1647,10 +1905,145 @@ function applyLyricsEdit(): void {
     delete song.chords.chordpro;
   }
   renderSongPreview();
-  clearTimeout(saveSongTimer);
-  saveSongTimer = setTimeout(() => { void bridge().saveSong(song); }, 300);
+  scheduleSongSave();
+}
+function applySongTitleEdit(): void {
+  if (!currentSong) return;
+  const title = el<HTMLInputElement>("song-title-edit").value.trim() || "Untitled";
+  currentSong.title = title;
+  el<HTMLElement>("song-title").textContent = title;
+  renderSongPreview();
+  void refreshFilmstrip();
+  scheduleSongSave();
+}
+
+// ---------- song metadata (author, CCLI, copyright, …) ----------
+//
+// VideoPsalm keeps these on the song itself. The editor owns them here, and
+// the write-back applies *only* the fields the operator actually changed, so
+// an untouched native value is never rewritten.
+const META_FIELDS = ["author", "composer", "ccli", "copyright", "theme", "reference", "memo1", "memo2", "memo3"] as const;
+type MetaField = (typeof META_FIELDS)[number] | "verseOrderIndex";
+/** Native metadata fields the operator changed in this song. */
+let metaEdits = new Set<MetaField>();
+
+function metaValue(song: Song, field: MetaField): string {
+  switch (field) {
+    case "verseOrderIndex": return String(song.verseOrderIndex ?? -1);
+    case "author": return (song.authors ?? []).join("; ");
+    case "composer": return song.composer ?? "";
+    case "ccli": return song.ccli ?? "";
+    case "copyright": return song.copyright ?? "";
+    case "theme": return (song.themes ?? []).join("\n");
+    case "reference": return (song.references ?? []).join("\n");
+    case "memo1": return song.memo1 ?? "";
+    case "memo2": return song.memo2 ?? "";
+    case "memo3": return song.memo3 ?? "";
+  }
+}
+function setMetaValue(song: Song, field: MetaField, value: string): void {
+  const lines = (raw: string): string[] => raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  switch (field) {
+    case "author": song.authors = value.split(/[;,]/).map((l) => l.trim()).filter(Boolean); break;
+    case "composer": song.composer = value.trim(); break;
+    case "ccli": song.ccli = value.trim(); break;
+    case "copyright": song.copyright = value.trim(); break;
+    case "theme": song.themes = lines(value); break;
+    case "reference": song.references = lines(value); break;
+    case "memo1": song.memo1 = value; break;
+    case "memo2": song.memo2 = value; break;
+    case "memo3": song.memo3 = value; break;
+  }
+}
+function fillSongMeta(song: Song | null): void {
+  metaEdits = new Set();
+  for (const field of META_FIELDS) {
+    const input = el<HTMLTextAreaElement | HTMLInputElement>(`meta-${field}`);
+    input.value = song ? metaValue(song, field) : "";
+  }
+  fillVerseOrder(song);
+}
+
+/**
+ * The native `Sequence` holds one or more verse orders ("V1 C V2 C, C V1");
+ * `VerseOrderIndex` picks the one the projector uses (-1 = document order).
+ */
+function fillVerseOrder(song: Song | null): void {
+  const select = el<HTMLSelectElement>("meta-verse-order");
+  select.innerHTML = "";
+  const orders = (song?.sequence ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+  const add = (value: string, label: string): void => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  };
+  add("-1", "Document order");
+  orders.forEach((order, i) => add(String(i), `Order ${i + 1}: ${order}`));
+  const current = song?.verseOrderIndex;
+  select.value = typeof current === "number" && current >= 0 ? String(current) : "-1";
+  select.disabled = orders.length === 0;
+}
+el<HTMLSelectElement>("meta-verse-order").addEventListener("change", () => {
+  const song = currentSong;
+  if (!song) return;
+  const value = parseInt(el<HTMLSelectElement>("meta-verse-order").value, 10);
+  song.verseOrderIndex = value >= 0 ? value : undefined;
+  metaEdits.add("verseOrderIndex");
+  renderSongPreview();
+  void refreshFilmstrip();
+  scheduleSongSave();
+});
+for (const field of META_FIELDS) {
+  const input = el<HTMLTextAreaElement | HTMLInputElement>(`meta-${field}`);
+  input.addEventListener("input", () => {
+    const song = currentSong;
+    if (!song) return;
+    setMetaValue(song, field, input.value);
+    metaEdits.add(field);
+    renderSongPreview();
+    scheduleSongSave();
+  });
+}
+function transformLyricsEditor(fn: (ta: HTMLTextAreaElement) => void): void {
+  const ta = el<HTMLTextAreaElement>("lyrics-editor");
+  ta.focus();
+  fn(ta);
+  applyLyricsEdit();
+}
+function tagCurrentBlock(tag: string): void {
+  const song = currentSong;
+  if (!song) return;
+  transformLyricsEditor((ta) => {
+    const tagged = songUsesTaggedLyrics(song, ta.value);
+    const result = insertVerseTag(ta.value, ta.selectionStart, tag, tagged);
+    if (!result.changed) return;
+    ta.value = result.text;
+    ta.selectionStart = ta.selectionEnd = result.cursor;
+  });
 }
 el<HTMLTextAreaElement>("lyrics-editor").addEventListener("input", () => applyLyricsEdit());
+el<HTMLInputElement>("song-title-edit").addEventListener("input", () => applySongTitleEdit());
+el<HTMLButtonElement>("lyrics-insert-v").addEventListener("click", () => tagCurrentBlock("V1"));
+el<HTMLButtonElement>("lyrics-insert-c").addEventListener("click", () => tagCurrentBlock("C"));
+el<HTMLButtonElement>("lyrics-insert-b").addEventListener("click", () => tagCurrentBlock("B"));
+el<HTMLButtonElement>("lyrics-wrap-chord").addEventListener("click", () => {
+  transformLyricsEditor((ta) => {
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const chord = ta.value.slice(start, end) || "C";
+    ta.value = ta.value.slice(0, start) + `[${chord}]` + ta.value.slice(end);
+    ta.selectionStart = start + 1;
+    ta.selectionEnd = start + 1 + chord.length;
+  });
+});
+el<HTMLButtonElement>("lyrics-split").addEventListener("click", () => {
+  transformLyricsEditor((ta) => {
+    const start = ta.selectionStart;
+    ta.value = ta.value.slice(0, start) + "\n\n" + ta.value.slice(ta.selectionEnd);
+    ta.selectionStart = ta.selectionEnd = start + 2;
+  });
+});
 el<HTMLInputElement>("transpose-steps").addEventListener("input", () => renderSongPreview());
 el<HTMLSelectElement>("chord-notation").addEventListener("change", () => renderSongPreview());
 function renderSongPreview(): void {
@@ -1658,6 +2051,10 @@ function renderSongPreview(): void {
   const steps = parseInt(el<HTMLInputElement>("transpose-steps").value || "0", 10);
   const notation = el<HTMLSelectElement>("chord-notation").value as "latin" | "doremi";
   let text = el<HTMLTextAreaElement>("lyrics-editor").value;
+  // The editor shows V1/C/B headings on their own line (like VideoPsalm's
+  // lyrics editor). They are metadata, not projected text; the shared parser
+  // also keeps a blank line inside the verse as a slide break.
+  text = renderLyricsDocument(text, songUsesTaggedLyrics(currentSong, text));
   text = text.replace(/\[([^\]]+)\]/g, (_m, c: string) => `[${transposeClient(c.trim(), steps, notation)}]`);
   el<HTMLElement>("song-preview").textContent = text;
   void refreshFilmstrip();
@@ -1684,6 +2081,132 @@ el<HTMLButtonElement>("song-import-sample").addEventListener("click", async () =
   setHint(`Imported ${n} sample songs.`);
   void runSongSearch();
 });
+
+// ---------- native VideoPsalm files (songbooks + document folder) ----------
+//
+// VideoPsalm's real data lives in `Documents/VideoPsalm`: Songbooks/*.json,
+// Images/, Videos/, and *Style*.json. Opening a songbook imports its songs
+// with a `source` locator; the debounced editor save then writes lyric/title
+// changes straight back to that file. The folder scan additionally feeds the
+// Image/Video galleries and applies the background assigned by RootStyle.json.
+
+interface VpFolderResult {
+  ok?: boolean;
+  canceled?: boolean;
+  error?: string;
+  file?: string;
+  folder?: string;
+  songbook?: { name?: string; abbrev?: string; file?: string };
+  songCount?: number;
+  ids?: string[];
+  images?: string[];
+  videos?: string[];
+  backgrounds?: { kind: "image" | "videoLoop"; file: string; source: string }[];
+  errors?: string[];
+}
+
+function updateVpFolderChrome(): void {
+  const info = document.getElementById("bg-vp-info");
+  if (!info) return;
+  info.textContent = prefs.videopsalmFolder
+    ? `VP: ${fileBase(prefs.videopsalmFolder)} · ${prefs.videopsalmMedia.length} media`
+    : "";
+  info.title = prefs.videopsalmFolder || "";
+}
+
+function refreshVpMediaGalleries(): void {
+  document.getElementById("media-galleries")?.dispatchEvent(new Event("vp:media-changed"));
+}
+
+async function applyVpFolderResult(res: VpFolderResult, announce: boolean): Promise<void> {
+  if (res.folder) prefs.videopsalmFolder = res.folder;
+  if (Array.isArray(res.images) || Array.isArray(res.videos)) {
+    const seen = new Set<string>();
+    prefs.videopsalmMedia = [
+      ...(res.images ?? []).map((file) => ({ path: file, kind: "image" as const })),
+      ...(res.videos ?? []).map((file) => ({ path: file, kind: "video" as const })),
+    ].filter((entry) => {
+      if (seen.has(entry.path)) return false;
+      seen.add(entry.path);
+      return true;
+    });
+  }
+  let applied: { kind: string; file: string } | null = null;
+  const styleBg = res.backgrounds?.find((b) => /rootstyle/i.test(b.source)) ?? res.backgrounds?.[0];
+  if (styleBg && (announce || (prefs.bgKind === "color" && !prefs.bgFile))) {
+    prefs.bgKind = styleBg.kind;
+    prefs.bgFile = styleBg.file;
+    applied = styleBg;
+  }
+  savePrefs();
+  syncFormatControls();
+  updateVpFolderChrome();
+  refreshVpMediaGalleries();
+  await runSongSearch();
+  if (applied) void refreshFilmstrip();
+  const name = res.folder ? fileBase(res.folder) : "VideoPsalm";
+  const parts = [
+    `VideoPsalm ${name}: ${res.songCount ?? 0} song(s)`,
+    `${prefs.videopsalmMedia.length} gallery file(s)`,
+  ];
+  if (applied) parts.push(`background → ${fileBase(applied.file)}`);
+  if (res.errors?.length) parts.push(`${res.errors.length} skipped`);
+  setHint(parts.join(" · "));
+}
+
+async function openVpFolder(): Promise<void> {
+  let res: VpFolderResult;
+  try {
+    res = (await bridge().openVideopsalmFolder()) as VpFolderResult;
+  } catch (e) {
+    setHint(`VideoPsalm folder: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (res.canceled) return;
+  if (!res.folder) {
+    setHint(`VideoPsalm folder: ${res.error ?? "not opened"}`);
+    return;
+  }
+  await applyVpFolderResult(res, true);
+}
+
+async function openVpSongbook(): Promise<void> {
+  let res: VpFolderResult;
+  try {
+    res = (await bridge().openVideopsalmSongbook()) as VpFolderResult;
+  } catch (e) {
+    setHint(`VideoPsalm songbook: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (res.canceled) return;
+  if (!res.ok) {
+    setHint(`VideoPsalm songbook: ${res.error ?? "not imported"}`);
+    return;
+  }
+  await runSongSearch();
+  if (res.ids?.length) {
+    const all = (await bridge().findSongs("")) as Song[];
+    const first = all.find((s) => s.id === res.ids?.[0]);
+    if (first) showSong(first);
+  }
+  const name = res.songbook?.name ?? (res.file ? fileBase(res.file) : "songbook");
+  setHint(`Imported ${res.songCount ?? 0} song(s) from VideoPsalm “${name}”. Edits now save back to the file.`);
+}
+
+async function restoreVideopsalmFolder(): Promise<void> {
+  updateVpFolderChrome();
+  if (!prefs.videopsalmFolder) return;
+  try {
+    const res = (await bridge().scanVideopsalmFolder(prefs.videopsalmFolder)) as VpFolderResult;
+    if (res.folder) await applyVpFolderResult(res, false);
+  } catch {
+    // A moved/deleted folder must not stop the app from booting.
+  }
+}
+
+el<HTMLButtonElement>("song-open-vp").addEventListener("click", () => { void openVpSongbook(); });
+el<HTMLButtonElement>("song-open-vp-folder").addEventListener("click", () => { void openVpFolder(); });
+el<HTMLButtonElement>("bg-vp-folder").addEventListener("click", () => { void openVpFolder(); });
 
 // ---------- bible (ref box + picker + favorites + bilingual) ----------
 //
@@ -1809,10 +2332,18 @@ el<HTMLButtonElement>("bible-context").addEventListener("click", () => {
  *  `core/bibleImport.ts`); the renderer installs the translation and
  *  refreshes the tab strip and any visible selection. */
 el<HTMLButtonElement>("bible-import").addEventListener("click", async () => {
-  const path = el<HTMLInputElement>("bible-import-path").value.trim();
+  const field = el<HTMLInputElement>("bible-import-path");
+  let path = field.value.trim();
   if (!path) {
-    setHint("Enter the path of the Bible XML file to import.");
-    return;
+    // A church should not have to know where its Bible XML sits: offer the
+    // file picker when no path was typed.
+    const picked = (await bridge().pickBibleXml()) as string | null;
+    if (!picked) {
+      setHint("Bible import cancelled.");
+      return;
+    }
+    path = picked;
+    field.value = picked;
   }
   const res = (await bridge().importBible(path)) as {
     ok: boolean;
@@ -1821,7 +2352,7 @@ el<HTMLButtonElement>("bible-import").addEventListener("click", async () => {
   } | null;
   if (res?.ok && res.translation) {
     bibles.install(res.translation as never);
-    el<HTMLInputElement>("bible-import-path").value = "";
+    field.value = "";
     renderTransTabs();
     updateTransBadge();
     setHint(
@@ -2328,6 +2859,20 @@ function isEditing(target: EventTarget | null): boolean {
   const tag = (t.tagName ?? "").toUpperCase();
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t as HTMLElement).isContentEditable;
 }
+/**
+ * True when the keystroke belongs to the **song document** — the lyrics
+ * editor or the song title field.
+ *
+ * The original's Save is per-document: in the songs tab `Ctrl+S` saves the
+ * song, in the agenda it saves the agenda (OBSERVATIONS-lyrics-editor.md
+ * §Save). `Alt+S` is Songbooks in both contexts and never Save.
+ */
+function isSongEditorFocused(target: EventTarget | null): boolean {
+  const t = target as HTMLElement | null;
+  if (!t || !("id" in (t as object))) return false;
+  const id = (t as HTMLElement).id;
+  return id === "lyrics-editor" || id === "song-title-edit";
+}
 // One keydown routes through the whole presentation keymap (see
 // routePresKey), so the behavior, the help table, and the README cannot drift.
 document.addEventListener("keydown", (e) => {
@@ -2335,7 +2880,12 @@ document.addEventListener("keydown", (e) => {
     el<HTMLElement>("shortcuts-help").hidden = !el<HTMLElement>("shortcuts-help").hidden;
     return;
   }
-  const action = routePresKey(e, isEditing(e.target), mediaPlayerFocused());
+  const action = routePresKey(
+    e,
+    isEditing(e.target),
+    mediaPlayerFocused(),
+    isSongEditorFocused(e.target),
+  );
   if (!action) return;
   e.preventDefault();
   void handlePresKey(action);
@@ -2352,9 +2902,10 @@ async function handlePresKey(action: PresAction): Promise<void> {
       addSearchResult(action.addResult);
       return;
     }
-    // Section jump: find the first slide whose verse id starts with the letter.
+    // Section jump: find the first slide whose parsed V1/C/B label starts
+    // with the letter. Lyrics themselves may begin with the same letter.
     const want = action.section[0].toUpperCase();
-    const idx = filmSlides.findIndex((s) => s.trim().toUpperCase().startsWith(want));
+    const idx = filmLabels.findIndex((label) => label.trim().toUpperCase().startsWith(want));
     if (idx >= 0) await projectFilmSlide(idx);
     else setHint(`No ${action.section} in this song.`);
     return;
@@ -2380,6 +2931,7 @@ async function handlePresKey(action: PresAction): Promise<void> {
     case "toggleRibbon": toggleRibbonCollapsed(); break;
     case "keyTips": toggleKeyTips(); break;
     case "save": await saveAgendaNow(); break;
+    case "saveSong": await saveSongDocumentNow(); break;
     case "focusSongs": switchRibbon("songs"); focusSongbookPane(); break;
     case "focusBibles": focusBiblePane(); break;
     case "focusSlides": {
@@ -2735,6 +3287,7 @@ function mountMediaGalleriesNow(): void {
   if (!root) return;
   mountMediaGalleries(root, {
     getItems: () => agenda.items.map((it) => ({ id: it.id, title: it.title, kind: it.kind, file: it.ref?.file })),
+    getExtraMedia: () => prefs.videopsalmMedia,
     addItem: (kind, title, file) => { agenda.items.push({ id: `item-${Date.now().toString(36)}`, kind, title, ref: { file }, flowType: "Manual" }); agendaDirty = true; paintDirty(); void bridge().setAgenda(agenda); void refreshAgenda(); },
     removeItem: (id) => { agenda.items = agenda.items.filter((x) => x.id !== id); agendaDirty = true; paintDirty(); void bridge().setAgenda(agenda); void refreshAgenda(); },
     getBg: () => ({ kind: prefs.bgKind, file: prefs.bgFile }),
@@ -2759,6 +3312,9 @@ syncTestamentToBook();
 mountMediaGalleriesNow();
 void refreshAgenda();
 void runSongSearch();
+// Restore the last native VideoPsalm document folder (Songbooks + galleries +
+// style background). No folder selected = no scan, no surprise writes.
+void restoreVideopsalmFolder();
 // Display plug/unplug while running arrives via window focus, not via
 // projection — re-read the count so the single-screen guard never goes stale.
 void refreshDisplayCount();

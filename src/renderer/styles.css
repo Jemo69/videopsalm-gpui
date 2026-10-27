@@ -219,7 +219,22 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
 #pane-center { display: flex; flex-direction: column; }
 #song-detail { display: flex; flex-direction: column; gap: 0.3em; }
 #song-detail h4 { margin: 0; }
+.song-title-row { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+.song-title-row #song-title { flex: none; }
+.song-title-row #song-title-edit { flex: 1 1 16em; min-width: 10em; box-sizing: border-box; }
+.song-source { min-height: 1.1em; }
+.song-source.native { color: #69f0ae; font-weight: bold; }
+.song-source.error { color: #ff5252; font-weight: bold; }
+.editor-tools { display: flex; gap: 0.35em; align-items: center; flex-wrap: wrap; }
+.editor-tools button { padding: 0.15em 0.55em; font-size: 0.85em; }
+/* Song details: the native metadata (author, CCLI, copyright, …). */
+.song-meta { border: 1px solid var(--border); border-radius: 6px; padding: 0.3em 0.6em; background: var(--panel); }
+.song-meta > summary { cursor: pointer; font-size: 0.85em; color: var(--dim); }
+.song-meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14em, 1fr)); gap: 0.4em 0.8em; margin: 0.5em 0; }
+.song-meta-grid label { display: flex; flex-direction: column; gap: 0.15em; font-size: 0.8em; color: var(--dim); }
+.song-meta-grid input, .song-meta-grid textarea { width: 100%; box-sizing: border-box; font: inherit; resize: vertical; }
 #lyrics-editor, #bible-verse-edit { width: 100%; box-sizing: border-box; resize: vertical; }
+.gallery-thumb .vp-media-badge { position: absolute; top: 2px; right: 2px; font-size: 0.65em; background: #1d7a34; color: #fff; border-radius: 4px; padding: 0 0.25em; }
 .slide-block { display: grid; /* Fixed px text track, not `1fr`: this WSLg Xvfb session renders the window at a fractional CSS width (215.875px), and Chromium mis-resolves a `minmax(0,1fr)` track in that case — the computed tracks summed to ~178px against a 216px box, squeezing `.slide-text` to ~112px, wrapping each lyric line one-word-per-line and stretching the block to ~298px, which overflowed the ~114px filmstrip and hid every slide row. A literal px track sidesteps the fractional-`fr` bug and keeps both blocks visible; the track is wider than the filmstrip so the text still gets the full column and wraps on words. */ grid-template-columns: auto auto minmax(0,1fr); gap: 0.5em; align-items: start; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4em 0.6em; cursor: pointer; text-align: left; width: 100%; box-sizing: border-box; font: inherit; min-width: 0; flex: 0 0 auto; }
 /* Four children — checkbox, label, text, footer — so the grid needs an
    explicit checkbox track. Without it the checkbox consumed the first `auto`,

@@ -159,6 +159,16 @@ describe("cross-port schema fixture", () => {
       assert.equal(abc.memo1, "slow");
       assert.equal(abc.memo2, "pickup on line 3");
       assert.equal(abc.songId, "00000001");
+
+      // Native VideoPsalm additions: verse identity, selected Sequence, and
+      // the source locator used for write-through editing.
+      assert.equal(abc.verses[0].tag, "V");
+      assert.equal(abc.verses[0].tagId, 1);
+      assert.equal(abc.sequence, "V1 C V2 C");
+      assert.equal(abc.verseOrderIndex, 0);
+      assert.equal(abc.source?.format, "videopsalm");
+      assert.equal(abc.source?.songbookGuid, "book-guid");
+      assert.equal(abc.source?.guid, "song-guid");
     });
 
     it("survives a JSON round-trip with every field intact", () => {

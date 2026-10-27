@@ -217,6 +217,11 @@ export class BibleLibrary {
       : undefined;
   }
 
+  /** One installed translation by id (for agenda items that name one). */
+  byId(id: string | undefined): Translation | undefined {
+    return id ? this.translations.get(id) : undefined;
+  }
+
   /** Ids of every installed translation, in install order. */
   ids(): string[] {
     return [...this.translations.keys()];

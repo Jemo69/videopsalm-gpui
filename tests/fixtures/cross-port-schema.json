@@ -196,14 +196,18 @@
             "Amazing grace! how sweet the sound",
             "[G]How precious did that [C]grace appear"
           ],
-          "order": 1
+          "order": 1,
+          "tag": "V",
+          "tagId": 1
         },
         {
           "id": "V2",
           "lines": [
             "Was blind, but now I see."
           ],
-          "order": 2
+          "order": 2,
+          "tag": "V",
+          "tagId": 2
         }
       ],
       "authors": [
@@ -245,7 +249,17 @@
       "memo1": "slow",
       "memo2": "pickup on line 3",
       "createdAt": "2026-01-01T00:00:00Z",
-      "updatedAt": "2026-01-02T03:04:05Z"
+      "updatedAt": "2026-01-02T03:04:05Z",
+      "sequence": "V1 C V2 C",
+      "verseOrderIndex": 0,
+      "source": {
+        "format": "videopsalm",
+        "file": "/tmp/SongBooks/Book.json",
+        "songbookGuid": "book-guid",
+        "songbookName": "Book",
+        "songId": "3",
+        "guid": "song-guid"
+      }
     },
     {
       "id": "song-cross-doremi",

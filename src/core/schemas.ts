@@ -29,6 +29,13 @@ export interface SongVerse {
   id: string;
   lines: string[];
   order?: number;
+  /**
+   * Native VideoPsalm verse label: `V`, `C`, `P`, `B`, `T`, `E`, `O`, `S`,
+   * `I`, or `R`. Absent on songs that never carried a native tag.
+   */
+  tag?: string;
+  /** Native VideoPsalm verse number (`V1` → tag `V`, tagId `1`). */
+  tagId?: number;
 }
 
 export interface ChordOverlay {
@@ -72,6 +79,21 @@ export interface SongChords {
   chordpro?: string; // raw ChordPro source when imported as such
 }
 
+/**
+ * Where a song came from. Only the native VideoPsalm format uses this today:
+ * the file path lets the main process write lyric edits straight back into
+ * the operator's real `Songbooks/*.json` file, while `songbookGuid`/`guid`
+ * identify the song inside the (unknown-field-preserving) native AST.
+ */
+export interface SongSource {
+  format: "videopsalm";
+  file: string;
+  songbookGuid: string;
+  songbookName?: string;
+  songId?: string;
+  guid?: string;
+}
+
 export interface Song {
   id: string;
   title: string;
@@ -84,6 +106,14 @@ export interface Song {
   color?: string;
   icon?: string;
   chords?: SongChords;
+  /**
+   * Native VideoPsalm `Sequence` / `VerseOrderIndex`. `sequence` is a
+   * comma-separated list of alternative verse orders (`V1 C V2 C`), and the
+   * index selects one. A missing index (-1 in VideoPsalm) means document
+   * order; the fields are preserved even when no order is selected.
+   */
+  sequence?: string;
+  verseOrderIndex?: number;
   /**
    * Searchable metadata. Every one of these is a **named scope** in the
    * original's "Find words in:" panel (`song-search-results.png`) — twelve
@@ -100,6 +130,8 @@ export interface Song {
   /** Emitted by `vp-core`; undeclared here until now, which is why a song
    *  re-saved by Rust could not be typed on this side. */
   updatedAt: string;
+  /** Native VideoPsalm origin (write-through editing). */
+  source?: SongSource;
 }
 
 export interface BibleRef {

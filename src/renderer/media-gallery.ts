@@ -40,6 +40,7 @@ import {
   resolve,
   setLevel,
 } from "../core/cascade.js";
+import { fileUrl } from "../core/fileUrl.js";
 
 export type GalleryKind = "image" | "video";
 
@@ -194,13 +195,13 @@ function thumb(entry: GalleryEntry, assigned: boolean, hooks: GalleryHooks, kind
   b.title = entry.path;
   if (kind === "image") {
     const img = document.createElement("img");
-    img.src = "file://" + entry.path;
+    img.src = fileUrl(entry.path);
     img.alt = fileCaption(entry.path);
     img.loading = "lazy";
     b.appendChild(img);
   } else {
     const v = document.createElement("video");
-    v.src = "file://" + entry.path;
+    v.src = fileUrl(entry.path);
     v.muted = true;
     v.preload = "metadata";
     b.appendChild(v);
@@ -497,6 +498,8 @@ export function wireRangeLoop(container: HTMLElement, range: CutRange): void {
 /** Structural agenda slice the galleries need (no renderer internals leak). */
 export interface GalleryCtx {
   getItems(): { id: string; title: string; kind: string; file?: string }[];
+  /** Files discovered in a VideoPsalm document folder (Images/ + Videos/). */
+  getExtraMedia(): { path: string; kind: GalleryKind }[];
   addItem(kind: "Image" | "Video", title: string, file: string): void;
   removeItem(id: string): void;
   getBg(): { kind: string; file: string };
@@ -530,6 +533,19 @@ export function mountMediaGalleries(root: HTMLElement, ctx: GalleryCtx): void {
             id: it.id,
             path: it.file,
             kind: it.kind === "Video" ? "video" : "image",
+            blackFlashMs: BLACK_FLASH_DEFAULT_MS,
+          });
+        }
+      }
+      // Native VideoPsalm folder media: Images/ and Videos/ are the original's
+      // galleries. They are shown alongside agenda media but are not agenda
+      // items, so assigning one only changes the live background.
+      for (const e of ctx.getExtraMedia()) {
+        if (!out.some((x) => x.path === e.path)) {
+          out.push({
+            id: `vp-folder:${e.path}`,
+            path: e.path,
+            kind: e.kind,
             blackFlashMs: BLACK_FLASH_DEFAULT_MS,
           });
         }

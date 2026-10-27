@@ -26,6 +26,15 @@ function mediaKey(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
     true,
   );
 }
+function songKey(k: string, mods: Partial<KeyLike> = {}): PresAction | null {
+  // The song document (lyrics editor / title field) has focus.
+  return routePresKey(
+    { key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods },
+    true,
+    false,
+    true,
+  );
+}
 
 test("arrows, space, Enter and page keys step slides", () => {
   for (const k of [" ", "ArrowRight", "ArrowDown", "PageDown", "Enter"]) {
@@ -115,6 +124,22 @@ test("unrelated keys do not route", () => {
   for (const k of ["q", "z", "!", "F7", "Tab"]) {
     assert.equal(key(k), null, k);
   }
+});
+
+test("Ctrl+S saves the song in the editor and the agenda everywhere else", () => {
+  // Save is per-document (OBSERVATIONS-lyrics-editor.md §Save): the songs tab
+  // saves the song, the agenda saves the agenda. The original gives the two
+  // the same icon — a documented confusion hazard we must not reproduce.
+  assert.equal(key("s", { ctrlKey: true }), "save");
+  assert.equal(songKey("s", { ctrlKey: true }), "saveSong");
+  // Alt+S is Songbooks in both contexts and never Save — 1.27 beta restored
+  // it after Save hijacked it.
+  assert.equal(key("s", { altKey: true }), "focusSongs");
+  assert.equal(songKey("s", { altKey: true }), "focusSongs");
+  // Typing in the song document is never hijacked by the slide vocabulary.
+  assert.equal(songKey("1"), null);
+  assert.equal(songKey("v"), null);
+  assert.equal(songKey(" "), null);
 });
 
 test("media and slide-panel keys", () => {

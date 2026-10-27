@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:; media-src 'self' file: data: blob:; font-src 'self' file: data:;" />
 <title>VideoPsalm Electron v1 — Control</title>
 <link rel="stylesheet" href="styles.css" />
 </head>
@@ -39,6 +40,8 @@
       <span class="ribbon-label">Agenda file</span>
       <button id="agenda-new">☐ New</button>
       <button id="agenda-open">☐ Open…</button>
+      <button id="agenda-open-vp" title="Import a native VideoPsalm service plan (.vpagd)">☐ Open VP plan…</button>
+      <button id="agenda-save-vp" title="Export the agenda back to the native VideoPsalm plan shape (.vpagd)">💾 Save VP plan…</button>
       <button id="agenda-save" title="Ctrl+S">💾 Save (Ctrl+S)</button>
       <button id="agenda-load-sample">Load sample agenda</button>
     </div>
@@ -100,6 +103,8 @@
     <div class="ribbon-group">
       <span class="ribbon-label">Library</span>
       <button id="song-import-sample">Import samples</button>
+      <button id="song-open-vp" title="Open a real VideoPsalm Songbooks/*.json file — lyric edits save straight back to it">Open VideoPsalm…</button>
+      <button id="song-open-vp-folder" title="Load songbooks, image/video galleries, and style backgrounds from a VideoPsalm document folder">Load VP folder…</button>
       <button id="songbook-new" title="Create a new (empty) personal songbook entry point">＋ New songbook</button>
     </div>
     <div class="ribbon-group">
@@ -283,6 +288,8 @@
       <select id="fmt-bg-kind"><option value="color">color</option><option value="image">image</option><option value="videoLoop">video loop</option></select>
       <input id="fmt-bg-color" type="color" value="#000000" title="Background color" />
       <input id="fmt-bg-file" size="30" placeholder="image/video file path…" title="Background image or looping video file" />
+      <button id="bg-vp-folder" title="Load Images/, Videos/, and the background assigned by RootStyle.json from a VideoPsalm document folder">VideoPsalm folder…</button>
+      <span id="bg-vp-info" class="hint"></span>
     </div>
     <div class="ribbon-group">
       <span class="ribbon-label">Animation (transition)</span>
@@ -429,8 +436,44 @@
   <section id="pane-center" aria-label="Editor">
     <div class="pane-head"><h3 id="edit-pane-label">Lyrics</h3><span class="hint">(edits apply live, even during projection)</span></div>
     <div id="song-detail">
-      <h4 id="song-title"></h4>
+      <div class="song-title-row">
+        <h4 id="song-title"></h4>
+        <input id="song-title-edit" size="34" placeholder="Song title" title="Song title — writes back to the VideoPsalm songbook when one is open" />
+      </div>
+      <div id="song-source" class="hint song-source" role="status" aria-live="polite"></div>
+      <div class="editor-tools" role="toolbar" aria-label="Lyrics writer helpers">
+        <button id="lyrics-insert-v" title="Insert a verse tag at the start of the current block">V1</button>
+        <button id="lyrics-insert-c" title="Insert a chorus tag at the start of the current block">C</button>
+        <button id="lyrics-insert-b" title="Insert a bridge tag at the start of the current block">B</button>
+        <button id="lyrics-wrap-chord" title="Wrap the selected text as a ChordPro chord, e.g. [C]">[chord]</button>
+        <button id="lyrics-split" title="Split the current block into two slides (blank line)">split slide</button>
+        <span class="hint">V1/C/B line = verse label · blank = slide break inside a labelled verse, new verse otherwise · [C] = chord</span>
+      </div>
       <textarea id="lyrics-editor" rows="6" placeholder="Lyrics / ChordPro editor — edits apply live"></textarea>
+      <!--
+        Song metadata. VideoPsalm stores these on the song itself (Author,
+        Composer, CCLI, Copyright, Theme, Reference, Memo1-3); editing them
+        here writes them back into the operator's songbook, and only for a
+        native song — a local song just changes in the library.
+      -->
+      <details id="song-meta" class="song-meta">
+        <summary>Song details (author, CCLI, copyright, …)</summary>
+        <div class="song-meta-grid">
+          <label>Verse order
+            <select id="meta-verse-order" title="Which of the song's native verse orders to use (-1 = document order)"></select>
+          </label>
+          <label>Author<input id="meta-author" size="30" placeholder="Martin Luther" /></label>
+          <label>Composer<input id="meta-composer" size="24" placeholder="Unknown" /></label>
+          <label>CCLI<input id="meta-ccli" size="14" placeholder="2762838" /></label>
+          <label>Copyright<input id="meta-copyright" size="30" /></label>
+          <label>Theme<textarea id="meta-theme" rows="2" placeholder="one theme per line"></textarea></label>
+          <label>Reference<textarea id="meta-reference" rows="2" placeholder="one reference per line"></textarea></label>
+          <label>Memo 1<textarea id="meta-memo1" rows="2"></textarea></label>
+          <label>Memo 2<textarea id="meta-memo2" rows="2"></textarea></label>
+          <label>Memo 3<textarea id="meta-memo3" rows="2"></textarea></label>
+        </div>
+        <p class="hint">Edits apply live and are written back to the songbook file.</p>
+      </details>
       <textarea id="bible-verse-edit" rows="6" hidden placeholder="Bible verse text — edits apply live to slides and preview"></textarea>
       <div id="song-preview" class="preview" hidden></div>
       <div id="pptx-result" class="preview" hidden></div>

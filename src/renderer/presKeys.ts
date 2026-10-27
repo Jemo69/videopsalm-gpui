@@ -28,7 +28,7 @@ export type PresAction =
   | "next" | "prev" | "toggleBase" | "endPres" | "songStart" | "songEnd"
   | "peekNext" | "peekPrev" | "peekItemNext" | "peekItemPrev"
   | "toggleProjector" | "toggleText" | "toggleShield" | "toggleMode"
-  | "playPause" | "startPres" | "save" | "focusSongs" | "focusBibles" | "focusSlides"
+  | "playPause" | "startPres" | "save" | "saveSong" | "focusSongs" | "focusBibles" | "focusSlides"
   | "toggleFreeze" | "toggleRibbon" | "keyTips"
   | "pptx" | "rangeExtendEnd" | "rangeShrinkEnd" | "rangeExtendStart" | "rangeShrinkStart"
   | { digit: number } | { section: string } | { addResult: number };
@@ -66,8 +66,19 @@ export function presentationEndBlocked(displayCount: number): boolean {
  * §1.6): restart-from-beginning on the slide panel, play/pause when the
  * video/audio player owns focus. The caller derives it from
  * `document.activeElement`.
+ *
+ * `songEditing` marks the **song document** — the lyrics editor or the song
+ * title field — as the thing being edited. The original's Save is
+ * per-document: in the songs tab `Ctrl+S` saves the song, in the agenda it
+ * saves the agenda (OBSERVATIONS-lyrics-editor.md §Save). `Alt+S` is
+ * Songbooks in both, and never Save.
  */
-export function routePresKey(e: KeyLike, editing: boolean, mediaFocused = false): PresAction | null {
+export function routePresKey(
+  e: KeyLike,
+  editing: boolean,
+  mediaFocused = false,
+  songEditing = false,
+): PresAction | null {
   const k = e.key;
   const mod = e.ctrlKey || e.metaKey;
   // `Ctrl+F1` collapses/restores the ribbon (show-or-hide-the-toolbar,
@@ -79,7 +90,11 @@ export function routePresKey(e: KeyLike, editing: boolean, mediaFocused = false)
       case "t": return "toggleText";
       case "b": return "toggleShield";
       case "e": return "toggleMode";
-      case "s": return "save";
+      // Save is per-document. With the song document open, `Ctrl+S` saves the
+      // song; everywhere else it saves the agenda. The two must not be
+      // conflated — the original gives them the same icon, which is a
+      // documented confusion hazard.
+      case "s": return songEditing ? "saveSong" : "save";
       // "Snowflake button shortcut: Ctrl+R" (changelog 1.15). Freeze is a
       // live command the operator reaches for mid-service, so it belongs in
       // the presentation vocabulary next to the other Ctrl+letter commands.
@@ -184,7 +199,8 @@ export function shortcutHelp(): [string, string][] {
     ["F6", "focus the slide panel"],
     // Alt+S is Songbooks, not Save — 1.27 beta restored it after Save hijacked
     // it, and pairing it with Alt+B is the documented pair.
-    ["Ctrl+S", "save the agenda"],
+    // Save is per-document: the song in the editor, otherwise the agenda.
+    ["Ctrl+S", "save (the song in the editor, otherwise the agenda)"],
     ["Alt+S / Alt+B", "jump to Songbooks / Bibles"],
     // 1.10: "you can add one of those songs by pressing Ctrl+song position".
     ["Ctrl+1…9", "add the Nth search result to the agenda"],

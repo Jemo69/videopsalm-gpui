@@ -37,7 +37,8 @@ you may still see `Autofill.enable wasn't found` lines — that is DevTools'
 own protocol spam, harmless, and absent from `npm start`.
 
 Tests: `node:test` (built-in, no extra runner) for verse-splitter,
-chord-transpose, ref-parser, agenda-serde:
+chord-transpose, ref-parser, agenda-serde, the native VideoPsalm
+songbook parser/writer, and the native lyrics-document model:
 
 ```bash
 npm test   # tsc build, copy html/css, node --test dist/tests/
@@ -108,6 +109,61 @@ Typecheck: `npm run typecheck` (`tsc --noEmit`).
 - Print booklet: File → Print booklet (agenda index + current song lyrics +
   Bible passage; print CSS shows only the booklet).
 
+## Native VideoPsalm interop
+
+The real files under `Documents/VideoPsalm` are first-class, not just import
+sources:
+
+- **Open VideoPsalm…** reads one `SongBooks/*.json` or `.vpc` songbook;
+  **Load VP folder…** scans `SongBooks/` and imports every songbook. Both add
+  songs with a `source` locator, and the source badge in the editor says which
+  file edits go back to.
+- **Open VP plan…** imports a native VideoPsalm service plan (`.vpagd`): the
+  songs, the scripture readings, the media items and the web links it carries.
+  Media the plan embeds is extracted next to the plan file, and the plan's
+  songs join the library under the same id the operator's own songbook uses —
+  so the two never duplicate.
+- The parser accepts VideoPsalm's pseudo-JSON (unquoted keys, literal newlines,
+  BOM, 0/1 values) and the writer edits the parsed AST in place, so unknown
+  native fields survive. Saves use a same-directory temp file, atomic replace,
+  a `.bak`, and update `VersionDate`; plain `.json` output carries a UTF-8 BOM,
+  while `.vpc` keeps the native compressed-payload framing (no BOM).
+- Native `Tag`/`ID` (V/C/P/B/T/E/O/S/I/R + number) are modelled as
+  `SongVerse.tag`/`tagId` and displayed as editor headings. They are never
+  written into lyric text or projected.
+- A blank line inside a native verse is an in-verse **slide break**, stored as
+  a U+00A0 line (matching `SongVerse.Normalize`). A heading line is a **verse
+  boundary**. The shared `lyrics-document` model keeps this separate from
+  local songs, which still split stanzas on blank lines until the operator
+  adds a native heading, at which point the document uses native verse rules.
+- Native `Sequence` plus `VerseOrderIndex` are honoured: the filmstrip and
+  projector expand the selected order, repeat a chorus between verses, and
+  keep every slide of a multi-slide verse together. A missing/negative index
+  means document order. A malformed/unknown-only sequence falls back to all
+  verses rather than blanking the projector.
+- Folder scanning follows `CommonSettings.DataBaseFolder` when set, reads
+  `Images/`, `Videos/`, `SongBooks/Images/`, `SongBooks/Videos/`, skips the
+  generated `Thumbs/` cache, and applies a `RootStyle.json` background
+  (`Image`/`Video`) to the background galleries.
+- `.vpc` is an Ionic.Zip archive containing the same JSON document. The app
+  reads the first entry and, when protected, decrypts WinZip AES-256 with the
+  fixed password derived by VideoPsalm's own `Extension.GetFileName()`. Saves
+  rebuild a one-entry archive with the original entry name, preserving an
+  unprotected archive as unprotected and otherwise re-encrypting with AES-256.
+  ZIP64 and legacy ZipCrypto containers are rejected with a clear error.
+- Metadata other than title and lyrics is imported/read-only for now; the
+  write-through path only fills missing native metadata so it cannot silently
+  overwrite an author/theme/memo the editor did not touch.
+- **Song details** (under the lyrics) edits the native metadata — author,
+  composer, CCLI, copyright, theme, reference, memos — and the **verse order**
+  picker chooses between the song's native `Sequence` alternatives. Only the
+  fields the operator actually changed are written back; everything else in
+  the file is left byte-for-byte alone.
+- The Rust port parses the same dialect in
+  `gpui-app/vp-core/src/native_songbook.rs`. Both ports assert against
+  `electron-app/tests/fixtures/native-songbook.json`, so the two
+  implementations cannot drift on ids, verse labels, or metadata.
+
 ## Layout map
 
 ```text
@@ -144,13 +200,38 @@ stage window: current + next + clock + alert
 | I / O | Media range in/out — **stub in v1** (SPEC §3) |
 | X | Next PowerPoint slide |
 | F6 | Focus the slide filmstrip panel |
-| Ctrl+S | Save agenda |
+| Ctrl+S | Save — the song in the editor, otherwise the agenda |
 | Alt+S | Jump to Songs instant-find |
 | Alt+B | Jump to Bibles |
 | 1…0, V C B E O | Project filmstrip slide |
 | Ctrl+\* / Ctrl+/ (Shift+\* / Shift+/ too) | Extend / reduce Bible verse range |
 | Enter / double-click | Project selected agenda item |
 | ? | Toggle this shortcut help |
+
+## Running a service
+
+What the operator touches during a service, and what the app guarantees:
+
+- **The projector window** opens on the display chosen in the ribbon ("Monitor",
+  1 = primary); with two screens it is fullscreen on that screen, with one it
+  is a 960×540 companion window.
+- **Lyrics are sized for the screen, not for the app.** The Style tab's point
+  size is a 1080p reference: the projector scales it by the screen height, so
+  the text covers the same share of a 720p screen as of a 4K one.
+- **Nothing is clipped.** A verse longer than the frame is shrunk until it
+  fits, and the control window says so ("Lyrics shrunk to 78 % to fit the
+  frame — split the verse or raise the size"). The editor's "split slide"
+  button inserts the same in-verse slide break VideoPsalm stores.
+- **Songs go up one verse at a time.** Double-clicking a song in the agenda
+  projects its first verse; the next-slide key (`→`, `Space`, `PgDn`, `Enter`)
+  steps through the rest and on to the next agenda item.
+- **Edits are never lost.** Lyric edits are written back on a short debounce,
+  flushed when the window loses focus, and written one last time (blocking) if
+  the app is closed — for a native song that means the operator's real
+  songbook is up to date.
+- **Media renders.** Background images, image/video/audio/PDF agenda items and
+  looping video backgrounds are shown on the projector; file URLs are
+  percent-encoded so paths with spaces still load.
 
 ## Scope / limitations vs SPEC §3
 
@@ -162,8 +243,8 @@ stage window: current + next + clock + alert
 - Webcam background: not implemented (optional per SPEC); background kinds
   color/image/videoLoop supported, `camera` resolves to color fallback.
 - Video audio-channel select: default channel only.
-- Bible data is a small sample; full translations import via the documented
-  `data/bible.sample.json` shape.
+- Bible data is a small sample; full translations import as OSIS / Zefania XML
+  through the "Import XML" button (file picker, or type a path).
 - Telemetry: none. No network calls by default (YouTube/website items are
   inert link cards; nothing is fetched).
 - Keyboard shortcuts implemented: global keybindings for F5 (start from
@@ -173,3 +254,17 @@ stage window: current + next + clock + alert
   1..0/V/C/B/E/O (project filmstrip slides), Ctrl+\*/Ctrl+/ and
   Shift+\*/Shift+/ (Bible range), Enter/double-click (project), ? (help).
   I/O media-range keys show an explicit v1-stub note (SPEC §3).
+- Native `.vpc` archives use VideoPsalm's fixed container password; an
+  archive created by a different tool with a user-chosen password will fail
+  authentication. A VideoPsalm **service plan** is imported one-way: the
+  native projection tree is not written back, so a plan is edited here and
+  saved as this app's JSON agenda, and the operator's original `.vpagd` is
+  never touched. The GPUI port does not yet share the native songbook parser
+  or the plan import; Electron is the end-to-end reference for this path.
+- Agenda items are advanced by hand. The schema carries `flowType` /
+  `autoAdvanceMs` (VideoPsalm's auto-advance), but the app does not run an
+  auto-advance timer yet.
+- VideoPsalm splits a long verse into several slides using the *style's* item
+  count. This app has no such style setting: it shrinks the type to fit and
+  gives the editor a "split slide" button that writes the same in-verse slide
+  break VideoPsalm stores.

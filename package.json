@@ -13,7 +13,9 @@
     "start": "npm run build && dbus-run-session -- npx electron dist/src/main.js --disable-gpu --disable-software-rasterizer",
     "start:control-only": "npm run build && dbus-run-session -- npx electron dist/src/main.js --control-only --disable-gpu --disable-software-rasterizer",
     "dev": "npm run build && dbus-run-session -- npx electron dist/src/main.js --dev --disable-gpu --disable-software-rasterizer",
-    "bundle:renderer": "esbuild src/renderer/renderer.ts src/renderer/projector.ts src/renderer/stage.ts --bundle --outdir=dist/src/renderer --format=iife --target=chrome120 --log-level=warning"
+    "bundle:renderer": "esbuild src/renderer/renderer.ts src/renderer/projector.ts src/renderer/stage.ts --bundle --outdir=dist/src/renderer --format=iife --target=chrome120 --log-level=warning",
+    "package": "npm run build && electron-packager . videopsalm --platform=linux --arch=x64 --out=release-pkg --overwrite --prune=true --ignore=\"^(src|tests|\\..*)\"",
+    "package:win": "npm run build && electron-packager . videopsalm --platform=win32 --arch=x64 --out=release-pkg --overwrite --prune=true --ignore=\"^(src|tests|\\..*)\""
   },
   "dependencies": {
     "sql.js": "^1.10.2"
@@ -22,6 +24,7 @@
     "better-sqlite3": "^11.10.0"
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "@types/node": "^22.0.0",
     "electron": "^33.0.0",
     "esbuild": "^0.28.2",
