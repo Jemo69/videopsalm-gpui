@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "tile": 24,
+  "note": "Lane G drawn icon set (BACKLOG B-27). Every id maps to one 24x24 SVG file plus the function it serves. Ports inline the markup (Electron icons.ts, GPUI icons.rs); the test in each port asserts every id resolves and the inline copy matches these file bytes, so art and code cannot drift. House style follows assets/icons/cmd-next.svg: 24x24 viewBox, geometric strokes, per-command colours, ASCII-only comments preferred (comments never render, so the two legacy em-dashes in cmd-shield/cmd-pencil are annotation-only).",
+  "icons": [
+    { "id": "cmd-next", "file": "cmd-next.svg", "function": "Display the next slide (Space / arrows)" },
+    { "id": "cmd-base", "file": "cmd-base.svg", "function": "Base screen (usually black) vs current slide (. / ,)" },
+    { "id": "cmd-hide-text", "file": "cmd-hide-text.svg", "function": "Hide / show the text, background keeps playing (Ctrl+T)" },
+    { "id": "cmd-shield", "file": "cmd-shield.svg", "function": "Shield: block browsing from repopulating the slide panel, red when armed (Ctrl+B)" },
+    { "id": "cmd-freeze", "file": "cmd-freeze.svg", "function": "Freeze the projected slide while browsing the preview" },
+    { "id": "cmd-project", "file": "cmd-project.svg", "function": "Project onto the projector" },
+    { "id": "cmd-pencil", "file": "cmd-pencil.svg", "function": "Switch Edit vs Viewer mode (Ctrl+E), separated below the strip gap" },
+    { "id": "kind-song", "file": "kind-song.svg", "function": "Agenda kind badge: Song" },
+    { "id": "kind-bible-verses", "file": "kind-bible-verses.svg", "function": "Agenda kind badge: BibleVerses (verse range)" },
+    { "id": "kind-bible", "file": "kind-bible.svg", "function": "Agenda kind badge: Bible (whole book)" },
+    { "id": "kind-image", "file": "kind-image.svg", "function": "Agenda kind badge: Image" },
+    { "id": "kind-video", "file": "kind-video.svg", "function": "Agenda kind badge: Video" },
+    { "id": "kind-audio", "file": "kind-audio.svg", "function": "Agenda kind badge: Audio" },
+    { "id": "kind-pdf", "file": "kind-pdf.svg", "function": "Agenda kind badge: Pdf" },
+    { "id": "kind-powerpoint", "file": "kind-powerpoint.svg", "function": "Agenda kind badge: PowerPoint deck" },
+    { "id": "kind-powerpoint-slide", "file": "kind-powerpoint-slide.svg", "function": "Agenda kind badge: PowerPointSlide (single slide)" },
+    { "id": "kind-song-powerpoint", "file": "kind-song-powerpoint.svg", "function": "Agenda kind badge: SongPowerPoint (song from slides)" },
+    { "id": "kind-excel", "file": "kind-excel.svg", "function": "Agenda kind badge: Excel spreadsheet" },
+    { "id": "kind-word", "file": "kind-word.svg", "function": "Agenda kind badge: Word document" },
+    { "id": "kind-youtube", "file": "kind-youtube.svg", "function": "Agenda kind badge: YouTube / online video" },
+    { "id": "kind-website", "file": "kind-website.svg", "function": "Agenda kind badge: WebSite" },
+    { "id": "kind-ccli", "file": "kind-ccli.svg", "function": "Agenda kind badge: CCLI song" },
+    { "id": "kind-alert", "file": "kind-alert.svg", "function": "Agenda kind badge: Alert overlay" },
+    { "id": "kind-clock", "file": "kind-clock.svg", "function": "Agenda kind badge: Clock" }
+  ]
+}

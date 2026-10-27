@@ -19,7 +19,10 @@ import {
   stripIconSvg,
 } from "../src/renderer/icons";
 
-const ICONS_DIR = join(__dirname, "..", "..", "..", "assets", "icons");
+// In-repo copy (`electron-app/assets/icons/`): the standalone GitHub repo
+// builds and tests without the monorepo around it. Byte-identical to the
+// shared Lane G set the art was drawn from.
+const ICONS_DIR = join(__dirname, "..", "..", "assets", "icons");
 const SRC = join(__dirname, "..", "..", "src", "renderer");
 
 interface ManifestEntry {

@@ -11,6 +11,12 @@ interface VpBridge {
   saveAgenda(filePath?: string): Promise<unknown>;
   /** Export the agenda back to the native VideoPsalm plan shape (`.vpagd`). */
   saveVideopsalmAgenda(): Promise<unknown>;
+  /** The same export by path (test hook + scripts; no dialog). */
+  saveVideopsalmAgendaPath(file: string): Promise<unknown>;
+  /** Open an agenda JSON file by path (test hook + scripts; no dialog). */
+  openAgendaPath(file: string): Promise<unknown>;
+  /** True only when launched with `--test-hook` (exposes `window.vpTest`). */
+  testHookEnabled: boolean;
   importSampleData(): Promise<unknown>;
   /** Open one native VideoPsalm `Songbooks/*.json` file and import/write-through. */
   openVideopsalmSongbook(): Promise<unknown>;

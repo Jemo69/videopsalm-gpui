@@ -3326,3 +3326,99 @@ void (async () => {
   } catch { /* bridge unavailable in plain-browser preview */ }
 })();
 
+// ---------- test hook (`window.vpTest`, `--test-hook` only) ----------
+//
+// A callable UI-state driver for automated checks (operator request): every
+// action below reuses the real button-handler path — same functions, same
+// refresh calls — so a green hook run means the UI path works, without
+// brittle DOM clicking or modal dialogs (`prompt`/`showOpenDialog` block
+// headless drivers). The hook is registered only when the app is launched
+// with `--test-hook`; production windows never expose it.
+interface VpTestState {
+  agendaTitle: string;
+  items: { id: string; kind: string; title: string }[];
+  selectedItemId: string | null;
+  liveItemTitle: string | null;
+  theme: string;
+}
+
+function vpTestState(): VpTestState {
+  return {
+    agendaTitle: agenda.title,
+    items: agenda.items.map((it) => ({ id: it.id, kind: it.kind, title: it.title })),
+    selectedItemId,
+    liveItemTitle: liveItemId
+      ? (agenda.items.find((it) => it.id === liveItemId)?.title ?? null)
+      : null,
+    theme: prefs.theme,
+  };
+}
+
+async function vpTestSelectItem(id: string): Promise<VpTestState> {
+  if (!agenda.items.some((it) => it.id === id)) throw new Error(`no agenda item ${id}`);
+  selectedItemId = id;
+  refreshAgendaListSelection();
+  await refreshFilmstrip();
+  return vpTestState();
+}
+
+async function vpTestProjectSelected(slideIndex?: number): Promise<VpTestState> {
+  const it = agenda.items.find((x) => x.id === selectedItemId);
+  if (!it) throw new Error("no selected item to project");
+  await projectItem(it, slideIndex);
+  return vpTestState();
+}
+
+async function vpTestAdoptPlan(res: { ok?: boolean; error?: string; agenda?: Agenda } | null): Promise<VpTestState> {
+  if (!res || !res.ok || !res.agenda) throw new Error(res?.error ?? "plan import failed");
+  agenda = res.agenda;
+  selectedItemId = null;
+  await bridge().setAgenda(agenda);
+  await refreshAgenda();
+  await runSongSearch();
+  return vpTestState();
+}
+
+const vpTestApi = {
+  /** Snapshot of the UI state a check would assert on. */
+  state: async (): Promise<VpTestState> => vpTestState(),
+  /** New empty agenda (the New button minus its `prompt`). */
+  newAgenda: async (title: string): Promise<VpTestState> => {
+    agenda = (await bridge().newAgenda(title)) as Agenda;
+    selectedItemId = null;
+    await refreshAgenda();
+    return vpTestState();
+  },
+  /** Open an agenda JSON file by path (the Open button minus its dialog). */
+  openAgenda: async (path: string): Promise<VpTestState> => {
+    const res = (await bridge().openAgendaPath(path)) as { agenda: Agenda };
+    agenda = res.agenda;
+    selectedItemId = null;
+    await refreshAgenda();
+    await runSongSearch();
+    return vpTestState();
+  },
+  /** Import a native `.vpagd` plan by path (minus its dialog). */
+  importPlan: async (path: string): Promise<VpTestState> =>
+    vpTestAdoptPlan(
+      (await bridge().importVideopsalmAgenda(path)) as { ok?: boolean; error?: string; agenda?: Agenda },
+    ),
+  /** Export the agenda to a native `.vpagd` file by path (minus dialog). */
+  savePlan: async (path: string): Promise<unknown> => bridge().saveVideopsalmAgendaPath(path),
+  /** Select an agenda row (the click path, incl. filmstrip refresh). */
+  selectItem: vpTestSelectItem,
+  /** Project the selected row (the double-click/Enter path). */
+  projectSelected: vpTestProjectSelected,
+  /** Switch theme (the Theme select path). */
+  setTheme: async (name: string): Promise<VpTestState> => {
+    prefs.theme = name;
+    savePrefs();
+    applyPrefsToDom();
+    return vpTestState();
+  },
+};
+
+if (bridge().testHookEnabled) {
+  (window as unknown as { vpTest?: typeof vpTestApi }).vpTest = vpTestApi;
+}
+

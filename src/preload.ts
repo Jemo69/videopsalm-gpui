@@ -6,11 +6,20 @@ const api = {
   setAgenda: (agenda: unknown) => ipcRenderer.invoke("vp:set-agenda", agenda),
   newAgenda: (title: string) => ipcRenderer.invoke("vp:new-agenda", title),
   openAgenda: () => ipcRenderer.invoke("vp:open-agenda"),
+  /** Open an agenda JSON file by path (test hook + scripts; no dialog). */
+  openAgendaPath: (file: string) => ipcRenderer.invoke("vp:open-agenda-path", file),
   openVideopsalmAgenda: () => ipcRenderer.invoke("vp:open-videopsalm-agenda"),
   importVideopsalmAgenda: (file: string) => ipcRenderer.invoke("vp:import-videopsalm-agenda", file),
   saveAgenda: (filePath?: string) => ipcRenderer.invoke("vp:save-agenda", filePath),
   /** Export the agenda back to the native VideoPsalm plan shape (`.vpagd`). */
   saveVideopsalmAgenda: () => ipcRenderer.invoke("vp:save-videopsalm-agenda"),
+  /** The same export by path (test hook + scripts; no dialog). */
+  saveVideopsalmAgendaPath: (file: string) => ipcRenderer.invoke("vp:save-videopsalm-agenda-path", file),
+  /** True only when launched with `--test-hook` (exposes `window.vpTest`). */
+  /* True only when launched with `--test-hook` (exposes `window.vpTest`).
+     Resolved in main: Chromium does not reliably propagate custom
+     switches to the renderer's `process.argv`. */
+  testHookEnabled: ipcRenderer.sendSync("vp:test-hook-enabled"),
   importSampleData: () => ipcRenderer.invoke("vp:import-sample-data"),
   openVideopsalmSongbook: () => ipcRenderer.invoke("vp:open-videopsalm-songbook"),
   openVideopsalmFolder: () => ipcRenderer.invoke("vp:open-videopsalm-folder"),

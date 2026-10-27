@@ -256,6 +256,10 @@ function persistSong(song: Song, edits?: string[]): { ok: boolean; native: boole
 }
 
 function registerIpc(): void {
+  // Test-hook gate: resolved here because main's argv is authoritative.
+  ipcMain.on("vp:test-hook-enabled", (e) => {
+    e.returnValue = process.argv.includes("--test-hook");
+  });
   ipcMain.handle("vp:get-agenda", () => currentAgenda);
   ipcMain.handle("vp:set-agenda", (_e, agenda: Agenda) => {
     currentAgenda = agenda;
@@ -265,14 +269,19 @@ function registerIpc(): void {
     currentAgenda = createAgenda(title || "Untitled");
     return currentAgenda;
   });
+  function openAgendaFile(file: string): { path: string; agenda: Agenda } {
+    const text = fs.readFileSync(file, "utf8");
+    currentAgenda = parseAgenda(text);
+    library?.recordRecent(file);
+    return { path: file, agenda: currentAgenda };
+  }
   ipcMain.handle("vp:open-agenda", async () => {
     const res = await dialog.showOpenDialog({ filters: [{ name: "Agenda JSON", extensions: ["json", "vpsalm"] }], properties: ["openFile"] });
     if (res.canceled || res.filePaths.length === 0) return null;
-    const text = fs.readFileSync(res.filePaths[0], "utf8");
-    currentAgenda = parseAgenda(text);
-    library?.recordRecent(res.filePaths[0]);
-    return { path: res.filePaths[0], agenda: currentAgenda };
+    return openAgendaFile(res.filePaths[0]);
   });
+  // The same open, by path — the test hook (`window.vpTest`) and scripts.
+  ipcMain.handle("vp:open-agenda-path", (_e, file: string) => openAgendaFile(file));
   // A native VideoPsalm service plan (`.vpagd`): a ZIP of per-item
   // projections. The songs it carries are added to the library only when the
   // operator's own songbook does not already have them, so a plan never
@@ -342,6 +351,16 @@ function registerIpc(): void {
   // a plain multi-entry ZIP the original opens with `Agenda.LoadFromFile`.
   // Songs resolve against the library so the plan carries full lyrics;
   // kinds with no native projection are skipped with a warning.
+  function saveVideopsalmAgendaFile(file: string): { ok: boolean; file?: string; itemCount?: number; media?: string[]; warnings?: string[]; error?: string } {
+    try {
+      const songs = new Map((library?.findSongs("") ?? []).map((s) => [s.id, s] as const));
+      const written = writeVideopsalmAgenda(file, currentAgenda, songs);
+      library?.recordRecent(file);
+      return { ok: true, file, itemCount: currentAgenda.items.length, media: written.media, warnings: written.warnings };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
   ipcMain.handle("vp:save-videopsalm-agenda", async () => {
     const res = await dialog.showSaveDialog({
       title: "Save as a VideoPsalm service plan",
@@ -349,15 +368,10 @@ function registerIpc(): void {
       defaultPath: `${currentAgenda.title || "Agenda"}.vpagd`,
     });
     if (res.canceled || !res.filePath) return { ok: false, canceled: true };
-    try {
-      const songs = new Map((library?.findSongs("") ?? []).map((s) => [s.id, s] as const));
-      const written = writeVideopsalmAgenda(res.filePath, currentAgenda, songs);
-      library?.recordRecent(res.filePath);
-      return { ok: true, file: res.filePath, itemCount: currentAgenda.items.length, media: written.media, warnings: written.warnings };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
+    return saveVideopsalmAgendaFile(res.filePath);
   });
+  // The same export, by path — the test hook (`window.vpTest`) and scripts.
+  ipcMain.handle("vp:save-videopsalm-agenda-path", (_e, file: string) => saveVideopsalmAgendaFile(file));
   ipcMain.handle("vp:import-sample-data", () => {
     const dir = dataDir();
     const songs = JSON.parse(fs.readFileSync(path.join(dir, "songs.sample.json"), "utf8")) as import("./core/schemas").Song[];
