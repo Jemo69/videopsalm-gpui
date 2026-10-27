@@ -60,7 +60,7 @@ interface Prefs {
 }
 function defaultPrefs(): Prefs {
   return {
-    theme: "dark", accent: "#2a5db0", lang: "en",
+    theme: "light", accent: "#2a5db0", lang: "en",
     showAbbr: true, showNumber: true,
     bilingual: false, suppressEmpty: true, versification: "EN", bibleAbbr: false,
     styleFont: "system-ui", styleSize: "48", styleColor: "#ffffff", styleAlign: "center",
