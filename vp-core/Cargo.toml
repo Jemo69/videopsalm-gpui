@@ -11,6 +11,14 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 quick-xml = "0.31"
 sha1_smol = "1"
+flate2 = "1.1.10"
+crc32fast = "1.5.3"
+aes = "0.9.3"
+cipher = "0.5.2"
+hmac = "0.13.0"
+pbkdf2 = "0.13.0"
+sha1 = "0.11.0"
+hybrid-array = "0.4.15"
 
 [dev-dependencies]
 serde_json = "1"

@@ -57,6 +57,37 @@ impl VpJson {
         }
     }
 
+    /// Mutable lookup, for write-back.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut VpJson> {
+        match self {
+            VpJson::Object(items) => items.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    /// Remove an object member; true when one was present.
+    pub fn remove(&mut self, key: &str) -> bool {
+        match self {
+            VpJson::Object(items) => {
+                let before = items.len();
+                items.retain(|(k, _)| k != key);
+                items.len() != before
+            }
+            _ => false,
+        }
+    }
+
+    /// Insert or replace an object member, preserving position.
+    pub fn set(&mut self, key: &str, value: VpJson) {
+        if let VpJson::Object(items) = self {
+            if let Some(slot) = items.iter_mut().find(|(k, _)| k == key) {
+                slot.1 = value;
+            } else {
+                items.push((key.to_string(), value));
+            }
+        }
+    }
+
     /// String payload, if this is a string.
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -75,6 +106,14 @@ impl VpJson {
 
     /// Array payload, if this is an array.
     pub fn as_array(&self) -> Option<&[VpJson]> {
+        match self {
+            VpJson::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// Mutable array payload, for write-back.
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<VpJson>> {
         match self {
             VpJson::Array(items) => Some(items),
             _ => None,
@@ -635,6 +674,12 @@ fn verse_from_native(value: &VpJson, index: usize) -> SongVerse {
 }
 
 /// Map one native song object onto the shared song shape.
+/// Map one native song projection onto the shared song shape (used by the
+/// `.vpagd` plan importer; songbooks go through [`songbook_to_songs`]).
+pub fn song_from_projection(value: &VpJson, file: &str, book_guid: &str, abbrev: &str, index: usize) -> Option<Song> {
+    song_from_native(value, file, book_guid, abbrev, index)
+}
+
 fn song_from_native(value: &VpJson, file: &str, book_guid: &str, abbrev: &str, index: usize) -> Option<Song> {
     if !value.is_object() {
         return None;
