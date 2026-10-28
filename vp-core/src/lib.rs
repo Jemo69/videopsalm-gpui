@@ -25,6 +25,7 @@ pub mod native_archive;
 pub mod native_folder;
 pub mod native_songbook;
 pub mod pptx;
+pub mod richtext;
 pub mod schema;
 pub mod slides;
 pub mod template;
