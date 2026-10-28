@@ -281,26 +281,30 @@ pub(crate) fn render_snapshot(
             .map(|l| {
                 rich_view::rich_line(
                     l,
-                    size,
-                    snap.fg_color,
-                    &snap.font_family,
-                    snap.bold,
-                    snap.italic,
-                    snap.underline,
-                    true,
+                    rich_view::RichLineStyle {
+                        size_px: size,
+                        color: snap.fg_color,
+                        font_family: &snap.font_family,
+                        bold: snap.bold,
+                        italic: snap.italic,
+                        underline: snap.underline,
+                        shadow: true,
+                    },
                 )
             })
             .collect();
         if lines.is_empty() {
             lines.push(rich_view::rich_line(
                 "",
-                size,
-                snap.fg_color,
-                &snap.font_family,
-                snap.bold,
-                snap.italic,
-                snap.underline,
-                true,
+                rich_view::RichLineStyle {
+                    size_px: size,
+                    color: snap.fg_color,
+                    font_family: &snap.font_family,
+                    bold: snap.bold,
+                    italic: snap.italic,
+                    underline: snap.underline,
+                    shadow: true,
+                },
             ));
         }
         let mut body = div().flex().flex_col().gap_2();
@@ -469,7 +473,15 @@ pub(crate) fn open_projector_window(
     let window_bounds = if fullscreen {
         WindowBounds::Fullscreen(restore)
     } else {
-        WindowBounds::Windowed(restore)
+        // Windowed opens deliberately modest (1280×720): a 1920×1080 first
+        // window is off-screen on smaller laptop displays (WI-028 — opening
+        // it crashed there), and the user maximizes or flips fullscreen
+        // once it is up. Fullscreen keeps the native 1080p request.
+        WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(1280.), px(720.)),
+            cx,
+        ))
     };
     cx.open_window(
         WindowOptions {

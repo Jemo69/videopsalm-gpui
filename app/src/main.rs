@@ -3656,7 +3656,7 @@ impl Render for Root {
             root = root.child(self.keytips_strip(&ui, cx));
         }
         root.child(match self.mode {
-            Mode::Control => self.control_view(&ui, cx),
+            Mode::Control => self.control_view(&ui, cx, target_w, target_h),
             Mode::Projector => self.projector_view(&ui, cx, target_w, target_h),
             Mode::Stage => self.stage_view(&ui, cx),
         })
@@ -4165,7 +4165,7 @@ impl Root {
     /// Our previous build had the editor **and** the slides stacked in one
     /// centre column with a third preview column, which is not the 1.29 layout.
     /// Viewer mode drops the centre editor entirely and reflows to two columns.
-    fn control_view(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn control_view(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
         // Slides panel with the command strip immediately to its right — the
         // strip acts on the slide list, so it belongs beside it, and in 1.29
         // the strip's buttons are **circles**, not bordered squares.
@@ -4205,7 +4205,7 @@ impl Root {
                         .min_h_0()
                         .overflow_hidden()
                         .child(slides_and_commands)
-                        .child(self.preview_big_panel(ui, cx)),
+                        .child(self.preview_big_panel(ui, cx, vw, vh)),
                 );
         }
 
@@ -4237,7 +4237,7 @@ impl Root {
                     .min_h_0()
                     .overflow_hidden()
                     .child(slides_and_commands)
-                    .child(self.preview_big_panel(ui, cx)),
+                    .child(self.preview_big_panel(ui, cx, vw, vh)),
             )
     }
 
@@ -5583,19 +5583,15 @@ impl Root {
     /// like the projector does (WI-022 — clicking new slides must not reach
     /// any projected surface). The stage mini keeps following live: that is
     /// the operator's private monitor for what comes next.
-    fn preview_big_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn preview_big_panel(&mut self, ui: &UI, cx: &mut Context<Root>, win_w: f32, win_h: f32) -> Div {
         let slides = self.projector_slides();
         let n = slides.len();
         let cur = self.projector_slide_index(self.live_slides().len());
-        let chord = self.proj_chord_line();
         // Room mirror: the same background stack the projector renders, so
         // an assigned image shows here too (WI-023) — not just on a second
         // window the operator may not have.
         let snap = self.projector_snapshot(cx);
         let bg = projector_window::apply_luminosity_color(snap.bg_color, snap.luminosity);
-        let fg = snap.fg_color;
-        // Preview type scales with the projector base size (24px at 44).
-        let pk = snap.font_size / 44.0;
         // Shared backdrop: the projector's background stack sits behind the
         // lyrics, the hidden-text note and the nothing-live note alike —
         // with or without text, the image/video shows. Only the base
@@ -5632,7 +5628,7 @@ impl Root {
                 .justify_center()
                 .child(
                     div()
-                        .text_size(px((13.0 * pk).max(9.0)))
+                        .text_size(px(13.))
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
@@ -5650,155 +5646,44 @@ impl Root {
                     .justify_center()
                     .child(
                         div()
-                            .text_size(px((13.0 * pk).max(9.0)))
+                            .text_size(px(13.))
                             .text_color(hex("#BBBBBB"))
                             .child("(nothing live — press Show)".to_string()),
                     ),
             )
         } else {
-            match slides.get(cur) {
-            Some(s) => {
-                let header = s.header.clone();
-                let footer = s.footer.clone();
-                let mut lines: Vec<Div> = s
-                    .lines
-                    .iter()
-                    .map(|x| {
-                        rich_view::rich_line(
-                            x,
-                            (24.0 * pk),
-                            fg,
-                            &self.font_family,
-                            self.bold,
-                            self.italic,
-                            self.underline,
-                            true,
-                        )
-                    })
-                    .collect();
-                if lines.is_empty() {
-                    lines.push(rich_view::rich_line(
-                        "",
-                        (24.0 * pk),
-                        fg,
-                        &self.font_family,
-                        self.bold,
-                        self.italic,
-                        self.underline,
-                        true,
-                    ));
-                }
-                let content = if snap.frame.text {
-                    let mut content = div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .p(px(10.))
-                        .child(
-                            div().flex().flex_row().child(div().flex_1()).child(
-                                div()
-                                    .text_size(px((13.0 * pk).max(9.0)))
-                                    .text_color(hex("#BBBBBB"))
-                                    .child(header),
-                            ),
-                        );
-                    if let Some(c) = chord {
-                        content =
-                            content.child(div().text_size(px((13.0 * pk).max(9.0))).text_color(ui.accent).child(c));
-                    }
-                    let mut text_col = div().flex().flex_col().gap_1().flex_1();
-                text_col = match self.valign {
-                    VAlign::Top => text_col.justify_start(),
-                    VAlign::Center => text_col.justify_center(),
-                    VAlign::Bottom => text_col.justify_end(),
-                };
-                text_col = match self.align {
-                    Align::Left => text_col.items_start(),
-                    Align::Center => text_col.items_center(),
-                    Align::Right => text_col.items_end(),
-                };
-                for l in lines {
-                    text_col = text_col.child(l);
-                }
-                    content.child(text_col).child(
-                        div().flex().flex_row().justify_center().child(
-                            div()
-                                .text_size(px((13.0 * pk).max(9.0)))
-                                .text_color(hex("#BBBBBB"))
-                                .child(footer),
-                        ),
-                    )
-                } else {
-                    // Ctrl+T: the background keeps playing natively while the
-                    // lyrics are off — image/video show with or without text.
+            // The projector render itself, in an output-ratio box: the
+            // preview cannot disagree with the projector by construction
+            // (WI-028). "current" follows the window glass; a set preset
+            // letterboxes exactly like the projector does.
+            const PREVIEW_W: f32 = 548.0;
+            let aspect = AspectRatio::from_label(&self.aspect_ratio)
+                .map(|r| r.aspect() as f32)
+                .unwrap_or((win_w / win_h.max(1.0)).clamp(0.5, 4.0));
+            let bh = PREVIEW_W / aspect;
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .bg(rgb(0x000000))
+                .child(
                     div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .p(px(10.))
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_size(px((13.0 * pk).max(9.0)))
-                                .text_color(hex("#BBBBBB"))
-                                .child(
-                                    "(lyrics hidden — background keeps playing)".to_string(),
-                                ),
-                        )
-                };
-                bgcol.child(content)
-            }
-            None => bgcol.child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .p(px(10.))
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(hex("#BBBBBB"))
-                            .child("(nothing live — press Show)".to_string()),
-                    ),
-            ),
-            }
+                        .w(px(PREVIEW_W))
+                        .h(px(bh))
+                        .overflow_hidden()
+                        .child(projector_window::render_snapshot(
+                            ui, &snap, PREVIEW_W, bh, None,
+                        )),
+                )
         };
         let count = if n == 0 {
             "0/0".to_string()
         } else {
             format!("{}/{}", cur + 1, n)
         };
-        // Aspect-ratio simulation (WI-026): the right column is a fixed
-        // 560px, so a ratio box of known width centers in the black panel
-        // with bars — the presets visibly move the picture. "current"
-        // keeps today's fill behavior.
-        const PREVIEW_INNER_W: f32 = 548.0;
-        let body = match AspectRatio::from_label(&self.aspect_ratio) {
-            None => body,
-            Some(r) => {
-                let bh = PREVIEW_INNER_W / r.aspect() as f32;
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgb(0x000000))
-                    .child(
-                        div()
-                            .w(px(PREVIEW_INNER_W))
-                            .h(px(bh))
-                            .overflow_hidden()
-                            .child(body),
-                    )
-            }
-        };
+
         div()
             .flex()
             .flex_col()
@@ -6648,26 +6533,30 @@ impl Root {
                 let c = if bilingual && i % 2 == 1 { dim } else { fg };
                 rich_view::rich_line(
                     x,
-                    l,
-                    c,
-                    &self.font_family,
-                    self.bold,
-                    self.italic,
-                    self.underline,
-                    false,
+                    rich_view::RichLineStyle {
+                        size_px: l,
+                        color: c,
+                        font_family: &self.font_family,
+                        bold: self.bold,
+                        italic: self.italic,
+                        underline: self.underline,
+                        shadow: false,
+                    },
                 )
             })
             .collect();
         if lines.is_empty() {
             lines.push(rich_view::rich_line(
                 "",
-                l,
-                fg,
-                &self.font_family,
-                self.bold,
-                self.italic,
-                self.underline,
-                false,
+                rich_view::RichLineStyle {
+                    size_px: l,
+                    color: fg,
+                    font_family: &self.font_family,
+                    bold: self.bold,
+                    italic: self.italic,
+                    underline: self.underline,
+                    shadow: false,
+                },
             ));
         }
         let mut body = div().flex().flex_col().gap_2().flex_1();
@@ -6885,13 +6774,15 @@ impl Root {
                             .map(|l| {
                                 rich_view::rich_line(
                                     &l,
-                                    20.,
-                                    ui.fg,
-                                    &self.font_family,
-                                    self.bold,
-                                    self.italic,
-                                    self.underline,
-                                    false,
+                                    rich_view::RichLineStyle {
+                                        size_px: 20.,
+                                        color: ui.fg,
+                                        font_family: &self.font_family,
+                                        bold: self.bold,
+                                        italic: self.italic,
+                                        underline: self.underline,
+                                        shadow: false,
+                                    },
                                 )
                             })
                             .collect::<Vec<_>>(),

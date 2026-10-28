@@ -79,16 +79,30 @@ fn highlight_for(bits: RichBits) -> HighlightStyle {
 ///
 /// `bold/italic/underline` are the slide-level switches (style cascade); rich
 /// spans add to them per run. `shadow` paints the dark halo copy behind.
-pub fn rich_line(
-    text: &str,
-    size_px: f32,
-    color: Rgba,
-    font_family: &str,
-    bold: bool,
-    italic: bool,
-    underline: bool,
-    shadow: bool,
-) -> Div {
+/// Render style for one lyric line: size, color, family, the slide-level
+/// B/I/U switches plus the halo toggle. Bundled so `rich_line` stays
+/// under the argument-count lint.
+#[derive(Clone, Copy)]
+pub struct RichLineStyle<'a> {
+    pub size_px: f32,
+    pub color: Rgba,
+    pub font_family: &'a str,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub shadow: bool,
+}
+
+pub fn rich_line(text: &str, s: RichLineStyle) -> Div {
+    let RichLineStyle {
+        size_px,
+        color,
+        font_family,
+        bold,
+        italic,
+        underline,
+        shadow,
+    } = s;
     if text.trim().is_empty() {
         return div()
             .text_size(px(size_px))
