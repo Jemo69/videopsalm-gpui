@@ -135,8 +135,7 @@ fn split_root(body: &str, notation: ChordNotation) -> (String, String) {
             let lower = body.to_lowercase();
             let mut best: Option<(&str, usize)> = None;
             for (syl, _) in SOLFEGE {
-                if lower.starts_with(syl)
-                    && best.map(|(b, _)| syl.len() > b.len()).unwrap_or(true)
+                if lower.starts_with(syl) && best.map(|(b, _)| syl.len() > b.len()).unwrap_or(true)
                 {
                     best = Some((syl, syl.len()));
                 }
@@ -212,11 +211,7 @@ pub fn transpose_chord(chord: &str, semitones: i32, target: Option<ChordNotation
 }
 
 /// Transpose every `[chord]` marker in ChordPro text.
-pub fn transpose_chordpro(
-    text: &str,
-    semitones: i32,
-    target: Option<ChordNotation>,
-) -> String {
+pub fn transpose_chordpro(text: &str, semitones: i32, target: Option<ChordNotation>) -> String {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -323,18 +318,9 @@ mod tests {
 
     #[test]
     fn cross_notation_conversion() {
-        assert_eq!(
-            transpose_chord("C", 0, Some(ChordNotation::DoReMi)),
-            "Do"
-        );
-        assert_eq!(
-            transpose_chord("Bb", 0, Some(ChordNotation::DoReMi)),
-            "Sib"
-        );
-        assert_eq!(
-            transpose_chord("Sol", 0, Some(ChordNotation::Abc)),
-            "G"
-        );
+        assert_eq!(transpose_chord("C", 0, Some(ChordNotation::DoReMi)), "Do");
+        assert_eq!(transpose_chord("Bb", 0, Some(ChordNotation::DoReMi)), "Sib");
+        assert_eq!(transpose_chord("Sol", 0, Some(ChordNotation::Abc)), "G");
     }
 
     #[test]
@@ -349,7 +335,10 @@ mod tests {
     #[test]
     fn unparseable_passes_through() {
         assert_eq!(transpose_chord("N.C.", 2, None), "N.C.");
-        assert_eq!(transpose_chordpro("no chords here", 2, None), "no chords here");
+        assert_eq!(
+            transpose_chordpro("no chords here", 2, None),
+            "no chords here"
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@
 //! instead of reproducing the junk — noted at each site.
 
 use crate::bible_data::{Translation, TranslationBook};
-use crate::bible_ref::{BOOKS, match_book};
+use crate::bible_ref::{match_book, BOOKS};
 use std::collections::BTreeMap;
 
 /// Import failure; `Faithful` carries the original's operator-facing text.
@@ -260,7 +260,9 @@ fn adjust_spaces(raw: &str, french: bool) -> String {
         s.push(c);
     }
     // "..." → "…" and "…." → "…"
-    s = s.replace("...", "\u{2026}").replace("\u{2026}.", "\u{2026}");
+    s = s
+        .replace("...", "\u{2026}")
+        .replace("\u{2026}.", "\u{2026}");
     if french {
         s = s.replace('*', "");
         s = s.replace("oe", "\u{153}");
@@ -282,7 +284,8 @@ fn adjust_spaces(raw: &str, french: bool) -> String {
     for marker in ["</p>", "</h2>"] {
         s = s.replace(marker, "");
     }
-    s.replace("'\"", "' \"").replace("\"'", "\" '")
+    s.replace("'\"", "' \"")
+        .replace("\"'", "\" '")
         .trim()
         .to_string()
 }
@@ -292,7 +295,10 @@ fn adjust_spaces(raw: &str, french: bool) -> String {
 /// Runs repeat: `"¹ ¹² Text"` → `"Text"`. Result is trimmed both ends.
 fn strip_leading_verse_number(text: &str) -> String {
     let is_sup = |c: char| {
-        matches!(c, '\u{b2}' | '\u{b3}' | '\u{b9}' | '\u{2070}' | '\u{2074}'..='\u{2079}')
+        matches!(
+            c,
+            '\u{b2}' | '\u{b3}' | '\u{b9}' | '\u{2070}' | '\u{2074}'..='\u{2079}'
+        )
     };
     let mut s = text.trim_start();
     loop {
@@ -583,7 +589,9 @@ fn import_zefania(doc: &Element, fallback_name: &str) -> Result<Translation, Imp
 
     let info = root.child("INFORMATION");
     let get = |key: &str| -> String {
-        info.and_then(|i| i.child(key)).map(|e| e.inner_text()).unwrap_or_default()
+        info.and_then(|i| i.child(key))
+            .map(|e| e.inner_text())
+            .unwrap_or_default()
     };
     let language_raw = get("language");
     let french = language_raw == "FRE";
@@ -649,17 +657,29 @@ fn import_zefania(doc: &Element, fallback_name: &str) -> Result<Translation, Imp
         .filter(|s| !s.is_empty());
     t.publisher = {
         let p = get("publisher");
-        if p.is_empty() { None } else { Some(p) }
+        if p.is_empty() {
+            None
+        } else {
+            Some(p)
+        }
     };
     t.copyright = {
         let c = get("rights");
-        if c.is_empty() { None } else { Some(c) }
+        if c.is_empty() {
+            None
+        } else {
+            Some(c)
+        }
     };
     t.description = {
         let d = root.attr("biblename").unwrap_or("").to_string();
         if d.is_empty() {
             let d2 = get("description");
-            if d2.is_empty() { None } else { Some(d2) }
+            if d2.is_empty() {
+                None
+            } else {
+                Some(d2)
+            }
         } else {
             Some(d)
         }
@@ -691,7 +711,9 @@ fn import_local_xml(doc: &Element, fallback_name: &str) -> Result<Translation, I
     let mut builder = Builder::default();
     let mut any_book = false;
     for book in doc.children_named("book") {
-        let Some(name) = book.attr("name") else { continue };
+        let Some(name) = book.attr("name") else {
+            continue;
+        };
         let Some(canonical) = match_book(name) else {
             // Unknown book name: skip rather than invent a book.
             continue;
@@ -699,8 +721,7 @@ fn import_local_xml(doc: &Element, fallback_name: &str) -> Result<Translation, I
         any_book = true;
         let b = builder.book(canonical.number, canonical.name_en, None);
         for chapter in book.children_named("chapter") {
-            let Some(cid): Option<u32> = chapter.attr("number").and_then(|s| s.parse().ok())
-            else {
+            let Some(cid): Option<u32> = chapter.attr("number").and_then(|s| s.parse().ok()) else {
                 continue;
             };
             for passage in chapter.children_named("passage") {
@@ -723,7 +744,11 @@ fn import_local_xml(doc: &Element, fallback_name: &str) -> Result<Translation, I
     }
     t.copyright = {
         let c = get("copyright");
-        if c.is_empty() { None } else { Some(c) }
+        if c.is_empty() {
+            None
+        } else {
+            Some(c)
+        }
     };
     t.source = Some("videopsalm-xml".into());
     Ok(t)
@@ -759,7 +784,8 @@ mod tests {
         assert_eq!(t.books.len(), 2); // Genesis + John
         assert_eq!(t.books[0].name, "Genesis");
         assert_eq!(t.books[1].name, "John");
-        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "KJV", Versification::En).unwrap();
+        let r =
+            crate::bible_ref::parse_reference("Genesis 1:1-2", "KJV", Versification::En).unwrap();
         assert_eq!(
             t.resolve(&r),
             vec![
@@ -790,7 +816,10 @@ mod tests {
         let r = crate::bible_ref::parse_reference("Psalm 23:1-2", "X", Versification::En).unwrap();
         let lines = t.resolve(&r);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].starts_with("1 The LORD is my shepherd"), "{lines:?}");
+        assert!(
+            lines[0].starts_with("1 The LORD is my shepherd"),
+            "{lines:?}"
+        );
         assert!(lines[1].starts_with("2 He makes me"), "{lines:?}");
     }
 
@@ -846,7 +875,8 @@ mod tests {
         assert_eq!(t.copyright.as_deref(), Some("Public domain"));
         assert_eq!(t.description.as_deref(), Some("Sample German Bible"));
         assert_eq!(t.source.as_deref(), Some("zefania"));
-        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "SMB", Versification::En).unwrap();
+        let r =
+            crate::bible_ref::parse_reference("Genesis 1:1-2", "SMB", Versification::En).unwrap();
         // Out-of-order VERS elements come out sorted by number.
         assert_eq!(
             t.resolve(&r),
@@ -884,9 +914,7 @@ mod tests {
         let err = import_zefania(&parse_doc("<root/>").unwrap(), "x").unwrap_err();
         assert_eq!(
             err,
-            ImportError::Faithful(
-                "This is not a Zefania Bible: Missing \"XMLBIBLE\" tag.".into()
-            )
+            ImportError::Faithful("This is not a Zefania Bible: Missing \"XMLBIBLE\" tag.".into())
         );
     }
 
@@ -919,7 +947,8 @@ mod tests {
         assert_eq!(t.language, "English");
         assert_eq!(t.copyright.as_deref(), Some("https://example.invalid"));
         assert_eq!(t.source.as_deref(), Some("videopsalm-xml"));
-        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "NIV", Versification::En).unwrap();
+        let r =
+            crate::bible_ref::parse_reference("Genesis 1:1-2", "NIV", Versification::En).unwrap();
         assert_eq!(
             t.resolve(&r),
             vec![
@@ -966,7 +995,10 @@ mod tests {
         assert_eq!(clean_osis_text("a\u{a0}\u{a0}b *c "), "a b c");
         assert_eq!(adjust_spaces("x  ...  y", false), "x \u{2026} y");
         assert_eq!(adjust_spaces("\u{b6} intro\nnext", false), "intro\nnext");
-        assert_eq!(strip_leading_verse_number("\u{b9} \u{b9}\u{b2} Text"), "Text");
+        assert_eq!(
+            strip_leading_verse_number("\u{b9} \u{b9}\u{b2} Text"),
+            "Text"
+        );
         assert_eq!(strip_leading_verse_number("Plain"), "Plain");
     }
 }

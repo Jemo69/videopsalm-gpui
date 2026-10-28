@@ -12,8 +12,10 @@
 //! `VideoPsalmJSon.ToFile` (BOM + temp + replace) and `SongVerse.Normalize`
 //! (blank line → NBSP-only line).
 
-use crate::native_archive::{build_vpc_entry, read_vpac_entry, VPC_PASSWORD};
-use crate::native_songbook::{member_text, parse, songbook_to_songs, stringify, NativeSongbook, VpJson};
+use crate::native_archive::{VPC_PASSWORD, build_vpc_entry, read_vpac_entry};
+use crate::native_songbook::{
+    NativeSongbook, VpJson, member_text, parse, songbook_to_songs, stringify,
+};
 use crate::schema::Song;
 use std::path::{Path, PathBuf};
 
@@ -38,8 +40,7 @@ pub struct RawSongbook {
 /// Read the raw AST of a native songbook (`.json` or encrypted `.vpc`).
 pub fn load_raw_songbook(file: &str) -> Result<RawSongbook, String> {
     if is_vpc_file(file) {
-        let bytes =
-            std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+        let bytes = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
         let entry = read_vpac_entry(&bytes, VPC_PASSWORD)?;
         let text = String::from_utf8_lossy(&entry.data).into_owned();
         let root = parse(&text)?;
@@ -50,8 +51,7 @@ pub fn load_raw_songbook(file: &str) -> Result<RawSongbook, String> {
             encrypted: entry.encrypted,
         })
     } else {
-        let text =
-            std::fs::read_to_string(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+        let text = std::fs::read_to_string(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
         let body = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
         let root = parse(body)?;
         Ok(RawSongbook {
@@ -86,18 +86,16 @@ fn find_native_song_index(root: &VpJson, song: &Song) -> Option<usize> {
     // same order as the TypeScript twin, so both ports find the same verse.
     if let Some(source) = song.source.as_ref() {
         if !source.guid.is_empty() {
-            if let Some(i) = songs
-                .iter()
-                .position(|raw| raw.get("Guid").map(|v| v.text()).unwrap_or_default() == source.guid)
-            {
+            if let Some(i) = songs.iter().position(|raw| {
+                raw.get("Guid").map(|v| v.text()).unwrap_or_default() == source.guid
+            }) {
                 return Some(i);
             }
         }
         if !source.song_id.is_empty() {
-            if let Some(i) = songs
-                .iter()
-                .position(|raw| raw.get("ID").map(|v| v.text()).unwrap_or_default() == source.song_id)
-            {
+            if let Some(i) = songs.iter().position(|raw| {
+                raw.get("ID").map(|v| v.text()).unwrap_or_default() == source.song_id
+            }) {
                 return Some(i);
             }
         }
@@ -134,7 +132,11 @@ fn version_stamp() -> String {
 /// `memo1..3`, `sequence`, `verseOrderIndex`). A native value is never
 /// overwritten unless the operator edited that field — silently rewriting
 /// the operator's author string would be data loss.
-pub fn apply_song_to_book(root: &mut VpJson, song: &mut Song, edits: &[&str]) -> Result<(), String> {
+pub fn apply_song_to_book(
+    root: &mut VpJson,
+    song: &mut Song,
+    edits: &[&str],
+) -> Result<(), String> {
     if !root.is_object() {
         return Err("VideoPsalm songbook root is not an object".to_string());
     }
@@ -142,8 +144,12 @@ pub fn apply_song_to_book(root: &mut VpJson, song: &mut Song, edits: &[&str]) ->
         return Err("Song has no title".to_string());
     }
     let edited = |field: &str| edits.contains(&field);
-    let index = find_native_song_index(root, song)
-        .ok_or_else(|| format!("Song {:?} was not found in the VideoPsalm songbook", song.title))?;
+    let index = find_native_song_index(root, song).ok_or_else(|| {
+        format!(
+            "Song {:?} was not found in the VideoPsalm songbook",
+            song.title
+        )
+    })?;
     // Scope the borrow of the matched verse so the source-locator sync below
     // can read the rest of the AST.
     let (raw_guid, raw_song_id) = {
@@ -151,7 +157,12 @@ pub fn apply_song_to_book(root: &mut VpJson, song: &mut Song, edits: &[&str]) ->
             .get_mut("Songs")
             .and_then(|v| v.as_array_mut())
             .and_then(|a| a.get_mut(index))
-            .ok_or_else(|| format!("Song {:?} was not found in the VideoPsalm songbook", song.title))?;
+            .ok_or_else(|| {
+                format!(
+                    "Song {:?} was not found in the VideoPsalm songbook",
+                    song.title
+                )
+            })?;
         raw.set("Text", VpJson::String(song.title.clone()));
 
         let write_meta = |raw: &mut VpJson, key: &str, value: &str, field: &str| {
@@ -161,7 +172,13 @@ pub fn apply_song_to_book(root: &mut VpJson, song: &mut Song, edits: &[&str]) ->
                 } else {
                     raw.set(key, VpJson::String(value.to_string()));
                 }
-            } else if raw.get(key).map(|v| v.text()).unwrap_or_default().is_empty() && !value.is_empty() {
+            } else if raw
+                .get(key)
+                .map(|v| v.text())
+                .unwrap_or_default()
+                .is_empty()
+                && !value.is_empty()
+            {
                 raw.set(key, VpJson::String(value.to_string()));
             }
         };
@@ -214,7 +231,11 @@ pub fn apply_song_to_book(root: &mut VpJson, song: &mut Song, edits: &[&str]) ->
         // Native verse 1 often has no explicit `ID` (the serializer omits
         // the default), so count the shared tag ids as reserved too.
         for block in &song.verses {
-            let tag = block.tag.clone().unwrap_or_else(|| "V".to_string()).to_uppercase();
+            let tag = block
+                .tag
+                .clone()
+                .unwrap_or_else(|| "V".to_string())
+                .to_uppercase();
             if tag == "V" {
                 if let Some(tid) = block.tag_id {
                     if tid as i64 >= next_id {
@@ -228,8 +249,17 @@ pub fn apply_song_to_book(root: &mut VpJson, song: &mut Song, edits: &[&str]) ->
             raw.set("Verses", VpJson::Array(Vec::new()));
         }
         for (i, block) in song.verses.iter().enumerate() {
-            let body = block.lines.join("\n").replace("\r\n", "\n").replace('\r', "\n").replace("\n\n", "\n\u{a0}\n");
-            let tag = block.tag.clone().unwrap_or_else(|| "V".to_string()).to_uppercase();
+            let body = block
+                .lines
+                .join("\n")
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .replace("\n\n", "\n\u{a0}\n");
+            let tag = block
+                .tag
+                .clone()
+                .unwrap_or_else(|| "V".to_string())
+                .to_uppercase();
             let tag_num = tag_number(&tag);
             {
                 let verses = raw
@@ -334,7 +364,12 @@ pub fn save_song_to_file(file: &str, song: &mut Song, edits: &[&str]) -> Result<
         } else {
             raw.entry_name
         };
-        build_vpc_entry(&entry_name, serialized.as_bytes(), VPC_PASSWORD, raw.encrypted)
+        build_vpc_entry(
+            &entry_name,
+            serialized.as_bytes(),
+            VPC_PASSWORD,
+            raw.encrypted,
+        )
     } else {
         // VideoPsalm's plain writer always emits the UTF-8 preamble.
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -368,15 +403,21 @@ pub fn save_song_to_file(file: &str, song: &mut Song, edits: &[&str]) -> Result<
 // ---------------------------------------------------------------------------
 
 /// Exact extension sets from VideoPsalm 1.29 Images.cs / Videos.cs.
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "jpe", "jfif", "png", "bmp", "tif", "tiff", "tga", "gif"];
+const IMAGE_EXTS: &[&str] = &[
+    "jpg", "jpeg", "jpe", "jfif", "png", "bmp", "tif", "tiff", "tga", "gif",
+];
 const VIDEO_EXTS: &[&str] = &[
     "asf", "avi", "divx", "dv", "flv", "gxf", "iso", "m1v", "m2v", "m2t", "m2ts", "m4v", "mkv",
     "mov", "mp2", "mp4", "mpeg", "mpe", "mpg", "mpeg1", "mpeg2", "mpeg3", "mpeg4", "mts", "mxf",
-    "nuv", "ogg", "ogm", "ogv", "ogx", "ps", "rec", "rm", "rmvb", "tod", "ts", "vob", "wmv", "webm",
+    "nuv", "ogg", "ogm", "ogv", "ogx", "ps", "rec", "rm", "rmvb", "tod", "ts", "vob", "wmv",
+    "webm",
 ];
 
 fn media_kind(file: &str) -> Option<&'static str> {
-    let ext = Path::new(file).extension()?.to_string_lossy().to_lowercase();
+    let ext = Path::new(file)
+        .extension()?
+        .to_string_lossy()
+        .to_lowercase();
     if IMAGE_EXTS.contains(&ext.as_str()) {
         Some("image")
     } else if VIDEO_EXTS.contains(&ext.as_str()) {
@@ -413,7 +454,9 @@ fn resolve_media_path(value: &str, folder: &Path) -> Option<PathBuf> {
         return None;
     }
     let normal = value.replace('\\', "/");
-    let normal = normal.trim_start_matches(['/', '.']).trim_start_matches('/');
+    let normal = normal
+        .trim_start_matches(['/', '.'])
+        .trim_start_matches('/');
     let base = Path::new(normal);
     let mut candidates = Vec::new();
     if base.is_absolute() {
@@ -434,13 +477,22 @@ fn resolve_media_path(value: &str, folder: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
-fn collect_media_strings(value: &VpJson, folder: &Path, source: &str, out: &mut Vec<FolderBackground>) {
+fn collect_media_strings(
+    value: &VpJson,
+    folder: &Path,
+    source: &str,
+    out: &mut Vec<FolderBackground>,
+) {
     match value {
         VpJson::String(s) => {
             if let Some(kind) = media_kind(s) {
                 if let Some(file) = resolve_media_path(s, folder) {
                     out.push(FolderBackground {
-                        kind: if kind == "video" { "videoLoop".to_string() } else { "image".to_string() },
+                        kind: if kind == "video" {
+                            "videoLoop".to_string()
+                        } else {
+                            "image".to_string()
+                        },
                         file: file.to_string_lossy().into_owned(),
                         source: source.to_string(),
                     });
@@ -513,7 +565,12 @@ fn songbook_files(folder: &Path) -> Vec<PathBuf> {
     walk_files(&root, 0, 3, &mut files);
     files
         .into_iter()
-        .filter(|f| f.is_file() && f.file_name().map(|n| is_songbook_name(&n.to_string_lossy())).unwrap_or(false))
+        .filter(|f| {
+            f.is_file()
+                && f.file_name()
+                    .map(|n| is_songbook_name(&n.to_string_lossy()))
+                    .unwrap_or(false)
+        })
         .collect()
 }
 
@@ -522,7 +579,10 @@ fn style_files(folder: &Path) -> Vec<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(folder) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.path().is_file() && name.to_lowercase().ends_with(".json") && name.to_lowercase().contains("style") {
+            if entry.path().is_file()
+                && name.to_lowercase().ends_with(".json")
+                && name.to_lowercase().contains("style")
+            {
                 roots.push(entry.path());
             }
         }
@@ -531,7 +591,10 @@ fn style_files(folder: &Path) -> Vec<PathBuf> {
     let mut sub = Vec::new();
     walk_files(&styles_dir, 0, 1, &mut sub);
     for file in sub {
-        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if name.to_lowercase().ends_with(".json") && name.to_lowercase().contains("style") {
             roots.push(file);
         }
@@ -574,7 +637,9 @@ pub fn scan_folder(folder: &str) -> FolderScan {
         ..Default::default()
     };
     if !root.is_dir() {
-        result.errors.push(format!("Document folder not found: {resolved}"));
+        result
+            .errors
+            .push(format!("Document folder not found: {resolved}"));
         return result;
     }
 
@@ -587,7 +652,9 @@ pub fn scan_folder(folder: &str) -> FolderScan {
             }
             Err(e) => result.errors.push(format!(
                 "{}: {e}",
-                file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name)
+                file.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(name)
             )),
         }
     }
@@ -596,7 +663,12 @@ pub fn scan_folder(folder: &str) -> FolderScan {
         let mut files = Vec::new();
         walk_files(&root.join(dir_name), 0, 3, &mut files);
         let mut song_files = Vec::new();
-        walk_files(&root.join("SongBooks").join(dir_name), 0, 3, &mut song_files);
+        walk_files(
+            &root.join("SongBooks").join(dir_name),
+            0,
+            3,
+            &mut song_files,
+        );
         files.extend(song_files);
         for file in files {
             // VideoPsalm's generated thumbnails live in `Thumbs/` and are
@@ -619,7 +691,9 @@ pub fn scan_folder(folder: &str) -> FolderScan {
             Err(_) => {
                 result.errors.push(format!(
                     "{}: not a readable style file",
-                    file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    file.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
                 ));
                 continue;
             }
@@ -629,16 +703,25 @@ pub fn scan_folder(folder: &str) -> FolderScan {
             Err(_) => {
                 result.errors.push(format!(
                     "{}: not a readable style file",
-                    file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    file.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
                 ));
                 continue;
             }
         };
-        let source = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let source = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let mut found = Vec::new();
         collect_media_strings(&parsed, root, &source, &mut found);
         for bg in found {
-            if !result.backgrounds.iter().any(|x| x.kind == bg.kind && x.file == bg.file) {
+            if !result
+                .backgrounds
+                .iter()
+                .any(|x| x.kind == bg.kind && x.file == bg.file)
+            {
                 result.backgrounds.push(bg.clone());
             }
             if bg.kind == "videoLoop" && !result.videos.contains(&bg.file) {
@@ -652,10 +735,14 @@ pub fn scan_folder(folder: &str) -> FolderScan {
 
     // Stable gallery order, matching the original's filename sort.
     result.images.sort_by(|a, b| {
-        file_name(a).to_lowercase().cmp(&file_name(b).to_lowercase())
+        file_name(a)
+            .to_lowercase()
+            .cmp(&file_name(b).to_lowercase())
     });
     result.videos.sort_by(|a, b| {
-        file_name(a).to_lowercase().cmp(&file_name(b).to_lowercase())
+        file_name(a)
+            .to_lowercase()
+            .cmp(&file_name(b).to_lowercase())
     });
     result
 }
@@ -685,6 +772,72 @@ pub fn folder_candidates(home: &str, documents: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Scrub a picked file name the way the Electron port does (`safeMediaName`):
+/// keep the base name, replace `<>:"|?*` + control chars with `_`, fall back
+/// to `media` when nothing survives.
+pub fn safe_media_name(name: &str) -> String {
+    let base = name.replace('\\', "/");
+    let base = base.rsplit('/').next().unwrap_or("");
+    let clean: String = base
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if clean.is_empty() {
+        "media".to_string()
+    } else {
+        clean
+    }
+}
+
+/// First free name in `dir`: `pic.jpg`, `pic (2).jpg`, … — never overwrite
+/// (`freeMediaName` twin).
+pub fn free_media_name(dir: &Path, name: &str) -> String {
+    let safe = safe_media_name(name);
+    let (stem, ext) = match safe.rfind('.') {
+        Some(i) if i > 0 => (&safe[..i], &safe[i..]),
+        _ => (safe.as_str(), ""),
+    };
+    let mut candidate = safe.clone();
+    let mut n = 2u32;
+    while dir.join(&candidate).exists() {
+        candidate = format!("{stem} ({n}){ext}");
+        n += 1;
+    }
+    candidate
+}
+
+/// Copy a picked media file into the document folder's library
+/// (`Images/` or `Videos/`, created on demand) under a scrubbed, free name.
+/// Returns the destination path. Never overwrites; errors are strings for
+/// the status line.
+pub fn import_media_file(src: &Path, doc_folder: &str, kind: &str) -> Result<PathBuf, String> {
+    if !src.is_file() {
+        return Err(format!("not a file: {}", src.display()));
+    }
+    let sub = match kind {
+        "video" => "Videos",
+        "image" => "Images",
+        other => return Err(format!("unknown media kind: {other}")),
+    };
+    let dir = Path::new(doc_folder).join(sub);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dest = dir.join(free_media_name(&dir, &name));
+    std::fs::copy(src, &dest).map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
+    Ok(dest)
 }
 
 #[cfg(test)]
@@ -727,20 +880,37 @@ mod tests {
         let name = file.to_string_lossy().into_owned();
         let mut song = load_song(&dir, "SB1.json");
         song.title = "New Title".to_string();
-        song.verses[0].lines = vec!["new line one".to_string(), "".to_string(), "new line two".to_string()];
+        song.verses[0].lines = vec![
+            "new line one".to_string(),
+            "".to_string(),
+            "new line two".to_string(),
+        ];
         let text = save_song_to_file(&name, &mut song, &[]).unwrap();
         // Unknown fields survive; the blank line became an NBSP-only line.
         assert!(text.contains("CustomField"), "unknown field lost: {text}");
         assert!(text.contains("New Title"));
-        assert!(text.contains("new line one\n\u{a0}\nnew line two"), "NBSP invariant broken: {text}");
+        assert!(
+            text.contains("new line one\n\u{a0}\nnew line two"),
+            "NBSP invariant broken: {text}"
+        );
         // BOM + .bak, like the native writer (`VideoPsalmJSon.ToFile`).
         let bytes = std::fs::read(&file).unwrap();
         assert_eq!(&bytes[..3], b"\xef\xbb\xbf");
-        assert!(Path::new(&format!("{name}.bak")).exists(), ".bak copy missing");
+        assert!(
+            Path::new(&format!("{name}.bak")).exists(),
+            ".bak copy missing"
+        );
         // Re-read maps back to the edited song.
         let again = load_song(&dir, "SB1.json");
         assert_eq!(again.title, "New Title");
-        assert_eq!(again.verses[0].lines, vec!["new line one".to_string(), "\u{a0}".to_string(), "new line two".to_string()]);
+        assert_eq!(
+            again.verses[0].lines,
+            vec![
+                "new line one".to_string(),
+                "\u{a0}".to_string(),
+                "new line two".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -754,8 +924,14 @@ mod tests {
         song.memo1 = String::new();
         save_song_to_file(&name, &mut song, &["memo1"]).unwrap();
         let raw = std::fs::read_to_string(&file).unwrap();
-        assert!(raw.contains("Old Author"), "unedited author overwritten: {raw}");
-        assert!(!raw.contains("Memo1"), "emptied edited memo not removed: {raw}");
+        assert!(
+            raw.contains("Old Author"),
+            "unedited author overwritten: {raw}"
+        );
+        assert!(
+            !raw.contains("Memo1"),
+            "emptied edited memo not removed: {raw}"
+        );
         assert!(raw.contains("CustomField"), "unknown field lost: {raw}");
     }
 
@@ -785,10 +961,18 @@ mod tests {
         std::fs::create_dir_all(dir.join("Images")).unwrap();
         std::fs::create_dir_all(dir.join("SongBooks").join("Thumbs")).unwrap();
         std::fs::write(dir.join("SongBooks").join("SB1.json"), SONGBOOK).unwrap();
-        std::fs::write(dir.join("SongBooks").join("CommonSettings.json"), "{DataBaseFolder:\".\"}").unwrap();
+        std::fs::write(
+            dir.join("SongBooks").join("CommonSettings.json"),
+            "{DataBaseFolder:\".\"}",
+        )
+        .unwrap();
         std::fs::write(dir.join("Images").join("bg.png"), b"png").unwrap();
         std::fs::write(dir.join("Images").join("notes.txt"), b"nope").unwrap();
-        std::fs::write(dir.join("SongBooks").join("Thumbs").join("bg.png"), b"thumb").unwrap();
+        std::fs::write(
+            dir.join("SongBooks").join("Thumbs").join("bg.png"),
+            b"thumb",
+        )
+        .unwrap();
         std::fs::write(
             dir.join("RootStyle.json"),
             "{BackgroundStyle:{Image:\"Images/bg.png\"}}",
@@ -810,5 +994,36 @@ mod tests {
         let scan = scan_folder("/definitely/not/a/videopsalm/folder");
         assert!(!scan.errors.is_empty());
         assert!(scan.songs.is_empty());
+    }
+
+    #[test]
+    fn safe_media_name_scrubs_like_the_electron_port() {
+        assert_eq!(safe_media_name("pic.jpg"), "pic.jpg");
+        assert_eq!(safe_media_name("a<b>:c?.jpg"), "a_b__c_.jpg");
+        assert_eq!(safe_media_name("/x/y/z/song-backup.MP4"), "song-backup.MP4");
+        assert_eq!(safe_media_name("C:\\pics\\a|b.png"), "a_b.png");
+        assert_eq!(safe_media_name("<>:\"|?*"), "_______");
+        assert_eq!(safe_media_name("   "), "media");
+    }
+
+    #[test]
+    fn import_copies_into_images_without_overwriting() {
+        let doc = tmp_dir("import");
+        let src = doc.join("pic.jpg");
+        std::fs::write(&src, b"fake-jpeg").unwrap();
+        let dst = import_media_file(&src, &doc.to_string_lossy(), "image").unwrap();
+        assert_eq!(dst, doc.join("Images").join("pic.jpg"));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"fake-jpeg");
+        // A second import of the same name gets a free name.
+        let dst2 = import_media_file(&src, &doc.to_string_lossy(), "image").unwrap();
+        assert_eq!(dst2, doc.join("Images").join("pic (2).jpg"));
+        // Videos land in Videos/; unknown kinds are rejected.
+        let dst3 = import_media_file(&src, &doc.to_string_lossy(), "video").unwrap();
+        assert_eq!(dst3, doc.join("Videos").join("pic.jpg"));
+        assert!(import_media_file(&src, &doc.to_string_lossy(), "audio").is_err());
+        assert!(
+            import_media_file(&doc.join("missing.jpg"), &doc.to_string_lossy(), "image").is_err()
+        );
+        std::fs::remove_dir_all(&doc).ok();
     }
 }

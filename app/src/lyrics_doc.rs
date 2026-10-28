@@ -44,7 +44,9 @@ pub fn slide_count(document: &str) -> usize {
 /// single-space idiom. Surfaced in the editor so an empty slide is explained
 /// rather than mysterious.
 pub fn has_empty_slide(document: &str) -> bool {
-    split_verses(document).iter().any(VerseBlock::is_empty_slide)
+    split_verses(document)
+        .iter()
+        .any(VerseBlock::is_empty_slide)
 }
 
 /// A parsed verse: the lines of one slide, with the tag that introduced it.
@@ -105,7 +107,10 @@ pub fn split_verses(document: &str) -> Vec<VerseBlock> {
             } else if let Some(t) = pending_tag.take() {
                 // A tag alone on a blank line, immediately followed by another
                 // blank: an empty tagged verse. Keep it so the tag is not lost.
-                out.push(VerseBlock { lines: Vec::new(), tag: t });
+                out.push(VerseBlock {
+                    lines: Vec::new(),
+                    tag: t,
+                });
             }
             continue;
         }
@@ -143,7 +148,10 @@ pub fn split_verses(document: &str) -> Vec<VerseBlock> {
             tag: pending_tag.take().unwrap_or_default(),
         });
     } else if let Some(t) = pending_tag {
-        out.push(VerseBlock { lines: Vec::new(), tag: t });
+        out.push(VerseBlock {
+            lines: Vec::new(),
+            tag: t,
+        });
     }
     out
 }
@@ -209,7 +217,10 @@ pub fn is_tag_line(line: &str) -> bool {
     if !rest.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    matches!(first.to_ascii_uppercase(), 'S' | 'R' | 'C' | 'B' | 'P' | 'V')
+    matches!(
+        first.to_ascii_uppercase(),
+        'S' | 'R' | 'C' | 'B' | 'P' | 'V'
+    )
 }
 
 /// The letter badge shown in the slide panel: `S1`, `R`, `R.`.
@@ -225,7 +236,9 @@ pub fn tag_badge(tag: &str) -> Option<String> {
     let mut chars = t.chars();
     let first = chars.next()?.to_ascii_uppercase();
     let rest: String = chars.collect();
-    let rest = rest.trim().trim_start_matches(|c: char| !c.is_ascii_digit());
+    let rest = rest
+        .trim()
+        .trim_start_matches(|c: char| !c.is_ascii_digit());
     Some(format!("{first}{rest}"))
 }
 
@@ -233,7 +246,10 @@ pub fn tag_badge(tag: &str) -> Option<String> {
 pub fn document_from_verses(verses: &[vp_core::schema::SongVerse]) -> String {
     let blocks: Vec<VerseBlock> = verses
         .iter()
-        .map(|v| VerseBlock { lines: v.lines.clone(), tag: String::new() })
+        .map(|v| VerseBlock {
+            lines: v.lines.clone(),
+            tag: String::new(),
+        })
         .collect();
     join_verses(&blocks)
 }
@@ -267,7 +283,10 @@ pub fn save_document(
 /// (`Song.Verses: [{ Text: "line1\nline2…" }]`), so each block keeps its
 /// embedded newlines. The tag is *not* persisted separately in v1 — it is kept
 /// in the document text so a round-trip through the editor is lossless.
-pub fn verses_from_document(document: &str, existing: &[vp_core::schema::SongVerse]) -> Vec<vp_core::schema::SongVerse> {
+pub fn verses_from_document(
+    document: &str,
+    existing: &[vp_core::schema::SongVerse],
+) -> Vec<vp_core::schema::SongVerse> {
     split_verses(document)
         .into_iter()
         .enumerate()
@@ -325,7 +344,10 @@ mod tests {
         // space. The space will produce an empty, single slide."
         let v = split_verses("first\n \nsecond");
         assert_eq!(v.len(), 3);
-        assert!(v[1].is_empty_slide(), "the space verse must survive as a slide");
+        assert!(
+            v[1].is_empty_slide(),
+            "the space verse must survive as a slide"
+        );
     }
 
     #[test]
@@ -366,7 +388,11 @@ mod tests {
     #[test]
     fn a_one_word_lyric_line_is_never_mistaken_for_a_tag() {
         let v = split_verses("Chorus");
-        assert_eq!(v[0].lines, vec!["Chorus"], "a bare tag with no content is kept");
+        assert_eq!(
+            v[0].lines,
+            vec!["Chorus"],
+            "a bare tag with no content is kept"
+        );
     }
 
     #[test]
@@ -379,8 +405,18 @@ mod tests {
     #[test]
     fn writing_back_keeps_verse_ids_so_agenda_refs_survive() {
         let existing = vec![
-            vp_core::schema::SongVerse { id: "V1".into(), lines: vec!["a".into()], order: 1, ..Default::default() },
-            vp_core::schema::SongVerse { id: "V2".into(), lines: vec!["b".into()], order: 2, ..Default::default() },
+            vp_core::schema::SongVerse {
+                id: "V1".into(),
+                lines: vec!["a".into()],
+                order: 1,
+                ..Default::default()
+            },
+            vp_core::schema::SongVerse {
+                id: "V2".into(),
+                lines: vec!["b".into()],
+                order: 2,
+                ..Default::default()
+            },
         ];
         let out = verses_from_document("a\n\nb", &existing);
         assert_eq!(out[0].id, "V1");

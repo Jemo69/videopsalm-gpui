@@ -36,11 +36,13 @@
 //! control window renders `control_view`.
 
 mod doc_field;
+mod file_picker;
 mod icons;
 mod lyrics_doc;
 mod media_gallery;
 mod preview_resize;
 mod projector_window;
+mod rich_view;
 mod smoke;
 mod style_explorer;
 mod text_field;
@@ -62,15 +64,15 @@ use vp_core::bible_ref::{
     shrink_end, shrink_start,
 };
 use vp_core::cascade::{Cascade, Chain};
-use vp_core::geometry::{FitMode, Viewport, resolve_percent};
-use vp_core::schema::{Align, Versification};
 use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
+use vp_core::geometry::{FitMode, Viewport, resolve_percent};
 use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
 use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
 };
+use vp_core::schema::{Align, Versification};
 use vp_core::slides::{Slide, compute_item_slides_templated};
 use vp_core::themes::{self, Theme};
 use vp_core::verse_splitter::SplitOptions;
@@ -455,7 +457,7 @@ pub(crate) struct Root {
     _lyrics_doc_subs: Vec<Subscription>,
     pptx_field: gpui::Entity<TextField>,
     bible_xml_field: gpui::Entity<TextField>,
-    native_path_field: gpui::Entity<TextField>,
+    pub(crate) native_path_field: gpui::Entity<TextField>,
     clock_field: gpui::Entity<TextField>,
     pub(crate) search_scope: SearchScope,
     pub(crate) show_scope_grid: bool,
@@ -575,8 +577,7 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
 
-        let agenda =
-            Agenda::from_json(AGENDA_SAMPLE).unwrap_or_else(|_| Agenda::new("New agenda"));
+        let agenda = Agenda::from_json(AGENDA_SAMPLE).unwrap_or_else(|_| Agenda::new("New agenda"));
 
         let search_field = cx.new(|cx| TextField::new("Keywords or number to search", cx));
         let path_field = cx.new(|cx| TextField::new("agenda.json", cx));
@@ -744,15 +745,12 @@ impl Root {
             },
         );
         this._subs.push(sub);
-        let sub = cx.subscribe(
-            &book_field,
-            |this: &mut Root, emitter, ev: &Changed, cx| {
-                if emitter == this.book_field {
-                    this.book_query = ev.text.clone();
-                    this.rebuild_biref_with_verses(cx, None);
-                }
-            },
-        );
+        let sub = cx.subscribe(&book_field, |this: &mut Root, emitter, ev: &Changed, cx| {
+            if emitter == this.book_field {
+                this.book_query = ev.text.clone();
+                this.rebuild_biref_with_verses(cx, None);
+            }
+        });
         this._subs.push(sub);
         // Typing in the document refreshes the SLIDE PANEL on every keystroke
         // — the first of the original's three refresh rates. The preview is NOT
@@ -798,8 +796,7 @@ impl Root {
 
         // Preload the CENTER title edit + verse range fields from the boot
         // agenda item (John 3:16-18).
-        this.verse_field
-            .update(cx, |f, cx| f.set_text("16-18", cx));
+        this.verse_field.update(cx, |f, cx| f.set_text("16-18", cx));
         if let Some(item) = this.agenda.items.first() {
             let title = item.title.clone();
             this.title_field.update(cx, |f, cx| f.set_text(&title, cx));
@@ -817,8 +814,7 @@ impl Root {
                 boot_import_errors.join("; ")
             );
         } else if boot_imports > 0 {
-            this.status =
-                format!("Installed {boot_imports} Bible translation(s) from bibles/.");
+            this.status = format!("Installed {boot_imports} Bible translation(s) from bibles/.");
         }
         this
     }
@@ -1048,8 +1044,6 @@ impl Root {
         self.persist_layout_quiet();
     }
 
-
-
     pub(crate) fn persist_layout_quiet(&self) {
         let _ = self.prefs().save_file(LayoutPrefs::FILE);
     }
@@ -1079,7 +1073,10 @@ impl Root {
     }
 
     fn song_map(&self) -> HashMap<String, Song> {
-        self.songs.iter().map(|s| (s.id.clone(), s.clone())).collect()
+        self.songs
+            .iter()
+            .map(|s| (s.id.clone(), s.clone()))
+            .collect()
     }
 
     fn live_slides(&self) -> Vec<Slide> {
@@ -1249,11 +1246,7 @@ impl Root {
                 lines
                     .into_iter()
                     .map(|line| {
-                        let num = line
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or("?")
-                            .to_string();
+                        let num = line.split_whitespace().next().unwrap_or("?").to_string();
                         (num, vec![line])
                     })
                     .collect()
@@ -1303,9 +1296,7 @@ impl Root {
         }
         self.sel_block = Some(verse_id.to_string());
         let slides = self.item_slides(item_idx);
-        let target = self
-            .slide_for_song_verse(&slides, verse_id)
-            .unwrap_or(0);
+        let target = self.slide_for_song_verse(&slides, verse_id).unwrap_or(0);
         self.goto_item_slide(cx, item_idx, target);
         self.sel_block = Some(verse_id.to_string());
     }
@@ -1624,7 +1615,11 @@ impl Root {
             return;
         }
         self.transition = t.to_string();
-        let style = self.agenda.settings.style.get_or_insert_with(Default::default);
+        let style = self
+            .agenda
+            .settings
+            .style
+            .get_or_insert_with(Default::default);
         style.transition = t.to_string();
         if style.level.trim().is_empty() {
             style.level = self.style_level.clone();
@@ -1638,7 +1633,11 @@ impl Root {
     /// prefs + preview + booklet — the shared Style schema has no
     /// bold/italic/underline fields).
     fn mirror_font_to_style(&mut self) {
-        let style = self.agenda.settings.style.get_or_insert_with(Default::default);
+        let style = self
+            .agenda
+            .settings
+            .style
+            .get_or_insert_with(Default::default);
         style.body.font = self.font_family.clone();
         style.body.align = self.align;
         if style.level.trim().is_empty() {
@@ -1722,9 +1721,10 @@ impl Root {
         // Standalone agenda media (B-32): a live Image/Video file item
         // replaces the slide instead of compositing text over a background.
         let standalone = frame.item.and_then(|it| {
-            self.agenda.items.get(it).and_then(|a| {
-                projector_window::standalone_for(&a.kind, &a.reference)
-            })
+            self.agenda
+                .items
+                .get(it)
+                .and_then(|a| projector_window::standalone_for(&a.kind, &a.reference))
         });
         ProjectorSnapshot {
             bg_kind: self.bg_kind,
@@ -1814,7 +1814,13 @@ impl Root {
     fn refresh_search(&mut self, query: &str, cx: &mut Context<Self>) {
         let scope = self.songbook_filter.clone().map(|s| vec![s]);
         let excluded: Vec<String> = self.excluded_books.iter().cloned().collect();
-        match library::instant_find_scoped(&self.db, query, self.search_scope, scope.as_deref(), &excluded) {
+        match library::instant_find_scoped(
+            &self.db,
+            query,
+            self.search_scope,
+            scope.as_deref(),
+            &excluded,
+        ) {
             Ok(found) => {
                 let ids: Vec<String> = found.iter().map(|s| s.id.clone()).collect();
                 self.results = ids
@@ -1841,7 +1847,10 @@ impl Root {
                 } else if query.trim().is_empty() {
                     let songs = &self.songs;
                     self.results.sort_by(|&a, &b| {
-                        songs[a].title.to_lowercase().cmp(&songs[b].title.to_lowercase())
+                        songs[a]
+                            .title
+                            .to_lowercase()
+                            .cmp(&songs[b].title.to_lowercase())
                     });
                 }
             }
@@ -1868,9 +1877,9 @@ impl Root {
             self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
             // Keep the slides panel in step with the selected library song so
             // the editor and the slides panel never desync (Stage 04).
-            if let Some(ag_idx) = self.agenda.items.iter().position(|it| {
-                matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id)
-            }) {
+            if let Some(ag_idx) = self.agenda.items.iter().position(
+                |it| matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id),
+            ) {
                 self.sel_item = Some(ag_idx);
                 self.sel_block = None;
                 let title = self.agenda.items[ag_idx].title.clone();
@@ -1900,7 +1909,9 @@ impl Root {
             self.notation = n;
         }
         let Some(si) = self.sel_song else { return };
-        let Some(song) = self.songs.get(si).cloned() else { return };
+        let Some(song) = self.songs.get(si).cloned() else {
+            return;
+        };
         let new_semitones = song.chords.transpose + steps;
         if let Some(s) = self.songs.get_mut(si) {
             s.chords.transpose = new_semitones;
@@ -1933,9 +1944,13 @@ impl Root {
             self.set_status(cx, "No song selected — nothing to save.");
             return;
         };
-        let Some(song) = self.songs.get(si).cloned() else { return };
+        let Some(song) = self.songs.get(si).cloned() else {
+            return;
+        };
         let doc = lyrics_doc::document_from_verses(&song.verses);
-        let Some(mutable) = self.songs.get_mut(si) else { return };
+        let Some(mutable) = self.songs.get_mut(si) else {
+            return;
+        };
         match lyrics_doc::save_document(&doc, mutable, &self.db) {
             Ok(()) => {
                 self.song_dirty = false;
@@ -1952,7 +1967,10 @@ impl Root {
                             Err(e) => {
                                 self.set_status(
                                     cx,
-                                    format!("Saved {} to library; songbook write-back failed: {e}", song.title),
+                                    format!(
+                                        "Saved {} to library; songbook write-back failed: {e}",
+                                        song.title
+                                    ),
                                 );
                                 return;
                             }
@@ -1960,45 +1978,50 @@ impl Root {
                     }
                     _ => String::new(),
                 };
-                self.set_status(cx, format!("Saved {} — {} slide(s){native}.", song.title, n));
+                self.set_status(
+                    cx,
+                    format!("Saved {} — {} slide(s){native}.", song.title, n),
+                );
             }
             Err(e) => self.set_status(cx, format!("Could not save: {e}")),
         }
     }
 
     /// Apply an edited lyrics document to the in-memory song.
-///
-/// Called on **every keystroke**. This is the original's first refresh tier:
-/// the slide panel updates live while you type, even mid-presentation, but the
-/// preview and the projection do **not** — those need a double-click on the
-/// slide row. Persisting needs Save.
-///
-/// The blank lines are the slide boundaries, so the slide panel's row count
-/// changes as soon as the operator leaves a blank line. That is the whole
-/// editing model: type a line, press Enter twice, and a new slide exists.
-fn apply_lyrics_document(&mut self, document: &str) {
-    let Some(si) = self.sel_song else { return };
-    let existing = match self.songs.get(si) {
-        Some(s) => s.verses.clone(),
-        None => return,
-    };
-    let verses = lyrics_doc::verses_from_document(document, &existing);
-    let Some(song) = self.songs.get_mut(si) else { return };
-    song.verses = verses;
-    // Live edit, not yet on disk: the header shows `*` until Save.
-    self.song_dirty = true;
-    // Chord overlays are anchored to (verse id, line), so they must follow the
-    // new line structure.
-    let mut overlays = Vec::new();
-    for v in &song.verses {
-        overlays.extend(extract_overlays(&v.id, &v.lines));
+    ///
+    /// Called on **every keystroke**. This is the original's first refresh tier:
+    /// the slide panel updates live while you type, even mid-presentation, but the
+    /// preview and the projection do **not** — those need a double-click on the
+    /// slide row. Persisting needs Save.
+    ///
+    /// The blank lines are the slide boundaries, so the slide panel's row count
+    /// changes as soon as the operator leaves a blank line. That is the whole
+    /// editing model: type a line, press Enter twice, and a new slide exists.
+    fn apply_lyrics_document(&mut self, document: &str) {
+        let Some(si) = self.sel_song else { return };
+        let existing = match self.songs.get(si) {
+            Some(s) => s.verses.clone(),
+            None => return,
+        };
+        let verses = lyrics_doc::verses_from_document(document, &existing);
+        let Some(song) = self.songs.get_mut(si) else {
+            return;
+        };
+        song.verses = verses;
+        // Live edit, not yet on disk: the header shows `*` until Save.
+        self.song_dirty = true;
+        // Chord overlays are anchored to (verse id, line), so they must follow the
+        // new line structure.
+        let mut overlays = Vec::new();
+        for v in &song.verses {
+            overlays.extend(extract_overlays(&v.id, &v.lines));
+        }
+        song.chords.overlays = overlays;
+        // Keep the slide panel in step. Not persisted — Save does that.
+        self.sel_block = None;
     }
-    song.chords.overlays = overlays;
-    // Keep the slide panel in step. Not persisted — Save does that.
-    self.sel_block = None;
-}
 
-// ------------------------------------------------------------- lyrics
+    // ------------------------------------------------------------- lyrics
 
     fn rebuild_biref_with_verses(&mut self, cx: &mut Context<Self>, verses: Option<&str>) {
         let book = match_book(&self.book_query)
@@ -2056,8 +2079,6 @@ fn apply_lyrics_document(&mut self, document: &str) {
         }
     }
 
-
-
     fn add_bible_to_agenda(&mut self, cx: &mut Context<Self>) {
         if let Some(r) = self.biref.clone() {
             let mut overrides = vp_core::schema::ItemOverrides::default();
@@ -2072,7 +2093,9 @@ fn apply_lyrics_document(&mut self, document: &str) {
                 id,
                 kind: ItemKind::BibleVerses,
                 title: format_header(&r),
-                reference: ItemRef::Bible { bible_ref: r.clone() },
+                reference: ItemRef::Bible {
+                    bible_ref: r.clone(),
+                },
                 flow_type: FlowType::Manual,
                 auto_advance_ms: None,
                 overrides,
@@ -2090,7 +2113,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
         if let Some(si) = self.sel_song {
             if let Some(song) = self.songs.get(si).cloned() {
                 self.agenda_dirty = true;
-        let id = agenda_ops::add_item(
+                let id = agenda_ops::add_item(
                     &mut self.agenda,
                     ItemKind::Song,
                     song.title.clone(),
@@ -2137,13 +2160,13 @@ fn apply_lyrics_document(&mut self, document: &str) {
             &mut self.agenda,
             ItemKind::Song,
             song.title.clone(),
-            ItemRef::Song { song_id: song.id.clone() },
+            ItemRef::Song {
+                song_id: song.id.clone(),
+            },
         );
         self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
         self.set_status(cx, format!("Added #{} {}", n, song.title));
     }
-
-
 
     fn save_agenda(&mut self, cx: &mut Context<Self>) {
         let path = self.path_field.read(cx).text();
@@ -2517,9 +2540,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
                         .take(6)
                         .collect::<Vec<_>>()
                         .join(" ");
-                    if snippet.len() >= 3
-                        && cur.lines.iter().any(|l| l.contains(snippet.trim()))
-                    {
+                    if snippet.len() >= 3 && cur.lines.iter().any(|l| l.contains(snippet.trim())) {
                         found = Some(num);
                         break;
                     }
@@ -2589,18 +2610,54 @@ fn apply_lyrics_document(&mut self, document: &str) {
     /// like `1..0`, `V/C/B/E/O`, `I/O`, `X` are gated on this so typing —
     /// including during on-the-fly lyric edits — never triggers a jump).
     fn editing(&self, window: &Window, cx: &App) -> bool {
-        if self.search_field.read(cx).focus_handle(cx).is_focused(window)
+        if self
+            .search_field
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
             || self.path_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.alert_field.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .alert_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
             || self.book_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.verse_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.title_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.media_path_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.media_range_field.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .verse_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .title_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .media_path_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .media_range_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
             || self.pptx_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.bible_xml_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.native_path_field.read(cx).focus_handle(cx).is_focused(window)
-            || self.clock_field.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .bible_xml_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .native_path_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .clock_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
         {
             return true;
         }
@@ -2623,7 +2680,6 @@ fn apply_lyrics_document(&mut self, document: &str) {
     /// frame-accurate player (ExternalPlayer shells to the OS handler), so
     /// `I` pins the in-point to 0 and `O` pins a 30s out-point.
 
-
     /// X key (stub): advance a live PowerPoint item; without COM control
     /// (SPEC section 3) this steps placeholder slides only.
     fn pptx_advance(&mut self, cx: &mut Context<Self>) {
@@ -2633,16 +2689,17 @@ fn apply_lyrics_document(&mut self, document: &str) {
             .map(|item| {
                 matches!(
                     item.kind,
-                    ItemKind::PowerPoint
-                        | ItemKind::PowerPointSlide
-                        | ItemKind::SongPowerPoint
+                    ItemKind::PowerPoint | ItemKind::PowerPointSlide | ItemKind::SongPowerPoint
                 )
             })
             .unwrap_or(false);
         if is_pptx {
             self.next_slide(cx);
         } else {
-            self.set_status(cx, "X: no PowerPoint item live (stub — COM control out of scope).");
+            self.set_status(
+                cx,
+                "X: no PowerPoint item live (stub — COM control out of scope).",
+            );
         }
     }
 
@@ -2695,7 +2752,10 @@ fn apply_lyrics_document(&mut self, document: &str) {
         };
         let song = self.songs.iter().find(|s| &s.id == song_id)?;
         let slides = self.live_slides();
-        let header = slides.get(self.live_slide.min(slides.len().saturating_sub(1)))?.header.clone();
+        let header = slides
+            .get(self.live_slide.min(slides.len().saturating_sub(1)))?
+            .header
+            .clone();
         let verse_id = header.split('—').nth(1)?.trim().split_whitespace().next()?;
         let chords: Vec<String> = song
             .chords
@@ -2846,10 +2906,9 @@ fn apply_lyrics_document(&mut self, document: &str) {
             Ok(bytes) => match vp_core::pptx::import_pptx(path.trim(), &bytes) {
                 Ok(imp) => {
                     let n = imp.slides.len();
-                    self.pptx_info =
-                        format!("{}: {} slides (placeholders)", imp.file_name, n);
+                    self.pptx_info = format!("{}: {} slides (placeholders)", imp.file_name, n);
                     self.agenda_dirty = true;
-        let id = agenda_ops::add_item(
+                    let id = agenda_ops::add_item(
                         &mut self.agenda,
                         ItemKind::PowerPoint,
                         format!("{} (import)", imp.file_name),
@@ -3014,7 +3073,11 @@ fn apply_lyrics_document(&mut self, document: &str) {
                 .chars()
                 .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
                 .collect();
-            let file = if safe.trim().is_empty() { "agenda.vpagd".to_string() } else { format!("{}.vpagd", safe.trim()) };
+            let file = if safe.trim().is_empty() {
+                "agenda.vpagd".to_string()
+            } else {
+                format!("{}.vpagd", safe.trim())
+            };
             file
         } else {
             path.trim().to_string()
@@ -3023,10 +3086,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
         match vp_core::native_agenda::write_plan_file(&path, &self.agenda, &songs, &self.bibles) {
             Ok(built) => {
                 let _ = vp_core::library::push_recent(&self.db, &path, now_secs());
-                let mut msg = format!(
-                    "Exported {} item(s) to {path}.",
-                    self.agenda.items.len()
-                );
+                let mut msg = format!("Exported {} item(s) to {path}.", self.agenda.items.len());
                 for w in built.warnings.iter().take(3) {
                     msg.push_str(&format!(" [{w}]"));
                 }
@@ -3143,7 +3203,7 @@ fn apply_lyrics_document(&mut self, document: &str) {
             PresKey::RangeShrinkEnd => self.adjust_range(cx, 1),
             PresKey::RangeExtendStart => self.adjust_range(cx, 2),
             PresKey::RangeShrinkStart => self.adjust_range(cx, 3),
-            
+
             PresKey::AddResult(n) => self.add_search_result(n, cx),
             PresKey::Help => {
                 self.show_shortcuts = !self.show_shortcuts;
@@ -3239,8 +3299,21 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(div().text_size(px(11.)).text_color(ui.accent).child(caption.to_string()))
-        .child(div().flex().flex_row().flex_wrap().gap_1().items_center().children(kids))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(ui.accent)
+                .child(caption.to_string()),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_1()
+                .items_center()
+                .children(kids),
+        )
 }
 
 /// Colors-group swatch: a text "A" in the swatch color (text glyphs only,
@@ -3340,8 +3413,11 @@ fn section_scrolled_with_rail(
     // scroll state that survives a re-render.
     let id: &'static str = Box::leak(
         [
-            "scroll:agenda", "scroll:songs", "scroll:books",
-            "scroll:slides", "scroll:shortcuts",
+            "scroll:agenda",
+            "scroll:songs",
+            "scroll:books",
+            "scroll:slides",
+            "scroll:shortcuts",
         ][rail_index_for(title)]
         .to_string()
         .into_boxed_str(),
@@ -3362,7 +3438,13 @@ fn section_scrolled_with_rail(
     // rail-wrapped form is a plain `Div`, so both branches are wrapped in a
     // `Div` to give them one type.
     let body: Div = if rail.is_empty() {
-        div().flex().flex_col().flex_1().min_h_0().overflow_hidden().child(list)
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(list)
     } else {
         div()
             .flex()
@@ -3372,14 +3454,7 @@ fn section_scrolled_with_rail(
             .min_h_0()
             .overflow_hidden()
             .child(list)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .flex_none()
-                    .children(rail),
-            )
+            .child(div().flex().flex_col().gap_1().flex_none().children(rail))
     };
 
     let mut col = div()
@@ -3431,7 +3506,10 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 }
 
 pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
-    div().text_size(px(size_px)).text_color(ui.fg).child(text.to_string())
+    div()
+        .text_size(px(size_px))
+        .text_color(ui.fg)
+        .child(text.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3439,8 +3517,9 @@ pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
 // ---------------------------------------------------------------------------
 
 impl Render for Root {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.ui();
+        let target_h: f32 = window.bounds().size.height.into();
         let chrome = viewer_chrome_visible(self.viewer_mode);
         // Viewer mode drops the topbar AND the ribbon (viewer-mode.png opens
         // straight onto the agenda); the body and any live projection stay.
@@ -3472,16 +3551,16 @@ impl Render for Root {
         }
         root.child(match self.mode {
             Mode::Control => self.control_view(&ui, cx),
-            Mode::Projector => self.projector_view(&ui, cx),
+            Mode::Projector => self.projector_view(&ui, cx, target_h),
             Mode::Stage => self.stage_view(&ui, cx),
         })
-            .child(
-                div()
-                    .px_2()
-                    .py(px(2.))
-                    .border_color(ui.border)
-                    .child(format!("{} {}", self.t("status"), self.status)),
-            )
+        .child(
+            div()
+                .px_2()
+                .py(px(2.))
+                .border_color(ui.border)
+                .child(format!("{} {}", self.t("status"), self.status)),
+        )
     }
 }
 
@@ -3507,37 +3586,79 @@ impl Root {
             .items_center()
             .p(px(6.))
             .child(div().text_size(px(16.)).child(self.t("app_title")))
-            .child(btn(ui, cx, &self.t("tab_control"), mode == Mode::Control, |this, _, _, cx| {
-                this.ui_go(Mode::Control, cx);
-            }))
-            .child(btn(ui, cx, &self.t("tab_projector"), mode == Mode::Projector, |this, _, _, cx| {
-                this.ui_go(Mode::Projector, cx);
-            }))
-            .child(btn(ui, cx, &self.t("tab_stage"), mode == Mode::Stage, |this, _, _, cx| {
-                this.ui_go(Mode::Stage, cx);
-            }))
+            .child(btn(
+                ui,
+                cx,
+                &self.t("tab_control"),
+                mode == Mode::Control,
+                |this, _, _, cx| {
+                    this.ui_go(Mode::Control, cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                &self.t("tab_projector"),
+                mode == Mode::Projector,
+                |this, _, _, cx| {
+                    this.ui_go(Mode::Projector, cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                &self.t("tab_stage"),
+                mode == Mode::Stage,
+                |this, _, _, cx| {
+                    this.ui_go(Mode::Stage, cx);
+                },
+            ))
             .child(div().flex_1())
             .child(label(ui, &self.t("theme"), 13.))
-            .child(btn(ui, cx, "Light", self.theme_id == "light", |this, _, _, cx| {
-                this.theme_id = "light".into();
-                this.persist_layout_quiet();
-                cx.notify();
-            }))
-            .child(btn(ui, cx, "Dark", self.theme_id == "dark", |this, _, _, cx| {
-                this.theme_id = "dark".into();
-                this.persist_layout_quiet();
-                cx.notify();
-            }))
-            .child(btn(ui, cx, "Gray", self.theme_id == "gray", |this, _, _, cx| {
-                this.theme_id = "gray".into();
-                this.persist_layout_quiet();
-                cx.notify();
-            }))
-            .child(btn(ui, cx, "Blue", self.theme_id == "blue", |this, _, _, cx| {
-                this.theme_id = "blue".into();
-                this.persist_layout_quiet();
-                cx.notify();
-            }))
+            .child(btn(
+                ui,
+                cx,
+                "Light",
+                self.theme_id == "light",
+                |this, _, _, cx| {
+                    this.theme_id = "light".into();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Dark",
+                self.theme_id == "dark",
+                |this, _, _, cx| {
+                    this.theme_id = "dark".into();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Gray",
+                self.theme_id == "gray",
+                |this, _, _, cx| {
+                    this.theme_id = "gray".into();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Blue",
+                self.theme_id == "blue",
+                |this, _, _, cx| {
+                    this.theme_id = "blue".into();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ))
             .child(btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
                 this.lang = "en".into();
                 this.persist_layout_quiet();
@@ -3546,10 +3667,7 @@ impl Root {
             .child(btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
                 this.lang = "fr".into();
                 // The Bible search box swaps its placeholder with the mode.
-                let hint = this
-                    .bible_search
-                    .placeholder(&this.lang)
-                    .to_string();
+                let hint = this.bible_search.placeholder(&this.lang).to_string();
                 let f = this.search_field.clone();
                 f.update(cx, |field, cx| field.set_placeholder(&hint, cx));
                 this.persist_layout_quiet();
@@ -3564,9 +3682,15 @@ impl Root {
             .child(btn(ui, cx, "A text", self.text_hidden, |this, _, _, cx| {
                 this.toggle_text(cx);
             }))
-            .child(btn(ui, cx, "Ctrl+P", self.projector_on, |this, _, _, cx| {
-                this.toggle_projector(cx);
-            }))
+            .child(btn(
+                ui,
+                cx,
+                "Ctrl+P",
+                self.projector_on,
+                |this, _, _, cx| {
+                    this.toggle_projector(cx);
+                },
+            ))
             .child(btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
                 this.toggle_viewer_mode(cx);
             }))
@@ -3594,13 +3718,19 @@ impl Root {
         // A slim re-expand row stands in for the article's white arrow; the
         // tab row itself is untouched.
         if self.ribbon_collapsed {
-            return div().flex().flex_row().gap_1().px(px(6.)).items_center().children(vec![
-                label(ui, "ribbon collapsed", 12.),
-                btn(ui, cx, "expand (Ctrl+F1)", false, |this, _, _, cx| {
-                    this.ribbon_collapsed = false;
-                    cx.notify();
-                }),
-            ]);
+            return div()
+                .flex()
+                .flex_row()
+                .gap_1()
+                .px(px(6.))
+                .items_center()
+                .children(vec![
+                    label(ui, "ribbon collapsed", 12.),
+                    btn(ui, cx, "expand (Ctrl+F1)", false, |this, _, _, cx| {
+                        this.ribbon_collapsed = false;
+                        cx.notify();
+                    }),
+                ]);
         }
         let tabs: Vec<Div> = RibbonTab::all()
             .into_iter()
@@ -3626,7 +3756,14 @@ impl Root {
             .flex_col()
             .gap(px(2.))
             .px(px(6.))
-            .child(div().flex().flex_row().gap_1().items_center().children(tabs))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .children(tabs),
+            )
             .child(self.format_ribbon(ui, cx))
             // The `Message` tab carries the alert overlay, the clock and the
             // media transport. In 1.29 those controls live on the ribbon, not
@@ -3707,7 +3844,11 @@ impl Root {
             this.persist_layout_quiet();
             cx.notify();
         }));
-        for (glyph, want) in [("≡", Align::Left), ("≣", Align::Center), ("≡ ", Align::Right)] {
+        for (glyph, want) in [
+            ("≡", Align::Left),
+            ("≣", Align::Center),
+            ("≡ ", Align::Right),
+        ] {
             let active = self.align == want;
             let label = match want {
                 Align::Left => "Left",
@@ -3743,7 +3884,9 @@ impl Root {
         // Colors group: accent swatches.
         let mut color_kids: Vec<Div> = Vec::new();
         let cur_accent = self.accent_override.clone();
-        for sw in ["#DC2626", "#F97316", "#FACC15", "#22C55E", "#38BDF8", "#2563EB"] {
+        for sw in [
+            "#DC2626", "#F97316", "#FACC15", "#22C55E", "#38BDF8", "#2563EB",
+        ] {
             let active = cur_accent.as_deref() == Some(sw);
             color_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.accent_override = Some(sw.into());
@@ -3788,25 +3931,11 @@ impl Root {
             .child(group(ui, &self.t("animation"), anim_kids))
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
     /// Style explorer tree (DoD #6) — hook: delegates to `style_explorer.rs`,
     /// superseding the five-row summary (OBSERVATIONS.md §10: per-leaf).
     fn style_explorer(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         self.render_style_explorer(ui, cx)
     }
-
-
 
     // ------------------------------------------------------------- control
 
@@ -3977,7 +4106,9 @@ impl Root {
                     .child(status_dot)
                     // The selected-but-not-live row is marked by an edge, not a
                     // fill, so the two never read as one state.
-                    .when(!live && selected, |d| d.border_l_2().border_color(ui.selection))
+                    .when(!live && selected, |d| {
+                        d.border_l_2().border_color(ui.selection)
+                    })
                     // A single click respects the shield; a **double-click is the
                     // documented escape hatch** and always goes through.
                     // `weebly:the-slides`: while the shield is armed "the slide
@@ -4009,7 +4140,9 @@ impl Root {
                 rows.push(label(ui, line, 12.));
             }
         }
-        let recents = library::list_recents(&self.db, 3).unwrap_or_default().join(" | ");
+        let recents = library::list_recents(&self.db, 3)
+            .unwrap_or_default()
+            .join(" | ");
         // The agenda's buttons are a **vertical column on the right of the
         // list** (`agenda-panel.png`), not a row underneath it: ➕ ▾, 💾 ▾,
         // ❌ ▾, ⬆, ⬇. The original has five; ours adds a Duplicate button
@@ -4096,9 +4229,15 @@ impl Root {
             .flex_row()
             .gap_1()
             .items_center()
-            .children(vec![btn(ui, cx, &self.t("duplicate"), false, |this, _, _, cx| {
-                this.duplicate_item(cx);
-            })]);
+            .children(vec![btn(
+                ui,
+                cx,
+                &self.t("duplicate"),
+                false,
+                |this, _, _, cx| {
+                    this.duplicate_item(cx);
+                },
+            )]);
         section_scrolled_with_rail(
             ui,
             // Header per `agenda-panel.png`: a circle-chevron, a dropdown, then
@@ -4113,6 +4252,18 @@ impl Root {
             vec![
                 row(vec![
                     div().flex_1().child(self.path_field.clone()),
+                    btn(ui, cx, "Browse…", false, |this, _, _, cx| {
+                        if let Some(p) = crate::file_picker::pick_file(
+                            "Open agenda",
+                            &[("Agenda JSON", &["json"])],
+                        ) {
+                            this.path_field
+                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                            cx.notify();
+                        } else {
+                            this.set_status(cx, "Browse cancelled — no file chosen.");
+                        }
+                    }),
                     btn(ui, cx, &self.t("new"), false, |this, _, _, cx| {
                         this.agenda = Agenda::new("New agenda");
                         this.sel_item = None;
@@ -4128,6 +4279,27 @@ impl Root {
                 // `.vpagd` plan import/export through the typed path field.
                 row(vec![
                     div().flex_1().child(self.native_path_field.clone()),
+                    btn(ui, cx, "Browse folder…", false, |this, _, _, cx| {
+                        if let Some(p) = crate::file_picker::pick_folder("VideoPsalm folder") {
+                            this.native_path_field
+                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                            cx.notify();
+                        } else {
+                            this.set_status(cx, "Browse cancelled — no folder chosen.");
+                        }
+                    }),
+                    btn(ui, cx, "Browse plan…", false, |this, _, _, cx| {
+                        if let Some(p) = crate::file_picker::pick_file(
+                            "Open .vpagd plan",
+                            &[("VideoPsalm plan", &["vpagd"])],
+                        ) {
+                            this.native_path_field
+                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                            cx.notify();
+                        } else {
+                            this.set_status(cx, "Browse cancelled — no file chosen.");
+                        }
+                    }),
                     btn(ui, cx, "Open folder", false, |this, _, _, cx| {
                         this.open_native_folder(cx);
                     }),
@@ -4154,27 +4326,43 @@ impl Root {
     /// number grid with highlighted selection).
     fn browser_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let songs_active = self.left_tab == LeftTab::Songs;
-        let mut kids: Vec<Div> = vec![
-            row(vec![
-                btn(ui, cx, &self.t("songbooks"), songs_active, |this, _, _, cx| {
+        let mut kids: Vec<Div> = vec![row(vec![
+            btn(
+                ui,
+                cx,
+                &self.t("songbooks"),
+                songs_active,
+                |this, _, _, cx| {
                     this.left_tab = LeftTab::Songs;
                     let hint = this.t("search_songs");
                     let f = this.search_field.clone();
                     f.update(cx, |field, cx| field.set_placeholder(&hint, cx));
                     cx.notify();
-                }),
-                btn(ui, cx, &self.t("bibles_tab"), !songs_active, |this, _, _, cx| {
+                },
+            ),
+            btn(
+                ui,
+                cx,
+                &self.t("bibles_tab"),
+                !songs_active,
+                |this, _, _, cx| {
                     this.left_tab = LeftTab::Bibles;
                     let hint = this.bible_search.placeholder(&this.lang).to_string();
                     let f = this.search_field.clone();
                     f.update(cx, |field, cx| field.set_placeholder(&hint, cx));
                     cx.notify();
-                }),
-                btn(ui, cx, &format!("+ {}", self.t("add")), false, |this, _, _, cx| {
+                },
+            ),
+            btn(
+                ui,
+                cx,
+                &format!("+ {}", self.t("add")),
+                false,
+                |this, _, _, cx| {
                     this.add_current_to_agenda(cx);
-                }),
-            ]),
-        ];
+                },
+            ),
+        ])];
 
         if songs_active {
             kids.push(row(vec![
@@ -4249,13 +4437,19 @@ impl Root {
                         .flex_row()
                         .items_center()
                         .gap_1()
-                        .child(btn(ui, cx, if is_active { "●" } else { "○" }, is_active, move |this, _, _, cx| {
-                            this.search_scope = s;
-                            this.show_scope_grid = false;
-                            let q = this.search_field.read(cx).text();
-                            this.refresh_search(&q, cx);
-                        }))
-                        .child(label(ui, s_label, 11.))
+                        .child(btn(
+                            ui,
+                            cx,
+                            if is_active { "●" } else { "○" },
+                            is_active,
+                            move |this, _, _, cx| {
+                                this.search_scope = s;
+                                this.show_scope_grid = false;
+                                let q = this.search_field.read(cx).text();
+                                this.refresh_search(&q, cx);
+                            },
+                        ))
+                        .child(label(ui, s_label, 11.)),
                 );
             }
             div().flex().flex_col().gap_1().children(items)
@@ -4277,7 +4471,7 @@ impl Root {
                     .text_size(px(11.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(ui.accent)
-                    .child("Find words in:")
+                    .child("Find words in:"),
             )
             .child(
                 div()
@@ -4286,7 +4480,7 @@ impl Root {
                     .gap_3()
                     .mt_1()
                     .child(left_div)
-                    .child(right_div)
+                    .child(right_div),
             )
     }
 
@@ -4296,11 +4490,8 @@ impl Root {
     /// church keep rarely-used books out of the way of a service-time search.
     fn songbook_rows(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let mut rows: Vec<Div> = Vec::new();
-        let all_excluded = !self.excluded_books.is_empty()
-            && self
-                .excluded_books
-                .iter()
-                .all(|b| b == "book-main");
+        let all_excluded =
+            !self.excluded_books.is_empty() && self.excluded_books.iter().all(|b| b == "book-main");
         let mut header = div()
             .flex()
             .flex_row()
@@ -4310,20 +4501,25 @@ impl Root {
             .text_size(px(12.))
             .text_color(ui.accent)
             .child("▤ songbooks")
-            .child(btn(ui, cx, "all", self.excluded_books.is_empty(), |this, _, _, cx| {
-                this.excluded_books.clear();
-                let q = this.search_field.read(cx).text();
-                this.refresh_search(&q, cx);
-                this.persist_layout_quiet();
-            }))
+            .child(btn(
+                ui,
+                cx,
+                "all",
+                self.excluded_books.is_empty(),
+                |this, _, _, cx| {
+                    this.excluded_books.clear();
+                    let q = this.search_field.read(cx).text();
+                    this.refresh_search(&q, cx);
+                    this.persist_layout_quiet();
+                },
+            ))
             .child(btn(
                 ui,
                 cx,
                 if all_excluded { "⊘ none" } else { "⊘ off" },
                 !self.excluded_books.is_empty(),
                 |this, _, _, cx| {
-                    if this.excluded_books.len() == 1 && this.excluded_books.contains("book-main")
-                    {
+                    if this.excluded_books.len() == 1 && this.excluded_books.contains("book-main") {
                         this.excluded_books.clear();
                     } else {
                         this.excluded_books.clear();
@@ -4349,7 +4545,11 @@ impl Root {
             }
             let excluded = self.excluded_books.contains(&book.id);
             let scoped = self.songbook_filter.as_deref() == Some(book.id.as_str());
-            let count = self.songs.iter().filter(|s| s.songbook_id == book.id).count();
+            let count = self
+                .songs
+                .iter()
+                .filter(|s| s.songbook_id == book.id)
+                .count();
             let name = format!("{} {} ({} chants)", book.abbrev, book.name, count);
             let id_toggle = book.id.clone();
             let id_scope = book.id.clone();
@@ -4398,7 +4598,9 @@ impl Root {
         for idx in self.results.iter() {
             let n = 0usize;
             let i = *idx;
-            let Some(song) = self.songs.get(i) else { continue };
+            let Some(song) = self.songs.get(i) else {
+                continue;
+            };
             let selected = self.sel_song == Some(i);
             let title = format!("♪ {}", self.song_row_title(song));
             rows.push(
@@ -4434,23 +4636,45 @@ impl Root {
             vec![
                 label(ui, &hint, 12.),
                 row(vec![
-                    btn(ui, cx, &self.t("abbrev"), self.show_abbrev, |this, _, _, cx| {
-                        this.show_abbrev = !this.show_abbrev;
-                        this.persist_layout_quiet();
-                        cx.notify();
-                    }),
-                    btn(ui, cx, &self.t("numbers"), self.show_number, |this, _, _, cx| {
-                        this.show_number = !this.show_number;
-                        this.persist_layout_quiet();
-                        cx.notify();
-                    }),
-                    btn(ui, cx, if self.sort_by_number { "№ Sort" } else { "A-Z Sort" }, self.sort_by_number, |this, _, _, cx| {
-                        this.sort_by_number = !this.sort_by_number;
-                        let q = this.search_field.read(cx).text();
-                        this.refresh_search(&q, cx);
-                        this.persist_layout_quiet();
-                        cx.notify();
-                    }),
+                    btn(
+                        ui,
+                        cx,
+                        &self.t("abbrev"),
+                        self.show_abbrev,
+                        |this, _, _, cx| {
+                            this.show_abbrev = !this.show_abbrev;
+                            this.persist_layout_quiet();
+                            cx.notify();
+                        },
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        &self.t("numbers"),
+                        self.show_number,
+                        |this, _, _, cx| {
+                            this.show_number = !this.show_number;
+                            this.persist_layout_quiet();
+                            cx.notify();
+                        },
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        if self.sort_by_number {
+                            "№ Sort"
+                        } else {
+                            "A-Z Sort"
+                        },
+                        self.sort_by_number,
+                        |this, _, _, cx| {
+                            this.sort_by_number = !this.sort_by_number;
+                            let q = this.search_field.read(cx).text();
+                            this.refresh_search(&q, cx);
+                            this.persist_layout_quiet();
+                            cx.notify();
+                        },
+                    ),
                     btn(ui, cx, "+Agenda", false, |this, _, _, cx| {
                         this.add_song_to_agenda(cx);
                     }),
@@ -4490,7 +4714,11 @@ impl Root {
                     .rounded_t_sm()
                     .cursor_pointer()
                     .text_size(px(11.))
-                    .font_weight(if is_cur { FontWeight::BOLD } else { FontWeight::NORMAL })
+                    .font_weight(if is_cur {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .bg(if is_cur { hex("#f97327") } else { ui.panel })
                     .text_color(if is_cur { rgb(0xffffff) } else { ui.fg })
                     .border_1()
@@ -4511,7 +4739,7 @@ impl Root {
                 .gap(px(3.))
                 .items_center()
                 .child(label(ui, "Translations:", 11.))
-                .children(trans_tabs)
+                .children(trans_tabs),
         ];
         // Favorites (SPEC 2.3).
         let mut fav_row: Vec<Div> = vec![label(ui, "★", 13.)];
@@ -4528,19 +4756,23 @@ impl Root {
                 cx.notify();
             }
         }));
-        fav_row.push(btn(ui, cx, &self.t("fav_remove"), false, |this, _, _, cx| {
-            if let Some(id) = this.bibles.current().map(|t| t.translation_id.clone()) {
-                this.bibles.remove_favorite(&id);
-                cx.notify();
-            }
-        }));
+        fav_row.push(btn(
+            ui,
+            cx,
+            &self.t("fav_remove"),
+            false,
+            |this, _, _, cx| {
+                if let Some(id) = this.bibles.current().map(|t| t.translation_id.clone()) {
+                    this.bibles.remove_favorite(&id);
+                    cx.notify();
+                }
+            },
+        ));
         // Old / New Testament toggle + book list (capped, reference field
         // reaches any of the 66 books by name/abbreviation, EN/FR).
         let ot = self.testament == Testament::OT;
-        let books: Vec<&vp_core::bible_ref::Book> = BOOKS
-            .iter()
-            .filter(|b| (b.number <= 39) == ot)
-            .collect();
+        let books: Vec<&vp_core::bible_ref::Book> =
+            BOOKS.iter().filter(|b| (b.number <= 39) == ot).collect();
         let mut book_rows: Vec<Div> = Vec::new();
         // All 39 books of the testament, scrolling.
         for b in books.iter() {
@@ -4582,11 +4814,20 @@ impl Root {
         if grid.is_empty() {
             grid.push(label(ui, "(?)", 12.));
         }
-        // Import row: path field + button, mirroring the .pptx row's shape.
-        // The original opens a file dialog here; gpui has none, so the path
-        // is typed/pasted (same pattern as `pptx_field`).
+        // Import row: path field + Browse + button, mirroring the .pptx row's shape.
         let import_row = vec![
             div().flex_1().child(self.bible_xml_field.clone()),
+            btn(ui, cx, "Browse…", false, |this, _, _, cx| {
+                if let Some(p) =
+                    crate::file_picker::pick_file("Import Bible XML", &[("XML", &["xml"])])
+                {
+                    this.bible_xml_field
+                        .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                    cx.notify();
+                } else {
+                    this.set_status(cx, "Browse cancelled — no file chosen.");
+                }
+            }),
             btn(ui, cx, &self.t("import_bible"), false, |this, _, _, cx| {
                 this.import_bible_xml(cx);
             }),
@@ -4596,11 +4837,17 @@ impl Root {
             row(import_row),
             row(fav_row),
             row(vec![
-                btn(ui, cx, &self.t("bilingual"), self.bilingual, |this, _, _, cx| {
-                    this.bilingual = !this.bilingual;
-                    this.persist_layout_quiet();
-                    cx.notify();
-                }),
+                btn(
+                    ui,
+                    cx,
+                    &self.t("bilingual"),
+                    self.bilingual,
+                    |this, _, _, cx| {
+                        this.bilingual = !this.bilingual;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
                 btn(ui, cx, "+Agenda", false, |this, _, _, cx| {
                     this.add_bible_to_agenda(cx);
                 }),
@@ -4820,37 +5067,35 @@ impl Root {
                 kids.extend(self.generic_slide_buttons(ui, cx));
             }
         }
-        kids.push(
-            row(vec![
-                label(
-                    ui,
-                    &format!(
-                        "{}: {} / {}: {}",
-                        self.t("max_lines"),
-                        self.max_lines,
-                        self.t("max_chars"),
-                        self.max_chars
-                    ),
-                    12.,
+        kids.push(row(vec![
+            label(
+                ui,
+                &format!(
+                    "{}: {} / {}: {}",
+                    self.t("max_lines"),
+                    self.max_lines,
+                    self.t("max_chars"),
+                    self.max_chars
                 ),
-                btn(ui, cx, "L-", false, |this, _, _, cx| {
-                    this.max_lines = this.max_lines.saturating_sub(1).max(1);
-                    cx.notify();
-                }),
-                btn(ui, cx, "L+", false, |this, _, _, cx| {
-                    this.max_lines = (this.max_lines + 1).min(8);
-                    cx.notify();
-                }),
-                btn(ui, cx, "C-", false, |this, _, _, cx| {
-                    this.max_chars = this.max_chars.saturating_sub(5).max(10);
-                    cx.notify();
-                }),
-                btn(ui, cx, "C+", false, |this, _, _, cx| {
-                    this.max_chars = (this.max_chars + 5).min(80);
-                    cx.notify();
-                }),
-            ]),
-        );
+                12.,
+            ),
+            btn(ui, cx, "L-", false, |this, _, _, cx| {
+                this.max_lines = this.max_lines.saturating_sub(1).max(1);
+                cx.notify();
+            }),
+            btn(ui, cx, "L+", false, |this, _, _, cx| {
+                this.max_lines = (this.max_lines + 1).min(8);
+                cx.notify();
+            }),
+            btn(ui, cx, "C-", false, |this, _, _, cx| {
+                this.max_chars = this.max_chars.saturating_sub(5).max(10);
+                cx.notify();
+            }),
+            btn(ui, cx, "C+", false, |this, _, _, cx| {
+                this.max_chars = (this.max_chars + 5).min(80);
+                cx.notify();
+            }),
+        ]));
         // The slide panel is the slide rows. UX-RESEARCH §10.2: it is a list
         // of text rows, nothing else — and `viewer-mode.png` shows it taking
         // the whole panel above the preview. A permanently-mounted keyboard
@@ -4903,7 +5148,9 @@ impl Root {
     /// Song verse blocks: `[☑] V1 <preview> [slides 1-2]`.
     fn song_blocks(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let target = self.sel_item.or(self.live_item);
-        let Some(item_idx) = target else { return Vec::new() };
+        let Some(item_idx) = target else {
+            return Vec::new();
+        };
         let item_id = match self.agenda.items.get(item_idx) {
             Some(it) => it.id.clone(),
             None => return Vec::new(),
@@ -4956,11 +5203,7 @@ impl Root {
             // blue", since 1.2, on every skin). Using `ui.accent` here made
             // that cue yellow on two of the four themes. `selected` is the
             // keyboard cursor and stays subtler so the two never read as one.
-            let row_bg = if live_now {
-                ui.selection
-            } else {
-                ui.bg
-            };
+            let row_bg = if live_now { ui.selection } else { ui.bg };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
             let border_c = if selected {
                 ui.engaged
@@ -5002,7 +5245,13 @@ impl Root {
                     )
                     // The slide text, wrapped over 2–3 lines as in the
                     // screenshot — not truncated to one line.
-                    .child(div().flex_1().text_size(px(13.)).whitespace_normal().child(preview))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .whitespace_normal()
+                            .child(preview),
+                    )
                     .child(div().text_size(px(12.)).text_color(row_ink).child(range))
                     // Single click projects (UX-RESEARCH 3.2).
                     .cursor_pointer()
@@ -5024,7 +5273,9 @@ impl Root {
     /// Bible verses as a numbered selectable list with checkboxes.
     fn bible_rows(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let target = self.sel_item.or(self.live_item);
-        let Some(item_idx) = target else { return Vec::new() };
+        let Some(item_idx) = target else {
+            return Vec::new();
+        };
         let item_id = match self.agenda.items.get(item_idx) {
             Some(it) => it.id.clone(),
             None => return Vec::new(),
@@ -5043,8 +5294,8 @@ impl Root {
                 .slide_for_bible_text(&slides, &text)
                 .map(|i| format!("▸{}", i + 1))
                 .unwrap_or_else(|| "—".to_string());
-            let live_now = live_here
-                && self.slide_for_bible_text(&slides, &text) == Some(self.live_slide);
+            let live_now =
+                live_here && self.slide_for_bible_text(&slides, &text) == Some(self.live_slide);
             let selected = self.sel_block.as_deref() == Some(num.as_str());
             let row_bg = if live_now { ui.selection } else { ui.bg };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
@@ -5110,7 +5361,9 @@ impl Root {
     /// Slide buttons for non-song/Bible kinds (filmstrip shortcuts kept).
     fn generic_slide_buttons(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let target = self.sel_item.or(self.live_item);
-        let Some(item_idx) = target else { return Vec::new() };
+        let Some(item_idx) = target else {
+            return Vec::new();
+        };
         let slides = self.item_slides(item_idx);
         if slides.is_empty() {
             return vec![label(ui, "(no slides)", 13.)];
@@ -5118,7 +5371,11 @@ impl Root {
         let live = self.live_item == Some(item_idx);
         let mut kids: Vec<Div> = Vec::new();
         for (i, slide) in slides.iter().enumerate() {
-            let mark = if live && self.live_slide == i { "●" } else { "" };
+            let mark = if live && self.live_slide == i {
+                "●"
+            } else {
+                ""
+            };
             let mut head: String = slide.header.chars().take(28).collect();
             if slide.header.chars().count() > 28 {
                 head.push('…');
@@ -5154,25 +5411,29 @@ impl Root {
                     .lines
                     .iter()
                     .map(|x| {
-                        let mut d = div()
-                            .text_size(px(24.))
-                            .text_color(rgb(0xFFFFFF))
-                            .font(gpui::font(self.font_family.clone()))
-                            .child(x.clone());
-                        if self.bold {
-                            d = d.font_weight(FontWeight::BOLD);
-                        }
-                        if self.italic {
-                            d = d.italic();
-                        }
-                        if self.underline {
-                            d = d.underline();
-                        }
-                        d
+                        rich_view::rich_line(
+                            x,
+                            24.0,
+                            rgb(0xFFFFFF),
+                            &self.font_family,
+                            self.bold,
+                            self.italic,
+                            self.underline,
+                            true,
+                        )
                     })
                     .collect();
                 if lines.is_empty() {
-                    lines.push(div().text_size(px(24.)).child("(blank)".to_string()));
+                    lines.push(rich_view::rich_line(
+                        "",
+                        24.0,
+                        rgb(0xFFFFFF),
+                        &self.font_family,
+                        self.bold,
+                        self.italic,
+                        self.underline,
+                        true,
+                    ));
                 }
                 let mut col = div()
                     .flex()
@@ -5181,19 +5442,15 @@ impl Root {
                     .bg(rgb(0x000000))
                     .p(px(10.))
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .child(div().flex_1())
-                            .child(div().text_size(px(13.)).text_color(hex("#BBBBBB")).child(header)),
+                        div().flex().flex_row().child(div().flex_1()).child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(hex("#BBBBBB"))
+                                .child(header),
+                        ),
                     );
                 if let Some(c) = chord {
-                    col = col.child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(ui.accent)
-                            .child(c),
-                    );
+                    col = col.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
                 }
                 let mut text_col = div().flex().flex_col().gap_1().flex_1().justify_center();
                 text_col = match self.align {
@@ -5205,11 +5462,12 @@ impl Root {
                     text_col = text_col.child(l);
                 }
                 col.child(text_col).child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .justify_center()
-                        .child(div().text_size(px(13.)).text_color(hex("#BBBBBB")).child(footer)),
+                    div().flex().flex_row().justify_center().child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(hex("#BBBBBB"))
+                            .child(footer),
+                    ),
                 )
             }
             None => div()
@@ -5247,7 +5505,11 @@ impl Root {
                     .items_center()
                     .gap_2()
                     .text_size(px(13.))
-                    .child(format!("{} ◈ {} {count}", self.t("preview"), self.style_level))
+                    .child(format!(
+                        "{} ◈ {} {count}",
+                        self.t("preview"),
+                        self.style_level
+                    ))
                     .children(self.state_chips(ui))
                     .when(self.aspect_ratio != "current", |d| {
                         d.child(
@@ -5319,79 +5581,79 @@ impl Root {
     }
 
     /// One **round** presentation command button.
-///
-/// The 1.29 strip is a column of coloured circles, not bordered squares
-/// (`SCREENSHOT-1.29-LAYOUT.md` §RIGHT column). Each command has its own
-/// colour in the original — next blue, base blue, hide-text orange, shield
-/// purple, freeze cyan, project green-arrow, pencil lime — which is why
-/// monochrome text glyphs read as a clone (B-03/B-27).
+    ///
+    /// The 1.29 strip is a column of coloured circles, not bordered squares
+    /// (`SCREENSHOT-1.29-LAYOUT.md` §RIGHT column). Each command has its own
+    /// colour in the original — next blue, base blue, hide-text orange, shield
+    /// purple, freeze cyan, project green-arrow, pencil lime — which is why
+    /// monochrome text glyphs read as a clone (B-03/B-27).
     fn round_command(
-    ui: &UI,
-    _strip: &UI,
-    cx: &mut Context<Root>,
-    icon: &'static str,
-    active: bool,
-    armed: bool,
-    action: &'static str,
-    _idx: usize,
-) -> Div {
-    // Per-command colour, so the strip reads as a set of distinct tools rather
-    // than seven identical boxes.
-    let tint = match action {
-        "next" | "base" => rgb(0x1E88E5),
-        "text" => rgb(0xF57C00),
-        "shield" => rgb(0x5E35B1),
-        "freeze" => rgb(0x00ACC1),
-        "project" => rgb(0x43A047),
-        _ => rgb(0x8BC34A), // pencil
-    };
-    // The shield fills **red** when armed — that colour is load-bearing: it is
-    // how the operator knows browsing cannot disturb the live slide.
-    //
-    // Every other command marks engagement exactly like `btn()`: an **orange
-    // outline** (`UI::engaged`) with the background left alone (B-30,
-    // OBSERVATIONS §6). A brightened fill used to sit here and made the
-    // engaged state read as a different, wrong treatment next to the ribbon.
-    let bg = if armed { SHIELD_ARMED } else { tint };
-    let outline = engaged_outline(active, armed);
-    div()
-        .w(px(34.))
-        .h(px(34.))
-        .rounded_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(bg)
-        .text_color(ink_on(bg))
-        .text_size(px(15.))
-        .cursor_pointer()
-        .when(outline, |d| d.border_2().border_color(ui.engaged))
-        // Lane G: drawn SVG on a neutral chip, so a coloured icon stays
-        // readable on its same-coloured circle (and on light skins).
-        .child(
-            div()
-                .w(px(26.))
-                .h(px(26.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(ui.bg)
-                .child(icons::art(icon)),
-        )
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(move |this, _, _w, cx| match action {
-                "next" => this.next_slide(cx),
-                "base" => this.toggle_base(cx),
-                "text" => this.toggle_text(cx),
-                "shield" => this.toggle_shield(cx),
-                "freeze" => this.toggle_freeze(cx),
-                "project" => this.project_now(cx),
-                _ => this.toggle_viewer_mode(cx),
-            }),
-        )
-}
+        ui: &UI,
+        _strip: &UI,
+        cx: &mut Context<Root>,
+        icon: &'static str,
+        active: bool,
+        armed: bool,
+        action: &'static str,
+        _idx: usize,
+    ) -> Div {
+        // Per-command colour, so the strip reads as a set of distinct tools rather
+        // than seven identical boxes.
+        let tint = match action {
+            "next" | "base" => rgb(0x1E88E5),
+            "text" => rgb(0xF57C00),
+            "shield" => rgb(0x5E35B1),
+            "freeze" => rgb(0x00ACC1),
+            "project" => rgb(0x43A047),
+            _ => rgb(0x8BC34A), // pencil
+        };
+        // The shield fills **red** when armed — that colour is load-bearing: it is
+        // how the operator knows browsing cannot disturb the live slide.
+        //
+        // Every other command marks engagement exactly like `btn()`: an **orange
+        // outline** (`UI::engaged`) with the background left alone (B-30,
+        // OBSERVATIONS §6). A brightened fill used to sit here and made the
+        // engaged state read as a different, wrong treatment next to the ribbon.
+        let bg = if armed { SHIELD_ARMED } else { tint };
+        let outline = engaged_outline(active, armed);
+        div()
+            .w(px(34.))
+            .h(px(34.))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(bg)
+            .text_color(ink_on(bg))
+            .text_size(px(15.))
+            .cursor_pointer()
+            .when(outline, |d| d.border_2().border_color(ui.engaged))
+            // Lane G: drawn SVG on a neutral chip, so a coloured icon stays
+            // readable on its same-coloured circle (and on light skins).
+            .child(
+                div()
+                    .w(px(26.))
+                    .h(px(26.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(ui.bg)
+                    .child(icons::art(icon)),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _w, cx| match action {
+                    "next" => this.next_slide(cx),
+                    "base" => this.toggle_base(cx),
+                    "text" => this.toggle_text(cx),
+                    "shield" => this.toggle_shield(cx),
+                    "freeze" => this.toggle_freeze(cx),
+                    "project" => this.project_now(cx),
+                    _ => this.toggle_viewer_mode(cx),
+                }),
+            )
+    }
 
     /// The presentation command strip beside the slide list, in the original's
     /// order (UX-RESEARCH §3.3): `next · base · text · shield · freeze ·
@@ -5424,14 +5686,7 @@ impl Root {
                 engaged: ui.engaged,
             };
             kids.push(Self::round_command(
-                ui,
-                &strip,
-                cx,
-                icon,
-                active,
-                armed,
-                action,
-                i,
+                ui, &strip, cx, icon, active, armed, action, i,
             ));
         }
         // The 1.29 strip is a column of **round** coloured buttons, ~36px,
@@ -5447,8 +5702,7 @@ impl Root {
             // The gap before the pencil: it changes the MODE, not the
             // projection, and the original spaces it for that reason.
             .children(
-                kids
-                    .into_iter()
+                kids.into_iter()
                     .enumerate()
                     .map(|(i, k)| -> Div {
                         if i == TOOL_STRIP_PENCIL_INDEX {
@@ -5552,11 +5806,17 @@ impl Root {
                 // per the 1.29 screenshot — `Files` is for the attached MP3/video,
                 // `Chords` for the chord view, `Miscellaneous` for
                 // transposition/Capo/CCLI.
-                btn(ui, cx, "Lyrics", self.song_tab == 0 && !self.song_misc, |this, _, _, cx| {
-                    this.song_tab = 0;
-                    this.song_misc = false;
-                    cx.notify();
-                }),
+                btn(
+                    ui,
+                    cx,
+                    "Lyrics",
+                    self.song_tab == 0 && !self.song_misc,
+                    |this, _, _, cx| {
+                        this.song_tab = 0;
+                        this.song_misc = false;
+                        cx.notify();
+                    },
+                ),
                 btn(ui, cx, "Files", self.song_tab == 1, |this, _, _, cx| {
                     this.song_tab = 1;
                     cx.notify();
@@ -5610,7 +5870,11 @@ impl Root {
             // within its songbook; footers render `Title (Abbrev No)`.
             .child(row(vec![
                 label(ui, &format!("{}: {}", self.t("song_no"), song.song_id), 12.),
-                label(ui, &format!("{}: {}", self.t("song_title"), song.title), 12.),
+                label(
+                    ui,
+                    &format!("{}: {}", self.t("song_title"), song.title),
+                    12.,
+                ),
             ]))
             .child(document)
             // Four fields below, in a 2×2 grid. NOT five: the "Texte de …"
@@ -5657,44 +5921,47 @@ impl Root {
                 ),
                 12.,
             ))
-                    .child(row(vec![
-                        label(
-                            ui,
-                            &format!("{}: {}", self.t("chords"), chords.join(" ")),
-                            12.,
-                        ),
-                        btn(ui, cx, "T-1", false, |this, _, _, cx| {
-                            this.apply_transpose(cx, -1, None);
-                        }),
-                        btn(ui, cx, "T+1", false, |this, _, _, cx| {
-                            this.apply_transpose(cx, 1, None);
-                        }),
-                        btn(
-                            ui,
-                            cx,
-                            "ABC",
-                            self.notation == ChordNotation::Abc,
-                            |this, _, _, cx| {
-                                this.apply_transpose(cx, 0, Some(ChordNotation::Abc));
-                            },
-                        ),
-                        btn(
-                            ui,
-                            cx,
-                            "DoReMi",
-                            self.notation == ChordNotation::DoReMi,
-                            |this, _, _, cx| {
-                                this.apply_transpose(cx, 0, Some(ChordNotation::DoReMi));
-                            },
-                        ),
-                    ]))
+            .child(row(vec![
+                label(
+                    ui,
+                    &format!("{}: {}", self.t("chords"), chords.join(" ")),
+                    12.,
+                ),
+                btn(ui, cx, "T-1", false, |this, _, _, cx| {
+                    this.apply_transpose(cx, -1, None);
+                }),
+                btn(ui, cx, "T+1", false, |this, _, _, cx| {
+                    this.apply_transpose(cx, 1, None);
+                }),
+                btn(
+                    ui,
+                    cx,
+                    "ABC",
+                    self.notation == ChordNotation::Abc,
+                    |this, _, _, cx| {
+                        this.apply_transpose(cx, 0, Some(ChordNotation::Abc));
+                    },
+                ),
+                btn(
+                    ui,
+                    cx,
+                    "DoReMi",
+                    self.notation == ChordNotation::DoReMi,
+                    |this, _, _, cx| {
+                        this.apply_transpose(cx, 0, Some(ChordNotation::DoReMi));
+                    },
+                ),
+            ]))
     }
 
     fn live_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let slides = self.live_slides();
         let n = slides.len();
         let cur = self.live_slide.min(n.saturating_sub(1));
-        let head = slides.get(cur).map(|s| s.header.clone()).unwrap_or_default();
+        let head = slides
+            .get(cur)
+            .map(|s| s.header.clone())
+            .unwrap_or_default();
         let next_head = slides
             .get(cur + 1)
             .map(|s| s.header.clone())
@@ -5721,9 +5988,11 @@ impl Root {
                     label(ui, &format!("▸ {head}"), 13.),
                     label(ui, &format!("▹ {next_head}"), 12.),
                 ]),
-                row(vec![
-                    label(ui, &format!("{}: {}", self.t("clock"), self.clock_display()), 13.),
-                ]),
+                row(vec![label(
+                    ui,
+                    &format!("{}: {}", self.t("clock"), self.clock_display()),
+                    13.,
+                )]),
                 row(vec![
                     btn(ui, cx, &self.t("prev"), false, |this, _, _, cx| {
                         this.prev_slide(cx);
@@ -5742,12 +6011,35 @@ impl Root {
                     }),
                 ]),
                 row(vec![
-                    label(ui, &format!("{}: {:?}", self.t("media"), self.media.state()), 12.),
+                    label(
+                        ui,
+                        &format!("{}: {:?}", self.t("media"), self.media.state()),
+                        12.,
+                    ),
                     div().flex_1().child(self.media_path_field.clone()),
+                    btn(ui, cx, "Browse…", false, |this, _, _, cx| {
+                        if let Some(p) = crate::file_picker::pick_file(
+                            "Pick media file",
+                            &[
+                                ("Audio", &["mp3", "wav", "ogg", "flac", "m4a"]),
+                                ("Videos", &["mp4", "mov", "avi", "mkv", "webm", "m4v"]),
+                            ],
+                        ) {
+                            this.media_path_field
+                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                            cx.notify();
+                        } else {
+                            this.set_status(cx, "Browse cancelled — no file chosen.");
+                        }
+                    }),
                     btn(ui, cx, &self.t("play_pause"), false, |this, _, _, cx| {
                         let p = this.media_path_field.read(cx).text();
                         if !p.trim().is_empty()
-                            && this.media.current().map(|c| c.to_string_lossy().into_owned()).as_deref()
+                            && this
+                                .media
+                                .current()
+                                .map(|c| c.to_string_lossy().into_owned())
+                                .as_deref()
                                 != Some(p.trim())
                         {
                             this.media.open(p.trim().into());
@@ -5770,12 +6062,24 @@ impl Root {
                 // verse-tag navigation, so the context switch stays manual).
                 row(vec![
                     label(ui, "projector window:", 12.),
-                    btn(ui, cx, "⛶ open window", self.projector_window.is_some(), |this, _, _, cx| {
-                        this.open_projector(cx, false);
-                    }),
-                    btn(ui, cx, "⛶ open fullscreen", self.projector_window.is_some(), |this, _, _, cx| {
-                        this.open_projector(cx, true);
-                    }),
+                    btn(
+                        ui,
+                        cx,
+                        "⛶ open window",
+                        self.projector_window.is_some(),
+                        |this, _, _, cx| {
+                            this.open_projector(cx, false);
+                        },
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        "⛶ open fullscreen",
+                        self.projector_window.is_some(),
+                        |this, _, _, cx| {
+                            this.open_projector(cx, true);
+                        },
+                    ),
                     btn(ui, cx, "⛶ fullscreen toggle", false, |this, _, _, cx| {
                         this.toggle_projector_fullscreen(cx);
                     }),
@@ -5783,21 +6087,39 @@ impl Root {
                 // B-12: Single-click monitor switcher
                 row(vec![
                     label(ui, "projector monitor:", 12.),
-                    btn(ui, cx, "Display 1 (Primary)", self.projector_display == 0, |this, _, _, cx| {
-                        this.projector_display = 0;
-                        this.persist_layout_quiet();
-                        this.set_status(cx, "Projector target set to Display 1 (Primary).");
-                    }),
-                    btn(ui, cx, "Display 2 (External)", self.projector_display == 1, |this, _, _, cx| {
-                        this.projector_display = 1;
-                        this.persist_layout_quiet();
-                        this.set_status(cx, "Projector target set to Display 2 (External).");
-                    }),
-                    btn(ui, cx, "Display 3", self.projector_display == 2, |this, _, _, cx| {
-                        this.projector_display = 2;
-                        this.persist_layout_quiet();
-                        this.set_status(cx, "Projector target set to Display 3.");
-                    }),
+                    btn(
+                        ui,
+                        cx,
+                        "Display 1 (Primary)",
+                        self.projector_display == 0,
+                        |this, _, _, cx| {
+                            this.projector_display = 0;
+                            this.persist_layout_quiet();
+                            this.set_status(cx, "Projector target set to Display 1 (Primary).");
+                        },
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        "Display 2 (External)",
+                        self.projector_display == 1,
+                        |this, _, _, cx| {
+                            this.projector_display = 1;
+                            this.persist_layout_quiet();
+                            this.set_status(cx, "Projector target set to Display 2 (External).");
+                        },
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        "Display 3",
+                        self.projector_display == 2,
+                        |this, _, _, cx| {
+                            this.projector_display = 2;
+                            this.persist_layout_quiet();
+                            this.set_status(cx, "Projector target set to Display 3.");
+                        },
+                    ),
                 ]),
                 // B-12: Aspect-ratio simulation presets
                 row({
@@ -5814,22 +6136,33 @@ impl Root {
                 }),
                 row(vec![
                     label(ui, "cut scope (controls 13/14):", 12.),
-                    btn(ui, cx, "verse cut", self.cut_scope == CutScope::Verse, |this, _, _, cx| {
-                        this.cut_scope = CutScope::Verse;
-                        this.set_status(cx, "Cut range applies to this verse (scope button).");
-                    }),
-                    btn(ui, cx, "song cut", self.cut_scope == CutScope::Song, |this, _, _, cx| {
-                        this.cut_scope = CutScope::Song;
-                        this.set_status(cx, "Cut range applies to the whole song (scope button).");
-                    }),
+                    btn(
+                        ui,
+                        cx,
+                        "verse cut",
+                        self.cut_scope == CutScope::Verse,
+                        |this, _, _, cx| {
+                            this.cut_scope = CutScope::Verse;
+                            this.set_status(cx, "Cut range applies to this verse (scope button).");
+                        },
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        "song cut",
+                        self.cut_scope == CutScope::Song,
+                        |this, _, _, cx| {
+                            this.cut_scope = CutScope::Song;
+                            this.set_status(
+                                cx,
+                                "Cut range applies to the whole song (scope button).",
+                            );
+                        },
+                    ),
                 ]),
                 row(vec![
                     div().flex_1().child(self.media_range_field.clone()),
-                    label(
-                        ui,
-                        &format!("range: {range_start:?}-{range_end:?}"),
-                        12.,
-                    ),
+                    label(ui, &format!("range: {range_start:?}-{range_end:?}"), 12.),
                 ]),
                 row(vec![
                     div().flex_1().child(self.alert_field.clone()),
@@ -5845,11 +6178,21 @@ impl Root {
                     ),
                 ]),
                 row(vec![
-                    label(ui, &format!("{}: {}", self.t("clock"), self.clock_display()), 13.),
-                    btn(ui, cx, &self.t("clock"), self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
-                        this.clock_mode = ClockMode::Clock;
-                        cx.notify();
-                    }),
+                    label(
+                        ui,
+                        &format!("{}: {}", self.t("clock"), self.clock_display()),
+                        13.,
+                    ),
+                    btn(
+                        ui,
+                        cx,
+                        &self.t("clock"),
+                        self.clock_mode == ClockMode::Clock,
+                        |this, _, _, cx| {
+                            this.clock_mode = ClockMode::Clock;
+                            cx.notify();
+                        },
+                    ),
                     btn(
                         ui,
                         cx,
@@ -5871,9 +6214,15 @@ impl Root {
                         },
                     ),
                     div().w(px(60.)).child(self.clock_field.clone()),
-                    btn(ui, cx, &self.t("start"), self.clock_running, |this, _, _, cx| {
-                        this.clock_start(cx);
-                    }),
+                    btn(
+                        ui,
+                        cx,
+                        &self.t("start"),
+                        self.clock_running,
+                        |this, _, _, cx| {
+                            this.clock_start(cx);
+                        },
+                    ),
                     btn(ui, cx, &self.t("stop"), false, |this, _, _, cx| {
                         this.clock_stop(cx);
                     }),
@@ -5883,6 +6232,18 @@ impl Root {
                 ]),
                 row(vec![
                     div().flex_1().child(self.pptx_field.clone()),
+                    btn(ui, cx, "Browse…", false, |this, _, _, cx| {
+                        if let Some(p) = crate::file_picker::pick_file(
+                            "Import PowerPoint",
+                            &[("PowerPoint", &["pptx"])],
+                        ) {
+                            this.pptx_field
+                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                            cx.notify();
+                        } else {
+                            this.set_status(cx, "Browse cancelled — no file chosen.");
+                        }
+                    }),
                     btn(ui, cx, &self.t("import_pptx"), false, |this, _, _, cx| {
                         this.import_pptx(cx);
                     }),
@@ -5892,7 +6253,11 @@ impl Root {
                     btn(
                         ui,
                         cx,
-                        if self.show_chords_print { "chords: on" } else { "chords: off" },
+                        if self.show_chords_print {
+                            "chords: on"
+                        } else {
+                            "chords: off"
+                        },
                         self.show_chords_print,
                         |this, _, _, cx| {
                             this.show_chords_print = !this.show_chords_print;
@@ -5923,7 +6288,11 @@ impl Root {
         dim_alt: bool,
         chord: Option<&str>,
     ) -> Div {
-        let (h, l, f) = if big { (30., 44., 20.) } else { (16., 22., 13.) };
+        let (h, l, f) = if big {
+            (30., 44., 20.)
+        } else {
+            (16., 22., 13.)
+        };
         let dim = hex("#BBBBBB");
         let bilingual = dim_alt && slide.footer.contains(" + ");
         let mut lines: Vec<Div> = slide
@@ -5932,25 +6301,29 @@ impl Root {
             .enumerate()
             .map(|(i, x)| {
                 let c = if bilingual && i % 2 == 1 { dim } else { fg };
-                let mut d = div()
-                    .text_size(px(l))
-                    .text_color(c)
-                    .font(gpui::font(self.font_family.clone()))
-                    .child(x.clone());
-                if self.bold {
-                    d = d.font_weight(FontWeight::BOLD);
-                }
-                if self.italic {
-                    d = d.italic();
-                }
-                if self.underline {
-                    d = d.underline();
-                }
-                d
+                rich_view::rich_line(
+                    x,
+                    l,
+                    c,
+                    &self.font_family,
+                    self.bold,
+                    self.italic,
+                    self.underline,
+                    false,
+                )
             })
             .collect();
         if lines.is_empty() {
-            lines.push(div().text_size(px(l)).child("(blank)".to_string()));
+            lines.push(rich_view::rich_line(
+                "",
+                l,
+                fg,
+                &self.font_family,
+                self.bold,
+                self.italic,
+                self.underline,
+                false,
+            ));
         }
         let mut body = div().flex().flex_col().gap_2().flex_1().justify_center();
         body = match self.align {
@@ -5969,11 +6342,12 @@ impl Root {
             .bg(bg)
             .p(px(24.))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(div().flex_1())
-                    .child(div().text_size(px(h)).text_color(dim).child(slide.header.clone())),
+                div().flex().flex_row().child(div().flex_1()).child(
+                    div()
+                        .text_size(px(h))
+                        .text_color(dim)
+                        .child(slide.header.clone()),
+                ),
             );
         if let Some(c) = chord {
             col = col.child(
@@ -5984,11 +6358,12 @@ impl Root {
             );
         }
         col.child(body).child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_center()
-                .child(div().text_size(px(f)).text_color(dim).child(slide.footer.clone())),
+            div().flex().flex_row().justify_center().child(
+                div()
+                    .text_size(px(f))
+                    .text_color(dim)
+                    .child(slide.footer.clone()),
+            ),
         )
     }
 
@@ -6000,12 +6375,14 @@ impl Root {
         match self.bg_kind {
             BackgroundKind::Color => None,
             BackgroundKind::Image => None,
-            BackgroundKind::VideoLoop => Some("▶ video loop = captioned tile (no video element in gpui 0.2.2)"),
+            BackgroundKind::VideoLoop => {
+                Some("▶ video loop = captioned tile (no video element in gpui 0.2.2)")
+            }
             BackgroundKind::Camera => Some("◉ camera background = v1 stub (solid color shown)"),
         }
     }
 
-    fn projector_view(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn projector_view(&mut self, ui: &UI, cx: &mut Context<Root>, target_h: f32) -> Div {
         // B-12 single-window fallback: this renders the exact same snapshot
         // as the real second window (`projector_window::render_snapshot`),
         // so the view switcher can never disagree with the projector about
@@ -6015,7 +6392,7 @@ impl Root {
         let n = self.projector_slides().len();
         let cur = self.projector_slide_index(self.live_slides().len());
         let frozen = self.frozen_slide.is_some();
-        let inner = projector_window::render_snapshot(ui, &snap);
+        let inner = projector_window::render_snapshot(ui, &snap, target_h);
         div().flex().flex_col().flex_1().child({
             // Only kinds v1 cannot fully render get a note (video poster,
             // camera stand-in); images and colors render as assigned.
@@ -6027,9 +6404,18 @@ impl Root {
             } else {
                 "LIVE"
             };
-            let mut top = div().flex().flex_row().gap_2().p(px(6.)).child(
-                label(ui, &format!("{} ◈ {} — {} {}/{}", self.t("tab_projector"), self.style_level, state, if n == 0 {0} else {cur+1}, n), 14.)
-            );
+            let mut top = div().flex().flex_row().gap_2().p(px(6.)).child(label(
+                ui,
+                &format!(
+                    "{} ◈ {} — {} {}/{}",
+                    self.t("tab_projector"),
+                    self.style_level,
+                    state,
+                    if n == 0 { 0 } else { cur + 1 },
+                    n
+                ),
+                14.,
+            ));
             // A persistent chip for the four distinct states, so the operator
             // never has to read the projector to know which one is engaged.
             // Lane G: plain words — the strip beside these chips carries the
@@ -6045,9 +6431,11 @@ impl Root {
                 }
             }
             if self.clock_overlay {
-                top = top
-                    .child(div().flex_1())
-                    .child(label(ui, &format!("◴ {}", self.clock_display()), 14.));
+                top = top.child(div().flex_1()).child(label(
+                    ui,
+                    &format!("◴ {}", self.clock_display()),
+                    14.,
+                ));
             }
             // Luminosity provenance chip (control-only chrome, never projected):
             // shows the resolved value and which style level set it.
@@ -6083,15 +6471,30 @@ impl Root {
         } else {
             Vec::new()
         };
-        let mut kids: Vec<Div> = vec![
-            row(vec![
-                label(ui, &format!("{}: {}", self.t("current"), current.as_ref().map(|s| s.header.clone()).unwrap_or_default()), 16.),
-                btn(ui, cx, &self.t("whole_song"), self.whole_song_stage, |this, _, _, cx| {
+        let mut kids: Vec<Div> = vec![row(vec![
+            label(
+                ui,
+                &format!(
+                    "{}: {}",
+                    self.t("current"),
+                    current
+                        .as_ref()
+                        .map(|s| s.header.clone())
+                        .unwrap_or_default()
+                ),
+                16.,
+            ),
+            btn(
+                ui,
+                cx,
+                &self.t("whole_song"),
+                self.whole_song_stage,
+                |this, _, _, cx| {
                     this.whole_song_stage = !this.whole_song_stage;
                     cx.notify();
-                }),
-            ]),
-        ];
+                },
+            ),
+        ])];
         if self.whole_song_stage && !whole.is_empty() {
             kids.push(
                 div()
@@ -6101,14 +6504,34 @@ impl Root {
                     .p(px(8.))
                     .border_1()
                     .border_color(ui.border)
-                    .children(whole.into_iter().map(|l| div().text_size(px(20.)).child(l)).collect::<Vec<_>>()),
+                    .children(
+                        whole
+                            .into_iter()
+                            .map(|l| {
+                                rich_view::rich_line(
+                                    &l,
+                                    20.,
+                                    ui.fg,
+                                    &self.font_family,
+                                    self.bold,
+                                    self.italic,
+                                    self.underline,
+                                    false,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
             );
         } else if let Some(s) = current {
             kids.push(self.slide_view(ui, &s, false, rgb(0x000000), rgb(0xFFFFFF), false, None));
         }
         kids.push(label(
             ui,
-            &format!("{}: {}", self.t("next_up"), next.as_ref().map(|s| s.header.clone()).unwrap_or_default()),
+            &format!(
+                "{}: {}",
+                self.t("next_up"),
+                next.as_ref().map(|s| s.header.clone()).unwrap_or_default()
+            ),
             15.,
         ));
         if let Some(s) = next {
@@ -6121,7 +6544,13 @@ impl Root {
                 .text_size(px(52.))
                 .child(self.clock_display()),
         );
-        div().flex().flex_col().gap_2().flex_1().p(px(8.)).children(kids)
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .flex_1()
+            .p(px(8.))
+            .children(kids)
     }
 }
 
@@ -6160,29 +6589,31 @@ fn main() {
     }
     // Lane G: serve the drawn icon set to `img()` as embedded assets, so the
     // strip SVGs render offline from the binary (no fetch, no asset dir).
-    Application::new().with_assets(icons::VpIconAssets).run(|cx: &mut App| {
-        bind_field_keys(cx);
-        bind_doc_keys(cx);
-        // The presentation keymap is data, not bindings: see
-        // `ux::route_pres_key` for the full table (arrows/space, digits,
-        // section letters, `.`/`,`, Escape, Shift+arrows, +/-, Ctrl+P/T/B/R/E,
-        // Alt+S/B, Ctrl+F1, Alt, F5/F6/F1 and the verse-range keys).
-        // Root handles raw key-down and routes through it, so one gate
-        // (`Root::editing`) covers the whole vocabulary.
-        cx.bind_keys([KeyBinding::new("ctrl-q", QuitApp, None)]);
-        cx.on_action(|_: &QuitApp, cx| cx.quit());
+    Application::new()
+        .with_assets(icons::VpIconAssets)
+        .run(|cx: &mut App| {
+            bind_field_keys(cx);
+            bind_doc_keys(cx);
+            // The presentation keymap is data, not bindings: see
+            // `ux::route_pres_key` for the full table (arrows/space, digits,
+            // section letters, `.`/`,`, Escape, Shift+arrows, +/-, Ctrl+P/T/B/R/E,
+            // Alt+S/B, Ctrl+F1, Alt, F5/F6/F1 and the verse-range keys).
+            // Root handles raw key-down and routes through it, so one gate
+            // (`Root::editing`) covers the whole vocabulary.
+            cx.bind_keys([KeyBinding::new("ctrl-q", QuitApp, None)]);
+            cx.on_action(|_: &QuitApp, cx| cx.quit());
 
-        let bounds = Bounds::centered(None, size(px(1500.), px(950.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |_, cx| cx.new(Root::build),
-        )
-        .unwrap();
-        cx.activate(true);
-    });
+            let bounds = Bounds::centered(None, size(px(1500.), px(950.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(Root::build),
+            )
+            .unwrap();
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]

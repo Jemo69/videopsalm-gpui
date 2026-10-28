@@ -35,8 +35,7 @@ use vp_core::schema::ItemKind;
 // In-repo copy (`gpui-app/assets/icons/`): the standalone GitHub repo
 // builds and tests without the monorepo around it.
 #[cfg(test)]
-pub const MANIFEST_JSON: &str =
-    include_str!("../../assets/icons/manifest.json");
+pub const MANIFEST_JSON: &str = include_str!("../../assets/icons/manifest.json");
 
 /// One row of the icon table: manifest id → SVG file in `assets/icons/`.
 macro_rules! icon_table {
@@ -83,7 +82,10 @@ icon_table! {
 
 /// File backing a manifest id, if it is one of ours.
 pub fn file_for(icon_id: &str) -> Option<&'static str> {
-    ICON_TABLE.iter().find(|(id, _)| *id == icon_id).map(|(_, f)| *f)
+    ICON_TABLE
+        .iter()
+        .find(|(id, _)| *id == icon_id)
+        .map(|(_, f)| *f)
 }
 
 /// Inline SVG markup for a manifest id, if it is one of ours.
@@ -208,7 +210,10 @@ mod tests {
         let mut rest = svg;
         while let Some(start) = rest.find("<!--") {
             out.push_str(&rest[..start]);
-            rest = rest[start..].find("-->").map(|i| &rest[start + i + 3..]).unwrap_or("");
+            rest = rest[start..]
+                .find("-->")
+                .map(|i| &rest[start + i + 3..])
+                .unwrap_or("");
         }
         out.push_str(rest);
         out
@@ -260,7 +265,9 @@ mod tests {
         let actions: Vec<&str> = strip.iter().map(|(_, a)| *a).collect();
         assert_eq!(
             actions,
-            vec!["next", "base", "text", "shield", "freeze", "project", "mode"]
+            vec![
+                "next", "base", "text", "shield", "freeze", "project", "mode"
+            ]
         );
         assert_eq!(crate::ux::TOOL_STRIP_PENCIL_INDEX, 6);
         for (icon, action) in strip {
@@ -282,7 +289,10 @@ mod tests {
             let id = kind_icon(kind);
             let svg = svg_for(id).unwrap_or_else(|| panic!("{kind:?} badge {id} has no markup"));
             assert!(svg.starts_with("<svg"), "{kind:?} badge is not svg");
-            assert!(seen.insert(svg), "{kind:?} badge duplicates another kind's art");
+            assert!(
+                seen.insert(svg),
+                "{kind:?} badge duplicates another kind's art"
+            );
         }
         assert_eq!(seen.len(), ItemKind::ALL.len());
     }

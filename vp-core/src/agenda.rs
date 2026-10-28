@@ -5,7 +5,7 @@
 //! overrides; save/open/portable agenda file; reopen-recent (recents live
 //! in [`crate::library`]).
 
-use crate::schema::{Agenda, AgendaItem, FlowType, ItemKind, ItemRef, default_flow_for};
+use crate::schema::{default_flow_for, Agenda, AgendaItem, FlowType, ItemKind, ItemRef};
 
 /// Generate a unique item id that is extremely unlikely to collide.
 pub fn new_id(prefix: &str) -> String {
@@ -142,8 +142,20 @@ mod tests {
 
     fn sample() -> Agenda {
         let mut a = Agenda::new("Sunday");
-        add_item(&mut a, ItemKind::Song, "Song", ItemRef::Song { song_id: "s1".into() });
-        add_item(&mut a, ItemKind::Alert, "Alert", ItemRef::Text { text: "Hi".into() });
+        add_item(
+            &mut a,
+            ItemKind::Song,
+            "Song",
+            ItemRef::Song {
+                song_id: "s1".into(),
+            },
+        );
+        add_item(
+            &mut a,
+            ItemKind::Alert,
+            "Alert",
+            ItemRef::Text { text: "Hi".into() },
+        );
         a
     }
 
@@ -151,7 +163,13 @@ mod tests {
     fn add_insert_rename_remove() {
         let mut a = sample();
         assert_eq!(a.items.len(), 2);
-        let id = insert_item(&mut a, 0, ItemKind::Clock, "Clock", ItemRef::Text { text: "c".into() });
+        let id = insert_item(
+            &mut a,
+            0,
+            ItemKind::Clock,
+            "Clock",
+            ItemRef::Text { text: "c".into() },
+        );
         assert_eq!(a.items[0].id, id);
         assert!(rename_item(&mut a, &id, "Countdown"));
         assert_eq!(a.items[0].title, "Countdown");
@@ -205,7 +223,14 @@ mod tests {
             (ItemKind::Clock, "clock"),
             (ItemKind::Alert, "alert"),
         ] {
-            add_item(&mut a, kind, title, ItemRef::File { file: format!("{title}.dat") });
+            add_item(
+                &mut a,
+                kind,
+                title,
+                ItemRef::File {
+                    file: format!("{title}.dat"),
+                },
+            );
         }
         let json = a.to_json_pretty().unwrap();
         let back = Agenda::from_json(&json).unwrap();

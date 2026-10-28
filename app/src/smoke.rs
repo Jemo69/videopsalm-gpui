@@ -70,7 +70,9 @@ pub fn run_smoke(folder: &str) -> Result<String, String> {
             id: "smoke-song".to_string(),
             kind: ItemKind::Song,
             title: first.title.clone(),
-            reference: ItemRef::Song { song_id: first.id.clone() },
+            reference: ItemRef::Song {
+                song_id: first.id.clone(),
+            },
             flow_type: FlowType::Manual,
             auto_advance_ms: None,
             overrides: Default::default(),
@@ -93,7 +95,12 @@ pub fn run_smoke(folder: &str) -> Result<String, String> {
         auto_advance_ms: None,
         overrides: Default::default(),
     });
-    let agenda = Agenda { version: 1, title: "Smoke".to_string(), items, settings: Default::default() };
+    let agenda = Agenda {
+        version: 1,
+        title: "Smoke".to_string(),
+        items,
+        settings: Default::default(),
+    };
     let plan_path = dir.join("smoke.vpagd");
     let plan_str = plan_path.to_string_lossy().into_owned();
     let built = vp_core::native_agenda::write_plan_file(&plan_str, &agenda, &song_map, &bibles)
@@ -219,7 +226,11 @@ mod tests {
     #[test]
     fn merge_dedupes_by_id() {
         use vp_core::schema::Song;
-        let mk = |id: &str, title: &str| Song { id: id.to_string(), title: title.to_string(), ..Default::default() };
+        let mk = |id: &str, title: &str| Song {
+            id: id.to_string(),
+            title: title.to_string(),
+            ..Default::default()
+        };
         let mut songs = vec![mk("a", "Old")];
         let (added, replaced) = merge_by_id(&mut songs, vec![mk("a", "New"), mk("b", "B")]);
         assert_eq!((added, replaced), (1, 1));

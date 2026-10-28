@@ -30,72 +30,402 @@ impl Book {
 
 /// The 66-book canon, single OT+NT list (SPEC 2.3).
 pub static BOOKS: [Book; 66] = [
-    Book { number: 1, name_en: "Genesis", name_fr: "Genèse", abbrevs: &["Gen", "Gn", "Ge"] },
-    Book { number: 2, name_en: "Exodus", name_fr: "Exode", abbrevs: &["Ex", "Exo"] },
-    Book { number: 3, name_en: "Leviticus", name_fr: "Lévitique", abbrevs: &["Lev", "Le", "Lv"] },
-    Book { number: 4, name_en: "Numbers", name_fr: "Nombres", abbrevs: &["Num", "Nb"] },
-    Book { number: 5, name_en: "Deuteronomy", name_fr: "Deutéronome", abbrevs: &["Deut", "Dt", "De"] },
-    Book { number: 6, name_en: "Joshua", name_fr: "Josué", abbrevs: &["Josh", "Jos"] },
-    Book { number: 7, name_en: "Judges", name_fr: "Juges", abbrevs: &["Judg", "Jg"] },
-    Book { number: 8, name_en: "Ruth", name_fr: "Ruth", abbrevs: &["Ru", "Rt"] },
-    Book { number: 9, name_en: "1 Samuel", name_fr: "1 Samuel", abbrevs: &["1 Sam", "1 Sa", "1S"] },
-    Book { number: 10, name_en: "2 Samuel", name_fr: "2 Samuel", abbrevs: &["2 Sam", "2 Sa", "2S"] },
-    Book { number: 11, name_en: "1 Kings", name_fr: "1 Rois", abbrevs: &["1 Kings", "1 Kgs", "1 R", "1 Rois"] },
-    Book { number: 12, name_en: "2 Kings", name_fr: "2 Rois", abbrevs: &["2 Kings", "2 Kgs", "2 R", "2 Rois"] },
-    Book { number: 13, name_en: "1 Chronicles", name_fr: "1 Chroniques", abbrevs: &["1 Chron", "1 Ch", "1 Chr"] },
-    Book { number: 14, name_en: "2 Chronicles", name_fr: "2 Chroniques", abbrevs: &["2 Chron", "2 Ch", "2 Chr"] },
-    Book { number: 15, name_en: "Ezra", name_fr: "Esdras", abbrevs: &["Ezr", "Esd"] },
-    Book { number: 16, name_en: "Nehemiah", name_fr: "Néhémie", abbrevs: &["Neh", "Ne", "Nehem"] },
-    Book { number: 17, name_en: "Esther", name_fr: "Esther", abbrevs: &["Est", "Es"] },
-    Book { number: 18, name_en: "Job", name_fr: "Job", abbrevs: &["Jb"] },
-    Book { number: 19, name_en: "Psalm", name_fr: "Psaume", abbrevs: &["Ps", "Psa", "Pss", "Psaume", "Psaumes", "Psalms"] },
-    Book { number: 20, name_en: "Proverbs", name_fr: "Proverbes", abbrevs: &["Prov", "Pr", "Pro"] },
-    Book { number: 21, name_en: "Ecclesiastes", name_fr: "Ecclésiaste", abbrevs: &["Eccl", "Ec", "Ecc"] },
-    Book { number: 22, name_en: "Song of Solomon", name_fr: "Cantique des cantiques", abbrevs: &["Song", "SOS", "Cant", "Sg"] },
-    Book { number: 23, name_en: "Isaiah", name_fr: "Ésaïe", abbrevs: &["Isa", "Es", "Esaie"] },
-    Book { number: 24, name_en: "Jeremiah", name_fr: "Jérémie", abbrevs: &["Jer", "Jr", "Jeremie"] },
-    Book { number: 25, name_en: "Lamentations", name_fr: "Lamentations", abbrevs: &["Lam", "La"] },
-    Book { number: 26, name_en: "Ezekiel", name_fr: "Ézéchiel", abbrevs: &["Ezek", "Ez", "Ezechiel"] },
-    Book { number: 27, name_en: "Daniel", name_fr: "Daniel", abbrevs: &["Dan", "Da", "Dn"] },
-    Book { number: 28, name_en: "Hosea", name_fr: "Osée", abbrevs: &["Hos", "Os", "Osee"] },
-    Book { number: 29, name_en: "Joel", name_fr: "Joël", abbrevs: &["Jl", "Joe", "Joel"] },
-    Book { number: 30, name_en: "Amos", name_fr: "Amos", abbrevs: &["Am"] },
-    Book { number: 31, name_en: "Obadiah", name_fr: "Abdias", abbrevs: &["Obad", "Ab", "Ob"] },
-    Book { number: 32, name_en: "Jonah", name_fr: "Jonas", abbrevs: &["Jon", "Jonas"] },
-    Book { number: 33, name_en: "Micah", name_fr: "Michée", abbrevs: &["Mic", "Mi", "Michee"] },
-    Book { number: 34, name_en: "Nahum", name_fr: "Nahum", abbrevs: &["Nah", "Na"] },
-    Book { number: 35, name_en: "Habakkuk", name_fr: "Habakuk", abbrevs: &["Hab", "Ha", "Habakuk"] },
-    Book { number: 36, name_en: "Zephaniah", name_fr: "Sophonie", abbrevs: &["Zeph", "So", "Sop", "Zephaniah"] },
-    Book { number: 37, name_en: "Haggai", name_fr: "Aggée", abbrevs: &["Hag", "Ag", "Aggee"] },
-    Book { number: 38, name_en: "Zechariah", name_fr: "Zacharie", abbrevs: &["Zech", "Za", "Zac"] },
-    Book { number: 39, name_en: "Malachi", name_fr: "Malachie", abbrevs: &["Mal", "Ml"] },
-    Book { number: 40, name_en: "Matthew", name_fr: "Matthieu", abbrevs: &["Matt", "Mt", "Mat"] },
-    Book { number: 41, name_en: "Mark", name_fr: "Marc", abbrevs: &["Mk", "Mr", "Mc"] },
-    Book { number: 42, name_en: "Luke", name_fr: "Luc", abbrevs: &["Lk", "Lu", "Lc"] },
-    Book { number: 43, name_en: "John", name_fr: "Jean", abbrevs: &["Jn", "Jn", "Joh", "Je"] },
-    Book { number: 44, name_en: "Acts", name_fr: "Actes", abbrevs: &["Ac", "Act"] },
-    Book { number: 45, name_en: "Romans", name_fr: "Romains", abbrevs: &["Rom", "Rm", "Ro"] },
-    Book { number: 46, name_en: "1 Corinthians", name_fr: "1 Corinthiens", abbrevs: &["1 Cor", "1 Co"] },
-    Book { number: 47, name_en: "2 Corinthians", name_fr: "2 Corinthiens", abbrevs: &["2 Cor", "2 Co"] },
-    Book { number: 48, name_en: "Galatians", name_fr: "Galates", abbrevs: &["Gal", "Ga"] },
-    Book { number: 49, name_en: "Ephesians", name_fr: "Éphésiens", abbrevs: &["Eph", "Ep", "Ephesiens"] },
-    Book { number: 50, name_en: "Philippians", name_fr: "Philippiens", abbrevs: &["Phil", "Php", "Ph"] },
-    Book { number: 51, name_en: "Colossians", name_fr: "Colossiens", abbrevs: &["Col", "Col"] },
-    Book { number: 52, name_en: "1 Thessalonians", name_fr: "1 Thessaloniciens", abbrevs: &["1 Thess", "1 Th", "1 Thes"] },
-    Book { number: 53, name_en: "2 Thessalonians", name_fr: "2 Thessaloniciens", abbrevs: &["2 Thess", "2 Th", "2 Thes"] },
-    Book { number: 54, name_en: "1 Timothy", name_fr: "1 Timothée", abbrevs: &["1 Tim", "1 Ti", "1 Timothee"] },
-    Book { number: 55, name_en: "2 Timothy", name_fr: "2 Timothée", abbrevs: &["2 Tim", "2 Ti", "2 Timothee"] },
-    Book { number: 56, name_en: "Titus", name_fr: "Tite", abbrevs: &["Tit", "Tt"] },
-    Book { number: 57, name_en: "Philemon", name_fr: "Philémon", abbrevs: &["Phlm", "Phm", "Filemon", "Philemon"] },
-    Book { number: 58, name_en: "Hebrews", name_fr: "Hébreux", abbrevs: &["Heb", "He", "Hebreux"] },
-    Book { number: 59, name_en: "James", name_fr: "Jacques", abbrevs: &["Jas", "Jc", "Jac", "Jm"] },
-    Book { number: 60, name_en: "1 Peter", name_fr: "1 Pierre", abbrevs: &["1 Pet", "1 P", "1 Pi"] },
-    Book { number: 61, name_en: "2 Peter", name_fr: "2 Pierre", abbrevs: &["2 Pet", "2 P", "2 Pi"] },
-    Book { number: 62, name_en: "1 John", name_fr: "1 Jean", abbrevs: &["1 Jn", "1 J", "1 Joh"] },
-    Book { number: 63, name_en: "2 John", name_fr: "2 Jean", abbrevs: &["2 Jn", "2 J", "2 Joh"] },
-    Book { number: 64, name_en: "3 John", name_fr: "3 Jean", abbrevs: &["3 Jn", "3 J", "3 Joh"] },
-    Book { number: 65, name_en: "Jude", name_fr: "Jude", abbrevs: &["Jud", "Jude", "Jd"] },
-    Book { number: 66, name_en: "Revelation", name_fr: "Apocalypse", abbrevs: &["Rev", "Ap", "Apo", "Apoc"] },
+    Book {
+        number: 1,
+        name_en: "Genesis",
+        name_fr: "Genèse",
+        abbrevs: &["Gen", "Gn", "Ge"],
+    },
+    Book {
+        number: 2,
+        name_en: "Exodus",
+        name_fr: "Exode",
+        abbrevs: &["Ex", "Exo"],
+    },
+    Book {
+        number: 3,
+        name_en: "Leviticus",
+        name_fr: "Lévitique",
+        abbrevs: &["Lev", "Le", "Lv"],
+    },
+    Book {
+        number: 4,
+        name_en: "Numbers",
+        name_fr: "Nombres",
+        abbrevs: &["Num", "Nb"],
+    },
+    Book {
+        number: 5,
+        name_en: "Deuteronomy",
+        name_fr: "Deutéronome",
+        abbrevs: &["Deut", "Dt", "De"],
+    },
+    Book {
+        number: 6,
+        name_en: "Joshua",
+        name_fr: "Josué",
+        abbrevs: &["Josh", "Jos"],
+    },
+    Book {
+        number: 7,
+        name_en: "Judges",
+        name_fr: "Juges",
+        abbrevs: &["Judg", "Jg"],
+    },
+    Book {
+        number: 8,
+        name_en: "Ruth",
+        name_fr: "Ruth",
+        abbrevs: &["Ru", "Rt"],
+    },
+    Book {
+        number: 9,
+        name_en: "1 Samuel",
+        name_fr: "1 Samuel",
+        abbrevs: &["1 Sam", "1 Sa", "1S"],
+    },
+    Book {
+        number: 10,
+        name_en: "2 Samuel",
+        name_fr: "2 Samuel",
+        abbrevs: &["2 Sam", "2 Sa", "2S"],
+    },
+    Book {
+        number: 11,
+        name_en: "1 Kings",
+        name_fr: "1 Rois",
+        abbrevs: &["1 Kings", "1 Kgs", "1 R", "1 Rois"],
+    },
+    Book {
+        number: 12,
+        name_en: "2 Kings",
+        name_fr: "2 Rois",
+        abbrevs: &["2 Kings", "2 Kgs", "2 R", "2 Rois"],
+    },
+    Book {
+        number: 13,
+        name_en: "1 Chronicles",
+        name_fr: "1 Chroniques",
+        abbrevs: &["1 Chron", "1 Ch", "1 Chr"],
+    },
+    Book {
+        number: 14,
+        name_en: "2 Chronicles",
+        name_fr: "2 Chroniques",
+        abbrevs: &["2 Chron", "2 Ch", "2 Chr"],
+    },
+    Book {
+        number: 15,
+        name_en: "Ezra",
+        name_fr: "Esdras",
+        abbrevs: &["Ezr", "Esd"],
+    },
+    Book {
+        number: 16,
+        name_en: "Nehemiah",
+        name_fr: "Néhémie",
+        abbrevs: &["Neh", "Ne", "Nehem"],
+    },
+    Book {
+        number: 17,
+        name_en: "Esther",
+        name_fr: "Esther",
+        abbrevs: &["Est", "Es"],
+    },
+    Book {
+        number: 18,
+        name_en: "Job",
+        name_fr: "Job",
+        abbrevs: &["Jb"],
+    },
+    Book {
+        number: 19,
+        name_en: "Psalm",
+        name_fr: "Psaume",
+        abbrevs: &["Ps", "Psa", "Pss", "Psaume", "Psaumes", "Psalms"],
+    },
+    Book {
+        number: 20,
+        name_en: "Proverbs",
+        name_fr: "Proverbes",
+        abbrevs: &["Prov", "Pr", "Pro"],
+    },
+    Book {
+        number: 21,
+        name_en: "Ecclesiastes",
+        name_fr: "Ecclésiaste",
+        abbrevs: &["Eccl", "Ec", "Ecc"],
+    },
+    Book {
+        number: 22,
+        name_en: "Song of Solomon",
+        name_fr: "Cantique des cantiques",
+        abbrevs: &["Song", "SOS", "Cant", "Sg"],
+    },
+    Book {
+        number: 23,
+        name_en: "Isaiah",
+        name_fr: "Ésaïe",
+        abbrevs: &["Isa", "Es", "Esaie"],
+    },
+    Book {
+        number: 24,
+        name_en: "Jeremiah",
+        name_fr: "Jérémie",
+        abbrevs: &["Jer", "Jr", "Jeremie"],
+    },
+    Book {
+        number: 25,
+        name_en: "Lamentations",
+        name_fr: "Lamentations",
+        abbrevs: &["Lam", "La"],
+    },
+    Book {
+        number: 26,
+        name_en: "Ezekiel",
+        name_fr: "Ézéchiel",
+        abbrevs: &["Ezek", "Ez", "Ezechiel"],
+    },
+    Book {
+        number: 27,
+        name_en: "Daniel",
+        name_fr: "Daniel",
+        abbrevs: &["Dan", "Da", "Dn"],
+    },
+    Book {
+        number: 28,
+        name_en: "Hosea",
+        name_fr: "Osée",
+        abbrevs: &["Hos", "Os", "Osee"],
+    },
+    Book {
+        number: 29,
+        name_en: "Joel",
+        name_fr: "Joël",
+        abbrevs: &["Jl", "Joe", "Joel"],
+    },
+    Book {
+        number: 30,
+        name_en: "Amos",
+        name_fr: "Amos",
+        abbrevs: &["Am"],
+    },
+    Book {
+        number: 31,
+        name_en: "Obadiah",
+        name_fr: "Abdias",
+        abbrevs: &["Obad", "Ab", "Ob"],
+    },
+    Book {
+        number: 32,
+        name_en: "Jonah",
+        name_fr: "Jonas",
+        abbrevs: &["Jon", "Jonas"],
+    },
+    Book {
+        number: 33,
+        name_en: "Micah",
+        name_fr: "Michée",
+        abbrevs: &["Mic", "Mi", "Michee"],
+    },
+    Book {
+        number: 34,
+        name_en: "Nahum",
+        name_fr: "Nahum",
+        abbrevs: &["Nah", "Na"],
+    },
+    Book {
+        number: 35,
+        name_en: "Habakkuk",
+        name_fr: "Habakuk",
+        abbrevs: &["Hab", "Ha", "Habakuk"],
+    },
+    Book {
+        number: 36,
+        name_en: "Zephaniah",
+        name_fr: "Sophonie",
+        abbrevs: &["Zeph", "So", "Sop", "Zephaniah"],
+    },
+    Book {
+        number: 37,
+        name_en: "Haggai",
+        name_fr: "Aggée",
+        abbrevs: &["Hag", "Ag", "Aggee"],
+    },
+    Book {
+        number: 38,
+        name_en: "Zechariah",
+        name_fr: "Zacharie",
+        abbrevs: &["Zech", "Za", "Zac"],
+    },
+    Book {
+        number: 39,
+        name_en: "Malachi",
+        name_fr: "Malachie",
+        abbrevs: &["Mal", "Ml"],
+    },
+    Book {
+        number: 40,
+        name_en: "Matthew",
+        name_fr: "Matthieu",
+        abbrevs: &["Matt", "Mt", "Mat"],
+    },
+    Book {
+        number: 41,
+        name_en: "Mark",
+        name_fr: "Marc",
+        abbrevs: &["Mk", "Mr", "Mc"],
+    },
+    Book {
+        number: 42,
+        name_en: "Luke",
+        name_fr: "Luc",
+        abbrevs: &["Lk", "Lu", "Lc"],
+    },
+    Book {
+        number: 43,
+        name_en: "John",
+        name_fr: "Jean",
+        abbrevs: &["Jn", "Jn", "Joh", "Je"],
+    },
+    Book {
+        number: 44,
+        name_en: "Acts",
+        name_fr: "Actes",
+        abbrevs: &["Ac", "Act"],
+    },
+    Book {
+        number: 45,
+        name_en: "Romans",
+        name_fr: "Romains",
+        abbrevs: &["Rom", "Rm", "Ro"],
+    },
+    Book {
+        number: 46,
+        name_en: "1 Corinthians",
+        name_fr: "1 Corinthiens",
+        abbrevs: &["1 Cor", "1 Co"],
+    },
+    Book {
+        number: 47,
+        name_en: "2 Corinthians",
+        name_fr: "2 Corinthiens",
+        abbrevs: &["2 Cor", "2 Co"],
+    },
+    Book {
+        number: 48,
+        name_en: "Galatians",
+        name_fr: "Galates",
+        abbrevs: &["Gal", "Ga"],
+    },
+    Book {
+        number: 49,
+        name_en: "Ephesians",
+        name_fr: "Éphésiens",
+        abbrevs: &["Eph", "Ep", "Ephesiens"],
+    },
+    Book {
+        number: 50,
+        name_en: "Philippians",
+        name_fr: "Philippiens",
+        abbrevs: &["Phil", "Php", "Ph"],
+    },
+    Book {
+        number: 51,
+        name_en: "Colossians",
+        name_fr: "Colossiens",
+        abbrevs: &["Col", "Col"],
+    },
+    Book {
+        number: 52,
+        name_en: "1 Thessalonians",
+        name_fr: "1 Thessaloniciens",
+        abbrevs: &["1 Thess", "1 Th", "1 Thes"],
+    },
+    Book {
+        number: 53,
+        name_en: "2 Thessalonians",
+        name_fr: "2 Thessaloniciens",
+        abbrevs: &["2 Thess", "2 Th", "2 Thes"],
+    },
+    Book {
+        number: 54,
+        name_en: "1 Timothy",
+        name_fr: "1 Timothée",
+        abbrevs: &["1 Tim", "1 Ti", "1 Timothee"],
+    },
+    Book {
+        number: 55,
+        name_en: "2 Timothy",
+        name_fr: "2 Timothée",
+        abbrevs: &["2 Tim", "2 Ti", "2 Timothee"],
+    },
+    Book {
+        number: 56,
+        name_en: "Titus",
+        name_fr: "Tite",
+        abbrevs: &["Tit", "Tt"],
+    },
+    Book {
+        number: 57,
+        name_en: "Philemon",
+        name_fr: "Philémon",
+        abbrevs: &["Phlm", "Phm", "Filemon", "Philemon"],
+    },
+    Book {
+        number: 58,
+        name_en: "Hebrews",
+        name_fr: "Hébreux",
+        abbrevs: &["Heb", "He", "Hebreux"],
+    },
+    Book {
+        number: 59,
+        name_en: "James",
+        name_fr: "Jacques",
+        abbrevs: &["Jas", "Jc", "Jac", "Jm"],
+    },
+    Book {
+        number: 60,
+        name_en: "1 Peter",
+        name_fr: "1 Pierre",
+        abbrevs: &["1 Pet", "1 P", "1 Pi"],
+    },
+    Book {
+        number: 61,
+        name_en: "2 Peter",
+        name_fr: "2 Pierre",
+        abbrevs: &["2 Pet", "2 P", "2 Pi"],
+    },
+    Book {
+        number: 62,
+        name_en: "1 John",
+        name_fr: "1 Jean",
+        abbrevs: &["1 Jn", "1 J", "1 Joh"],
+    },
+    Book {
+        number: 63,
+        name_en: "2 John",
+        name_fr: "2 Jean",
+        abbrevs: &["2 Jn", "2 J", "2 Joh"],
+    },
+    Book {
+        number: 64,
+        name_en: "3 John",
+        name_fr: "3 Jean",
+        abbrevs: &["3 Jn", "3 J", "3 Joh"],
+    },
+    Book {
+        number: 65,
+        name_en: "Jude",
+        name_fr: "Jude",
+        abbrevs: &["Jud", "Jude", "Jd"],
+    },
+    Book {
+        number: 66,
+        name_en: "Revelation",
+        name_fr: "Apocalypse",
+        abbrevs: &["Rev", "Ap", "Apo", "Apoc"],
+    },
 ];
 
 /// Fold case + Latin diacritics, drop punctuation/hyphens, collapse spaces.
@@ -105,22 +435,25 @@ pub static BOOKS: [Book; 66] = [
 pub fn normalize(s: &str) -> String {
     let mut folded = String::with_capacity(s.len());
     for c in s.chars() {
-        let f = match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => 'a',
-            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
-            'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'o',
-            'ù' | 'ú' | 'û' | 'ü' | 'Ù' | 'Ú' | 'Û' | 'Ü' => 'u',
-            'ý' | 'ÿ' | 'Ý' => 'y',
-            'ç' | 'Ç' => 'c',
-            'ñ' | 'Ñ' => 'n',
-            'ß' => 's',
-            'œ' | 'Œ' => 'o',
-            'æ' | 'Æ' => 'a',
-            '\'' | '’' | '‘' | '.' | ',' | ';' | ':' | '!' | '?' | '"' | '(' | ')' | '[' | ']' => ' ',
-            '-' | '_' | '/' => ' ',
-            other => other.to_lowercase().next().unwrap_or(other),
-        };
+        let f =
+            match c {
+                'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä'
+                | 'Å' => 'a',
+                'è' | 'é' | 'ê' | 'ë' | 'ē' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
+                'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
+                'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'o',
+                'ù' | 'ú' | 'û' | 'ü' | 'Ù' | 'Ú' | 'Û' | 'Ü' => 'u',
+                'ý' | 'ÿ' | 'Ý' => 'y',
+                'ç' | 'Ç' => 'c',
+                'ñ' | 'Ñ' => 'n',
+                'ß' => 's',
+                'œ' | 'Œ' => 'o',
+                'æ' | 'Æ' => 'a',
+                '\'' | '’' | '‘' | '.' | ',' | ';' | ':' | '!' | '?' | '"' | '(' | ')' | '['
+                | ']' => ' ',
+                '-' | '_' | '/' => ' ',
+                other => other.to_lowercase().next().unwrap_or(other),
+            };
         folded.push(f);
     }
     folded.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -170,14 +503,22 @@ fn parse_verse_list(s: &str) -> Result<Vec<u32>, String> {
             continue;
         }
         if let Some((a, b)) = part.split_once('-') {
-            let lo: u32 = a.trim().parse().map_err(|_| format!("bad verse number {a:?}"))?;
-            let hi: u32 = b.trim().parse().map_err(|_| format!("bad verse number {b:?}"))?;
+            let lo: u32 = a
+                .trim()
+                .parse()
+                .map_err(|_| format!("bad verse number {a:?}"))?;
+            let hi: u32 = b
+                .trim()
+                .parse()
+                .map_err(|_| format!("bad verse number {b:?}"))?;
             if lo == 0 || hi == 0 || hi < lo {
                 return Err(format!("bad verse range {part:?}"));
             }
             verses.extend(lo..=hi);
         } else {
-            let v: u32 = part.parse().map_err(|_| format!("bad verse number {part:?}"))?;
+            let v: u32 = part
+                .parse()
+                .map_err(|_| format!("bad verse number {part:?}"))?;
             if v == 0 {
                 return Err(format!("bad verse number {part:?}"));
             }
@@ -224,7 +565,10 @@ pub fn parse_reference(
         }
         // The tail must be a reference: a chapter, optionally followed by
         // verses under any of the three documented separators (`:`, `.`, `v`).
-        let tail_ok = candidate_rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+        let tail_ok = candidate_rest
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
             && candidate_rest
                 .chars()
                 .all(|c| c.is_ascii_digit() || ":.,-vV ".contains(c));
@@ -236,8 +580,7 @@ pub fn parse_reference(
     }
     if rest.is_empty() {
         // Maybe the whole input is just a book name.
-        let book = match_book(input)
-            .ok_or_else(|| format!("unknown book in {input:?}"))?;
+        let book = match_book(input).ok_or_else(|| format!("unknown book in {input:?}"))?;
         return Ok(BibleRef {
             translation_id: translation_id.to_string(),
             book: book.name_en.to_string(),
@@ -251,7 +594,8 @@ pub fn parse_reference(
     // §6.2 accepts three separators between chapter and verses: `:` `.` and
     // `v`. Only `:` was implemented, so `John 3.16` and `John 3v16` — both
     // documented — failed to parse.
-    let sep_count = rest.matches(':').count() + rest.matches('.').count()
+    let sep_count = rest.matches(':').count()
+        + rest.matches('.').count()
         + rest.matches('v').count()
         + rest.matches('V').count();
     if sep_count > 0 {
@@ -265,9 +609,7 @@ pub fn parse_reference(
         let (ch, vs) = rest.split_at(split_at);
         let ch = ch.trim();
         let vs = vs[1..].trim();
-        let chapter: u32 = ch
-            .parse()
-            .map_err(|_| format!("bad chapter {ch:?}"))?;
+        let chapter: u32 = ch.parse().map_err(|_| format!("bad chapter {ch:?}"))?;
         if chapter == 0 {
             return Err(format!("bad chapter {ch:?}"));
         }
@@ -286,7 +628,10 @@ pub fn parse_reference(
             versification,
         })
     } else {
-        let chapter: u32 = rest.trim().parse().map_err(|_| format!("bad chapter {rest:?}"))?;
+        let chapter: u32 = rest
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad chapter {rest:?}"))?;
         if chapter == 0 {
             return Err(format!("bad chapter {rest:?}"));
         }
@@ -441,7 +786,10 @@ mod tests {
 
     #[test]
     fn parses_multiple_comma_groups_each_with_spaces() {
-        assert_eq!(parse("2 Timothy 3:16, 18, 23-25").verses, vec![16, 18, 23, 24, 25]);
+        assert_eq!(
+            parse("2 Timothy 3:16, 18, 23-25").verses,
+            vec![16, 18, 23, 24, 25]
+        );
     }
 
     #[test]
@@ -453,7 +801,10 @@ mod tests {
     fn accepts_the_dot_separator() {
         // §6.2: the separator may be `.`, `:` or `v`.
         let r = parse("John 3.16");
-        assert_eq!((r.book.as_str(), r.chapter, r.verses.as_slice()), ("John", 3, &[16][..]));
+        assert_eq!(
+            (r.book.as_str(), r.chapter, r.verses.as_slice()),
+            ("John", 3, &[16][..])
+        );
     }
 
     #[test]
@@ -482,15 +833,24 @@ mod tests {
         assert_eq!(parse("2 Timothy").book, "2 Timothy");
         // …but `1 John 2:1` is a real reference.
         let r = parse("1 John 2:1");
-        assert_eq!((r.book.as_str(), r.chapter, r.verses.as_slice()), ("1 John", 2, &[1][..]));
+        assert_eq!(
+            (r.book.as_str(), r.chapter, r.verses.as_slice()),
+            ("1 John", 2, &[1][..])
+        );
     }
 
     #[test]
     fn a_whole_chapter_reference_still_resolves() {
         let r = parse("Ps 23");
-        assert_eq!(r.book, "Psalm", "the canonical key is singular, matching the spec");
+        assert_eq!(
+            r.book, "Psalm",
+            "the canonical key is singular, matching the spec"
+        );
         assert_eq!(r.chapter, 23);
-        assert!(r.verses.is_empty(), "an empty verse list means the whole chapter");
+        assert!(
+            r.verses.is_empty(),
+            "an empty verse list means the whole chapter"
+        );
     }
 
     #[test]
