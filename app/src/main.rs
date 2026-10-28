@@ -2750,22 +2750,27 @@ impl Root {
     /// Chord symbols for the currently projected verse (musicians' aid).
     /// Projection slides strip ChordPro markers; this line re-surfaces the
     /// chord symbols above the body when "Chords on projector" is on.
+    /// Follows the freeze like every other projected surface (WI-022).
     fn proj_chord_line(&self) -> Option<String> {
         if !self.show_chords_proj {
             return None;
         }
-        let live = self.live_item?;
-        let item = self.agenda.items.get(live)?;
+        let live_len = self.live_slides().len();
+        let slides = self.projector_slides();
+        let header = slides
+            .get(self.projector_slide_index(live_len))?
+            .header
+            .clone();
+        let item_idx = match self.frozen_slide {
+            Some((Some(i), _)) => i,
+            _ => self.live_item?,
+        };
+        let item = self.agenda.items.get(item_idx)?;
         let song_id = match &item.reference {
             ItemRef::Song { song_id } => song_id,
             _ => return None,
         };
         let song = self.songs.iter().find(|s| &s.id == song_id)?;
-        let slides = self.live_slides();
-        let header = slides
-            .get(self.live_slide.min(slides.len().saturating_sub(1)))?
-            .header
-            .clone();
         let verse_id = header.split('—').nth(1)?.trim().split_whitespace().next()?;
         let chords: Vec<String> = song
             .chords
@@ -5442,10 +5447,15 @@ impl Root {
 
     /// RIGHT large preview: black surface, centered white text, top-right
     /// ref header, bottom translation/author footer line per slide.
+    ///
+    /// The preview mirrors the room: while frozen it holds the frozen slide
+    /// like the projector does (WI-022 — clicking new slides must not reach
+    /// any projected surface). The stage mini keeps following live: that is
+    /// the operator's private monitor for what comes next.
     fn preview_big_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        let slides = self.live_slides();
+        let slides = self.projector_slides();
         let n = slides.len();
-        let cur = self.live_slide.min(n.saturating_sub(1));
+        let cur = self.projector_slide_index(self.live_slides().len());
         let chord = self.proj_chord_line();
         let body: Div = match slides.get(cur) {
             Some(s) => {
@@ -5774,7 +5784,7 @@ impl Root {
             self.frozen_slide = Some((self.live_item, self.live_slide));
             self.set_status(
                 cx,
-                "Frozen — holding this slide while you browse the preview.",
+                "Frozen — holding this slide while you browse the preview. Press ● Go live (top bar) to release.",
             );
         }
     }
