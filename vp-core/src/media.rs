@@ -402,6 +402,27 @@ pub fn fit_text_factor(line_count: usize, base_px: f32, avail_h_px: f32) -> f32 
     (avail_h_px / est_h).clamp(0.45, 1.0)
 }
 
+/// Names of the engaged projection holds, most-visible first (pure, tested).
+///
+/// Powers the one-press "Go live" button: it clears exactly these three —
+/// frozen (holds the slide), hidden (text gone, background playing) and
+/// blank (black base screen). Shield is deliberately absent: it locks
+/// *browsing*, never the projected picture, so leaving it is a separate,
+/// deliberate act.
+pub fn hold_names(frozen: bool, hidden: bool, blank: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if frozen {
+        out.push("frozen");
+    }
+    if hidden {
+        out.push("text hidden");
+    }
+    if blank {
+        out.push("base screen");
+    }
+    out
+}
+
 /// What the projector window shows. Computed purely from live/freeze/blank/
 /// hide-text state — the window-open call itself is thin glue over `cx` and
 /// is NOT unit-testable headless; this decision function is, and it is fully
@@ -581,6 +602,20 @@ mod tests {
         assert!(!up);
         let (_, a) = luminosity_overlay(1000.0);
         assert_eq!(a, 0.8, "unbounded model value, bounded overlay");
+    }
+
+    #[test]
+    fn hold_names_lists_only_engaged_statuses_in_order() {
+        assert!(hold_names(false, false, false).is_empty());
+        assert_eq!(hold_names(true, false, false), vec!["frozen"]);
+        assert_eq!(
+            hold_names(false, true, true),
+            vec!["text hidden", "base screen"]
+        );
+        assert_eq!(
+            hold_names(true, true, true),
+            vec!["frozen", "text hidden", "base screen"]
+        );
     }
 
     #[test]

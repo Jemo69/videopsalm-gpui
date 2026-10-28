@@ -709,6 +709,31 @@ impl Align {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VAlign {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
+impl VAlign {
+    /// Canonical literals in declaration order.
+    pub const ALL: [VAlign; 3] = [VAlign::Top, VAlign::Center, VAlign::Bottom];
+    /// [`VAlign::ALL`] as wire literals, same indices.
+    pub const LITERALS: [&'static str; 3] = ["top", "center", "bottom"];
+    /// Canonical literal for this alignment.
+    pub fn literal(&self) -> &'static str {
+        VAlign::LITERALS[VAlign::ALL.iter().position(|a| a == self).unwrap()]
+    }
+    /// `true` for the default (centered) placement — used to skip the key
+    /// on write, so files written before WI-021 round-trip byte-identical.
+    pub fn is_center(&self) -> bool {
+        matches!(self, VAlign::Center)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Margins {
     #[serde(default)]
@@ -731,6 +756,11 @@ pub struct BodyStyle {
     pub color: String,
     #[serde(default)]
     pub align: Align,
+    /// Vertical placement of the lyric block in its frame (WI-021): top,
+    /// center or bottom. Global operator setting like `align`; the cascade
+    /// `vAlign` leaf stays model-only until per-level editing lands.
+    #[serde(default, skip_serializing_if = "VAlign::is_center")]
+    pub valign: VAlign,
     #[serde(default)]
     pub margins: Margins,
     /// Lyric frame, normalized (B-06). `None` means "not authored at this
@@ -746,6 +776,7 @@ impl Default for BodyStyle {
             size: default_body_size(),
             color: default_fg(),
             align: Align::Center,
+            valign: VAlign::Center,
             margins: Margins::default(),
             rect: None,
         }
@@ -1088,8 +1119,8 @@ mod tests {
     /// new field was missing from its own model.
     #[test]
     fn geometry_constants_agree_with_cross_port_fixture() {
+        use crate::geometry::{AspectRatio, FitMode, TEXT_SIZE_SPACE, Viewport, resolve_percent};
         use crate::geometry::{resolve, text_size};
-        use crate::geometry::{resolve_percent, AspectRatio, FitMode, Viewport, TEXT_SIZE_SPACE};
 
         let f = fixture();
         let g = &f["geometry"];
@@ -1275,6 +1306,25 @@ mod tests {
         assert_eq!(refs[1].versification, Versification::Ru);
         assert_eq!(refs[2].versification, Versification::Fr);
         assert_eq!(serde_json::to_value(&refs).unwrap(), f["bibleRefs"]);
+    }
+
+    #[test]
+    fn valign_literals_round_trip_with_center_default() {
+        assert_eq!(VAlign::LITERALS, ["top", "center", "bottom"]);
+        assert_eq!(VAlign::default(), VAlign::Center);
+        for v in VAlign::ALL {
+            let lit = v.literal();
+            let back: VAlign =
+                serde_json::from_value(serde_json::Value::String(lit.into())).unwrap();
+            assert_eq!(back, v);
+        }
+        // Old agenda/style files without the key still load, centered.
+        let body: BodyStyle = serde_json::from_value(serde_json::json!({
+            "font": "Sans", "size": 48.0, "color": "#fff", "align": "left", "margins": {}
+        }))
+        .unwrap();
+        assert_eq!(body.valign, VAlign::Center);
+        assert_eq!(body.align, Align::Left);
     }
 
     #[test]

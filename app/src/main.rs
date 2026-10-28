@@ -72,7 +72,7 @@ use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
 };
-use vp_core::schema::{Align, Versification};
+use vp_core::schema::{Align, VAlign, Versification};
 use vp_core::slides::{Slide, compute_item_slides_templated};
 use vp_core::themes::{self, Theme};
 use vp_core::verse_splitter::SplitOptions;
@@ -345,6 +345,7 @@ pub(crate) struct Root {
     italic: bool,
     underline: bool,
     align: Align,
+    valign: VAlign,
     transition: String,
 
     // LEFT pane: Songbooks|Bibles browser state.
@@ -653,6 +654,7 @@ impl Root {
             italic: false,
             underline: false,
             align: Align::Center,
+            valign: VAlign::Center,
             transition: "none".into(),
             left_tab: LeftTab::Songs,
             // Boot reference is John 3:16-18, hence New Testament / John.
@@ -846,6 +848,7 @@ impl Root {
                 Align::Center => "center".to_string(),
                 Align::Right => "right".to_string(),
             },
+            valign: self.valign.literal().to_string(),
             transition: self.transition.clone(),
             text_hidden: self.text_hidden,
             shield: self.shield,
@@ -915,6 +918,11 @@ impl Root {
             "left" => Align::Left,
             "right" => Align::Right,
             _ => Align::Center,
+        };
+        self.valign = match p.valign.as_str() {
+            "top" => VAlign::Top,
+            "bottom" => VAlign::Bottom,
+            _ => VAlign::Center,
         };
         if transitions().contains(&p.transition.as_str()) {
             self.transition = p.transition.clone();
@@ -1640,6 +1648,7 @@ impl Root {
             .get_or_insert_with(Default::default);
         style.body.font = self.font_family.clone();
         style.body.align = self.align;
+        style.body.valign = self.valign;
         if style.level.trim().is_empty() {
             style.level = self.style_level.clone();
         }
@@ -1752,6 +1761,7 @@ impl Root {
             italic: self.italic,
             underline: self.underline,
             align: self.align,
+            valign: self.valign,
             chord: self.proj_chord_line(),
             accent: self.ui().accent,
         }
@@ -3613,6 +3623,19 @@ impl Root {
                     this.ui_go(Mode::Stage, cx);
                 },
             ))
+            .child(
+                if vp_core::media::hold_names(
+                    self.frozen_slide.is_some(),
+                    self.text_hidden,
+                    self.blank,
+                )
+                .is_empty()
+                {
+                    div()
+                } else {
+                    self.go_live_button(ui, cx)
+                },
+            )
             .child(div().flex_1())
             .child(label(ui, &self.t("theme"), 13.))
             .child(btn(
@@ -3858,6 +3881,27 @@ impl Root {
             let text = format!("{glyph} {label}");
             font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
                 this.align = want;
+                this.mirror_font_to_style();
+                this.persist_layout_quiet();
+                cx.notify();
+            }));
+        }
+        // Vertical placement of the lyric block in its frame (WI-021):
+        // top / center / bottom, same global-setting shape as horizontal.
+        for (glyph, want) in [
+            ("↑", VAlign::Top),
+            ("↕", VAlign::Center),
+            ("↓", VAlign::Bottom),
+        ] {
+            let active = self.valign == want;
+            let label = match want {
+                VAlign::Top => "Top",
+                VAlign::Center => "Middle",
+                VAlign::Bottom => "Bottom",
+            };
+            let text = format!("{glyph} {label}");
+            font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
+                this.valign = want;
                 this.mirror_font_to_style();
                 this.persist_layout_quiet();
                 cx.notify();
@@ -5452,7 +5496,12 @@ impl Root {
                 if let Some(c) = chord {
                     col = col.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
                 }
-                let mut text_col = div().flex().flex_col().gap_1().flex_1().justify_center();
+                let mut text_col = div().flex().flex_col().gap_1().flex_1();
+                text_col = match self.valign {
+                    VAlign::Top => text_col.justify_start(),
+                    VAlign::Center => text_col.justify_center(),
+                    VAlign::Bottom => text_col.justify_end(),
+                };
                 text_col = match self.align {
                     Align::Left => text_col.items_start(),
                     Align::Center => text_col.items_center(),
@@ -5728,6 +5777,37 @@ impl Root {
                 "Frozen — holding this slide while you browse the preview.",
             );
         }
+    }
+
+    /// One-press way out of every projection hold: frozen, text-hidden and
+    /// blank (base screen) all clear at once and the room sees live lyrics
+    /// again. Shield is left alone on purpose — it locks browsing, not the
+    /// picture. No-op with a quiet status line when nothing is engaged.
+    fn go_live(&mut self, cx: &mut Context<Root>) {
+        let left =
+            vp_core::media::hold_names(self.frozen_slide.is_some(), self.text_hidden, self.blank);
+        if left.is_empty() {
+            return;
+        }
+        self.frozen_slide = None;
+        self.text_hidden = false;
+        self.blank = false;
+        self.set_status(cx, format!("Left {} — projection live.", left.join(", ")));
+        cx.notify();
+    }
+
+    /// The easy button: only rendered while a hold is engaged, so its mere
+    /// presence tells a volunteer the projector is not live.
+    fn go_live_button(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        btn(
+            ui,
+            cx,
+            &format!("● {}", self.t("go_live")),
+            true,
+            |this, _, _, cx| {
+                this.go_live(cx);
+            },
+        )
     }
 
     /// `▣ project` — push the selected agenda item onto the projector.
@@ -6325,7 +6405,12 @@ impl Root {
                 false,
             ));
         }
-        let mut body = div().flex().flex_col().gap_2().flex_1().justify_center();
+        let mut body = div().flex().flex_col().gap_2().flex_1();
+        body = match self.valign {
+            VAlign::Top => body.justify_start(),
+            VAlign::Center => body.justify_center(),
+            VAlign::Bottom => body.justify_end(),
+        };
         body = match self.align {
             Align::Left => body.items_start(),
             Align::Center => body.items_center(),
@@ -6429,6 +6514,11 @@ impl Root {
                 if on {
                     top = top.child(label(ui, chip, 12.));
                 }
+            }
+            // The way out, right beside the states: one press leaves every
+            // hold (frozen / hidden / blank) and the room sees live lyrics.
+            if !vp_core::media::hold_names(frozen, self.text_hidden, self.blank).is_empty() {
+                top = top.child(self.go_live_button(ui, cx));
             }
             if self.clock_overlay {
                 top = top.child(div().flex_1()).child(label(

@@ -59,6 +59,7 @@
   "header_ref": "Whole-reference header",
   "save_note": "Save the agenda JSON, then reuse it on any PC.",
   "live": "LIVE",
+  "go_live": "Go live",
   "blank": "Blank",
   "import": "Import",
   "seconds": "seconds",

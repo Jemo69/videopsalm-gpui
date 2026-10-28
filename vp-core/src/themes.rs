@@ -89,6 +89,7 @@ pub fn default_style(theme: &Theme, accent: Option<&str>) -> Style {
             size: crate::schema::default_body_size(),
             color: theme.projection_fg.to_string(),
             align: crate::schema::Align::Center,
+            valign: crate::schema::VAlign::Center,
             margins: Default::default(),
             // No authored frame: `Style::body_rect()` falls back to
             // `Rect::DEFAULT_BODY`, which is the vendor's printed default.

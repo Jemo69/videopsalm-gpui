@@ -12,9 +12,9 @@
 //! `VideoPsalmJSon.ToFile` (BOM + temp + replace) and `SongVerse.Normalize`
 //! (blank line → NBSP-only line).
 
-use crate::native_archive::{VPC_PASSWORD, build_vpc_entry, read_vpac_entry};
+use crate::native_archive::{build_vpc_entry, read_vpac_entry, VPC_PASSWORD};
 use crate::native_songbook::{
-    NativeSongbook, VpJson, member_text, parse, songbook_to_songs, stringify,
+    member_text, parse, songbook_to_songs, stringify, NativeSongbook, VpJson,
 };
 use crate::schema::Song;
 use std::path::{Path, PathBuf};
