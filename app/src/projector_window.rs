@@ -37,7 +37,8 @@ use std::path::PathBuf;
 use gpui::prelude::*;
 use gpui::{
     App, Bounds, Context, DefiniteLength, Div, Entity, ObjectFit, Render, Rgba, StyledImage,
-    Subscription, Window, WindowBounds, WindowHandle, WindowOptions, div, img, px, rgb, size,
+    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, img,
+    px, rgb, size,
 };
 use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
@@ -470,24 +471,42 @@ pub(crate) fn open_projector_window(
     fullscreen: bool,
 ) -> Result<WindowHandle<ProjectorWindow>, String> {
     let restore = Bounds::centered(None, size(px(1920.), px(1080.)), cx);
-    let window_bounds = if fullscreen {
-        WindowBounds::Fullscreen(restore)
+    let (window_bounds, titlebar) = if fullscreen {
+        // True borderless fullscreen for the congregation: no title bar,
+        // no minimize/maximize/close (WI-033 — the operator asked for
+        // exactly this; the control window keeps the only chrome).
+        // `appears_transparent` hides the system titlebar on Windows.
+        (
+            WindowBounds::Fullscreen(restore),
+            Some(TitlebarOptions {
+                title: None,
+                appears_transparent: true,
+                traffic_light_position: None,
+            }),
+        )
     } else {
         // Windowed opens deliberately modest (1280×720): a 1920×1080 first
         // window is off-screen on smaller laptop displays (WI-028 — opening
         // it crashed there), and the user maximizes or flips fullscreen
         // once it is up. Fullscreen keeps the native 1080p request.
-        WindowBounds::Windowed(Bounds::centered(
+        (
+            WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1280.), px(720.)),
+                cx,
+            )),
             None,
-            size(px(1280.), px(720.)),
-            cx,
-        ))
+        )
     };
+    let mut opts = WindowOptions {
+        window_bounds: Some(window_bounds),
+        ..Default::default()
+    };
+    if titlebar.is_some() {
+        opts.titlebar = titlebar;
+    }
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(window_bounds),
-            ..Default::default()
-        },
+        opts,
         move |_, cx| {
             cx.new(|cx| {
                 let mut w = ProjectorWindow {

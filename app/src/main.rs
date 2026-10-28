@@ -1977,7 +1977,24 @@ impl Root {
                     .filter_map(|id| self.songs.iter().position(|s| &s.id == id))
                     .collect();
                 if query.trim().is_empty() {
-                    self.results = (0..self.songs.len()).collect();
+                    // No text: list everything in scope, not everything,
+                    // period — otherwise clicking a songbook (grouping) and
+                    // the exclude switches silently do nothing (WI-031).
+                    let scope = self.songbook_filter.clone();
+                    self.results = self
+                        .songs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| {
+                            if let Some(book) = scope.as_deref() {
+                                if s.songbook_id != book {
+                                    return false;
+                                }
+                            }
+                            !self.excluded_books.contains(&s.songbook_id)
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
                 }
                 if self.sort_by_number {
                     let songs = &self.songs;
@@ -6653,7 +6670,7 @@ impl Root {
                     btn(
                         ui,
                         cx,
-                        "↗ open window",
+                        "↗ Open test window",
                         self.projector_window.is_some(),
                         |this, _, _, cx| {
                             this.open_projector(cx, false);
@@ -6662,7 +6679,7 @@ impl Root {
                     btn(
                         ui,
                         cx,
-                        "↗ open fullscreen",
+                        "↗ Open second screen",
                         self.projector_window.is_some(),
                         |this, _, _, cx| {
                             this.open_projector(cx, true);
@@ -7043,13 +7060,16 @@ impl Root {
             // No second monitor needed: this tab IS the live output. The
             // button below pops the same slide onto a real projector window
             // for rooms that have one.
+            // Fullscreen, borderless, for the congregation — with no
+            // title bar to dismiss. The windowed twin above stays the
+            // private test screen.
             top = top.child(btn(
                 ui,
                 cx,
-                "↗ open window",
+                "↗ Open second screen",
                 self.projector_window.is_some(),
                 |this, _, _, cx| {
-                    this.open_projector(cx, false);
+                    this.open_projector(cx, true);
                 },
             ));
             if self.clock_overlay {
