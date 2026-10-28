@@ -35,6 +35,7 @@
 //! (entities are cheap clones), rendering `projector_view` there while the
 //! control window renders `control_view`.
 
+mod crash_log;
 mod doc_field;
 mod file_picker;
 mod icons;
@@ -350,6 +351,13 @@ pub(crate) struct Root {
     /// Projector lyric base size in px (WI-026): the old code hardcoded 44.
     /// Steppered in the ribbon, persisted, mirrored into style.body.size.
     font_size: f32,
+    /// Font dropdown state (WI-029): open flag, live filter text, and the
+    /// once-per-session enumeration of installed families (None until first
+    /// opened, so boot pays nothing).
+    font_menu_open: bool,
+    font_filter: String,
+    font_filter_field: gpui::Entity<TextField>,
+    system_fonts: Option<Vec<String>>,
     bold: bool,
     italic: bool,
     underline: bool,
@@ -595,6 +603,7 @@ impl Root {
         let book_field = cx.new(|cx| TextField::new("Book (e.g. John / Jean)...", cx));
         let verse_field = cx.new(|cx| TextField::new("16-18", cx));
         let title_field = cx.new(|cx| TextField::new("Item title...", cx));
+        let font_filter_field = cx.new(|cx| TextField::new("Search fonts...", cx));
         let media_path_field = cx.new(|cx| TextField::new("media file path...", cx));
         let media_range_field = cx.new(|cx| TextField::new("in-out ms, e.g. 1000-5000", cx));
         let gallery_import_field = cx.new(|cx| TextField::new("/path/to/file.jpg …", cx));
@@ -721,6 +730,10 @@ impl Root {
             book_field: book_field.clone(),
             verse_field: verse_field.clone(),
             title_field: title_field.clone(),
+            font_menu_open: false,
+            font_filter: String::new(),
+            font_filter_field: font_filter_field.clone(),
+            system_fonts: None,
             media_path_field: media_path_field.clone(),
             media_range_field: media_range_field.clone(),
             gallery_import_field: gallery_import_field.clone(),
@@ -807,6 +820,17 @@ impl Root {
 
         // B-32 gallery search boxes filter as you type (RESEARCH §8).
         media_gallery::wire_gallery_fields(&mut this, cx);
+        // Font dropdown filter box (WI-029): same live-filter pattern.
+        {
+            use crate::text_field::Changed;
+            let f = this.font_filter_field.clone();
+            this._subs.push(cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.font_filter_field {
+                    this.font_filter = ev.text.clone();
+                    cx.notify();
+                }
+            }));
+        }
 
         // Preload the CENTER title edit + verse range fields from the boot
         // agenda item (John 3:16-18).
@@ -1831,6 +1855,11 @@ impl Root {
                 self.projector_window = Some(handle);
                 self.projector_on = true;
                 self.persist_layout_quiet();
+                crash_log::log_line(if fullscreen {
+                    "projector open ok (fullscreen)"
+                } else {
+                    "projector open ok (windowed)"
+                });
                 self.set_status(
                     cx,
                     if fullscreen {
@@ -1840,7 +1869,10 @@ impl Root {
                     },
                 );
             }
-            Err(e) => self.set_status(cx, format!("Projector window failed: {e}")),
+            Err(e) => {
+                crash_log::log_line(&format!("projector open FAILED: {e}"));
+                self.set_status(cx, format!("Projector window failed: {e}"))
+            },
         }
     }
 
@@ -3934,15 +3966,70 @@ impl Root {
             },
         ));
         // Font group: family + B/I/U + alignment + chord notation.
+        // Font dropdown (WI-029): every installed family, searchable — eight
+        // quick buttons could never cover a real laptop's font list. The
+        // curated `font_families` remain the fallback when the platform
+        // reports nothing (headless CI) and the font-safety reference.
         let mut font_kids: Vec<Div> = Vec::new();
-        for fam in font_families() {
-            let active = self.font_family == fam;
-            font_kids.push(btn(ui, cx, fam, active, move |this, _, _, cx| {
-                this.font_family = fam.into();
-                this.mirror_font_to_style();
-                this.persist_layout_quiet();
+        font_kids.push(btn(
+            ui,
+            cx,
+            &format!("▾ {}", self.font_family),
+            self.font_menu_open,
+            |this, _, _, cx| {
+                if !this.font_menu_open {
+                    if this.system_fonts.is_none() {
+                        let mut names: Vec<String> = cx.text_system().all_font_names();
+                        names.retain(|n| !n.trim().is_empty());
+                        names.sort();
+                        names.dedup();
+                        if names.is_empty() {
+                            names = ux::font_families().into_iter().map(str::to_string).collect();
+                        }
+                        this.system_fonts = Some(names);
+                    }
+                    this.font_menu_open = true;
+                } else {
+                    this.font_menu_open = false;
+                }
                 cx.notify();
-            }));
+            },
+        ));
+        if self.font_menu_open {
+            font_kids.push(div().flex_1().child(self.font_filter_field.clone()));
+            let q = self.font_filter.to_lowercase();
+            let all: Vec<String> = self
+                .system_fonts
+                .clone()
+                .unwrap_or_default();
+            const FONT_CAP: usize = 40;
+            let mut shown = 0usize;
+            let mut matched = 0usize;
+            for fam in &all {
+                if !q.is_empty() && !fam.to_lowercase().contains(q.as_str()) {
+                    continue;
+                }
+                matched += 1;
+                if shown >= FONT_CAP {
+                    continue;
+                }
+                shown += 1;
+                let active = *fam == self.font_family;
+                let name = fam.clone();
+                let caption = name.clone();
+                font_kids.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
+                    this.font_family = name.clone();
+                    this.font_menu_open = false;
+                    this.mirror_font_to_style();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                }));
+            }
+            font_kids.push(label(
+                ui,
+                &format!("{matched} font(s){}", if matched > shown { format!(" — showing {shown}, type to narrow") } else { String::new() }),
+                11.,
+            ));
         }
         // Projector lyric size (WI-026): step the base size; everything
         // projected scales from it (preview proportionally).
@@ -5929,18 +6016,31 @@ impl Root {
     /// blank (base screen) all clear at once and the room sees live lyrics
     /// again. Shield is left alone on purpose — it locks browsing, not the
     /// picture. No-op with a quiet status line when nothing is engaged.
+    /// Go live means ON SCREEN: clear every hold, then make sure the
+    /// projector window is open (focused if it already is). A single
+    /// press is the whole Sunday-morning gesture; the in-window Projector
+    /// tab always works with no second monitor at all.
     fn go_live(&mut self, cx: &mut Context<Root>) {
         let left =
             vp_core::media::hold_names(self.frozen_slide.is_some(), self.text_hidden, self.blank);
-        if left.is_empty() {
-            self.set_status(cx, "Already live — nothing to clear.");
-            cx.notify();
-            return;
+        let cleared = if left.is_empty() {
+            None
+        } else {
+            self.frozen_slide = None;
+            self.text_hidden = false;
+            self.blank = false;
+            Some(left.join(", "))
+        };
+        self.open_projector(cx, false);
+        // open_projector reports its own failures — only overwrite its
+        // status line when we actually have a window to show.
+        if self.projector_window.is_some() {
+            let msg = match cleared {
+                Some(what) => format!("Left {what} — projection live in the projector window."),
+                None => "Live — projector window open.".to_string(),
+            };
+            self.set_status(cx, msg);
         }
-        self.frozen_slide = None;
-        self.text_hidden = false;
-        self.blank = false;
-        self.set_status(cx, format!("Left {} — projection live.", left.join(", ")));
         cx.notify();
     }
 
@@ -6834,6 +6934,10 @@ unsafe extern "system" {
 }
 
 fn main() {
+    // Crash diagnostics first: on Windows GUI builds there is no console,
+    // so without this a panic is a silent vanishing act (WI-029).
+    crash_log::install_panic_hook();
+    crash_log::log_line(&format!("boot v{}", env!("CARGO_PKG_VERSION")));
     // Headless smoke mode for automated checks (mirrors Electron's
     // `window.vpTest`): no window opens, the summary goes to stdout.
     let args: Vec<String> = std::env::args().collect();
