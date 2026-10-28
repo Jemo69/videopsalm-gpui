@@ -40,11 +40,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// The resolved log location, for telling the operator where to look.
-pub fn location() -> PathBuf {
-    path().clone()
-}
-
 /// Append one timestamped line. Never panics; tiny best-effort write.
 pub fn log_line(msg: &str) {
     let line = format!("{} {}\n", now_secs(), msg);

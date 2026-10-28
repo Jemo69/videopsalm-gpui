@@ -1850,30 +1850,44 @@ impl Root {
             return;
         }
         let root = cx.entity();
-        match projector_window::open_projector_window(cx, root, fullscreen) {
-            Ok(handle) => {
-                self.projector_window = Some(handle);
-                self.projector_on = true;
-                self.persist_layout_quiet();
-                crash_log::log_line(if fullscreen {
-                    "projector open ok (fullscreen)"
-                } else {
-                    "projector open ok (windowed)"
-                });
-                self.set_status(
-                    cx,
-                    if fullscreen {
-                        "Projector window opened fullscreen (second display: drag it over)."
-                    } else {
-                        "Projector window opened — drag it to the second display; fullscreen flips it."
-                    },
-                );
+        // Deferred past the current update: opening a window builds and
+        // first-paints its view synchronously, and that paint reads Root —
+        // doing it inside Root's own update panics the entity map
+        // ("cannot read Root while it is already being updated", caught
+        // by the WI-029 crash log). Deferred, the update has finished.
+        crash_log::log_line("projector open requested (deferred past update)");
+        let root2 = root.clone();
+        cx.defer(move |cx: &mut App| {
+            match projector_window::open_projector_window(cx, root2, fullscreen) {
+                Ok(handle) => {
+                    let _ = root.update(cx, |this, cx| {
+                        this.projector_window = Some(handle);
+                        this.projector_on = true;
+                        this.persist_layout_quiet();
+                        crash_log::log_line(if fullscreen {
+                            "projector open ok (fullscreen)"
+                        } else {
+                            "projector open ok (windowed)"
+                        });
+                        this.set_status(
+                            cx,
+                            if fullscreen {
+                                "Projector window opened fullscreen (second display: drag it over)."
+                            } else {
+                                "Projector window opened — drag it to the second display; fullscreen flips it."
+                            },
+                        );
+                    });
+                }
+                Err(e) => {
+                    crash_log::log_line(&format!("projector open FAILED: {e}"));
+                    let _ = root.update(cx, |this, cx| {
+                        this.set_status(cx, format!("Projector window failed: {e}"));
+                    });
+                }
             }
-            Err(e) => {
-                crash_log::log_line(&format!("projector open FAILED: {e}"));
-                self.set_status(cx, format!("Projector window failed: {e}"))
-            },
-        }
+        });
+        self.set_status(cx, "Opening projector window…");
     }
 
     /// Flip the open projector window in/out of fullscreen (B-12). The
@@ -3984,7 +3998,7 @@ impl Root {
                         names.sort();
                         names.dedup();
                         if names.is_empty() {
-                            names = ux::font_families().into_iter().map(str::to_string).collect();
+                            names = font_families().into_iter().map(str::to_string).collect();
                         }
                         this.system_fonts = Some(names);
                     }
