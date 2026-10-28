@@ -328,8 +328,8 @@ pub(crate) struct Root {
     /// Ctrl+E — Viewer mode (jump-starter): the ribbon and the editors are
     /// hidden so the operator only sees the presentation controls.
     viewer_mode: bool,
-    /// Ctrl+P — the projector screen is shown/hidden independently of which
-    /// view has focus.
+    /// Ctrl+P — the projector *window* is opened/closed, independently of
+    /// which view has focus. (The in-window Projector tab always works.)
     projector_on: bool,
 
     clock_mode: ClockMode,
@@ -1941,6 +1941,7 @@ impl Root {
                     crash_log::log_line(&format!("projector open FAILED: {e}"));
                     let _ = root.update(cx, |this, cx| {
                         this.projector_opening = false;
+                        this.projector_on = false;
                         this.set_status(cx, format!("Projector window failed: {e}"));
                     });
                 }
@@ -2794,11 +2795,19 @@ fn scope_song_indices(
         );
     }
 
-    /// `Ctrl+P`: show/hide the projector screen.
+    /// `Ctrl+P`: open/close the projector *window*. On opens the windowed
+    /// test view (Go live opens it fullscreen instead); off closes it.
+    /// The in-window Projector tab works with no window at all.
     fn toggle_projector(&mut self, cx: &mut Context<Self>) {
-        self.projector_on = !self.projector_on;
-        if self.projector_on && self.mode != Mode::Projector {
-            self.mode = Mode::Projector;
+        if self.projector_window.is_some() {
+            self.close_projector(cx);
+            self.projector_on = false;
+        } else {
+            self.projector_on = true;
+            if self.mode != Mode::Projector {
+                self.mode = Mode::Projector;
+            }
+            self.open_projector(cx, false);
         }
         self.persist_layout_quiet();
         cx.notify();
@@ -4153,10 +4162,11 @@ impl Root {
             .child(btn(ui, cx, "A text", self.text_hidden, |this, _, _, cx| {
                 this.toggle_text(cx);
             }))
-            .child(btn(
+            .child(btn_tip(
                 ui,
                 cx,
                 "Ctrl+P",
+                "Open the projector window (windowed test view); press again to close it. Go live opens it fullscreen instead.",
                 self.projector_on,
                 |this, _, _, cx| {
                     this.toggle_projector(cx);
