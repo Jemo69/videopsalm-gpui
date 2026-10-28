@@ -3298,6 +3298,19 @@ fn scope_song_indices(
         match vp_core::native_folder::read_songbook_file(&path) {
             Ok(book) => {
                 let name = book.songbook.name.clone();
+                // Register the book itself, keyed exactly like the songs it
+                // carries (`songbook_id` = book abbrev), or grouping by book
+                // can never match (WI-031).
+                let info = book.songbook.clone();
+                let _ = vp_core::library::upsert_songbook(
+                    &self.db,
+                    &vp_core::schema::Songbook {
+                        id: info.abbrev.clone(),
+                        name: info.name.clone(),
+                        abbrev: info.abbrev.clone(),
+                        read_only: true,
+                    },
+                );
                 let (added, _) = merge_native_songs(&mut self.songs, book.songs);
                 let mut failed = 0;
                 for s in &self.songs {
@@ -3313,6 +3326,10 @@ fn scope_song_indices(
                 if failed > 0 {
                     msg.push_str(&format!(" {failed} library write(s) failed."));
                 }
+                // Refresh the browser list: it still shows the pre-import
+                // search, which is how imports "did nothing" (WI-031).
+                let q = self.search_field.read(cx).text();
+                self.refresh_search(&q, cx);
                 self.set_status(cx, msg);
             }
             Err(e) => self.set_status(cx, format!("Songbook import failed: {e}")),
@@ -3363,6 +3380,21 @@ fn scope_song_indices(
         for w in scan.errors.iter().take(3) {
             msg.push_str(&format!(" [{w}]"));
         }
+        // Native books join the library as groups so the songbook filter
+        // can match them (songs carry `songbook_id` = book abbrev).
+        for nb in &scan.songbooks {
+            let _ = vp_core::library::upsert_songbook(
+                &self.db,
+                &vp_core::schema::Songbook {
+                    id: nb.abbrev.clone(),
+                    name: nb.name.clone(),
+                    abbrev: nb.abbrev.clone(),
+                    read_only: true,
+                },
+            );
+        }
+        let q = self.search_field.read(cx).text();
+        self.refresh_search(&q, cx);
         self.set_status(cx, msg);
         cx.notify();
     }
