@@ -24,12 +24,14 @@ use vp_core::richtext::{RichBits, RichBlock, parse_rich_line};
 const SHADOW_DX: f32 = 2.0;
 const SHADOW_DY: f32 = 2.0;
 
-/// Block size multipliers, matching the Electron `.rl-h1` (1.28em) /
-/// `.rl-h2` (1.12em) rules and disc bullets.
+/// Block size multipliers — an unmistakable staircase (WI-026): H1 1.6×,
+/// H2 1.3×, H3 1.15×, all bold; bullets gain their `• `. Mirrors the
+/// Electron `.rl-h*` sizes exactly.
 fn block_adjust(block: RichBlock) -> (f32, bool, Option<&'static str>) {
     match block {
-        RichBlock::H1 => (1.28, true, None),
-        RichBlock::H2 => (1.12, true, None),
+        RichBlock::H1 => (1.60, true, None),
+        RichBlock::H2 => (1.30, true, None),
+        RichBlock::H3 => (1.15, true, None),
         RichBlock::Bullet => (1.0, false, Some("• ")),
         RichBlock::Numbered => (1.0, false, None),
         RichBlock::Plain => (1.0, false, None),

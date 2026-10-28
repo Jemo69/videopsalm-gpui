@@ -98,6 +98,7 @@ pub enum RichBlock {
     Plain,
     H1,
     H2,
+    H3,
     Bullet,
     Numbered,
 }
@@ -254,7 +255,11 @@ fn pass_single(elems: Vec<Elem>, mark: char, open: &str, close: &str) -> Vec<Ele
 }
 
 fn split_block(line: &str) -> (RichBlock, &str) {
-    if let Some(rest) = line.strip_prefix("## ") {
+    if let Some(rest) = line.strip_prefix("### ") {
+        if !rest.is_empty() {
+            return (RichBlock::H3, rest);
+        }
+    } else if let Some(rest) = line.strip_prefix("## ") {
         if !rest.is_empty() {
             return (RichBlock::H2, rest);
         }
@@ -307,7 +312,9 @@ pub fn parse_rich_line(line: &str) -> RichLine {
     let (block, body) = split_block(line);
     // Mirror `render_rich_line`'s empty-body bail-out: the whole line —
     // prefix included — stays literal text.
-    if matches!(block, RichBlock::H1 | RichBlock::H2 | RichBlock::Bullet) && body.is_empty() {
+    if matches!(block, RichBlock::H1 | RichBlock::H2 | RichBlock::H3 | RichBlock::Bullet)
+        && body.is_empty()
+    {
         return RichLine {
             block: RichBlock::Plain,
             text: line.to_string(),
@@ -389,6 +396,7 @@ pub fn parse_rich_line(line: &str) -> RichLine {
 pub fn render_rich_line(escaped: &str) -> String {
     let (cls, body): (Option<&str>, &str) = match split_block(escaped) {
         (RichBlock::H2, b) => (Some("rl-h2"), b),
+        (RichBlock::H3, b) => (Some("rl-h3"), b),
         (RichBlock::H1, b) => (Some("rl-h1"), b),
         (RichBlock::Bullet, b) => (Some("rl-li"), b),
         (RichBlock::Numbered, b) => (Some("rl-li num"), b),
@@ -593,6 +601,10 @@ mod tests {
         assert!(l.spans.is_empty());
         let l = parse_rich_line("## Smaller");
         assert_eq!((l.block, l.text.as_str()), (RichBlock::H2, "Smaller"));
+        let l = parse_rich_line("### Third");
+        assert_eq!((l.block, l.text.as_str()), (RichBlock::H3, "Third"));
+        let l = parse_rich_line("### ");
+        assert_eq!((l.block, l.text.as_str()), (RichBlock::Plain, "### "));
         let l = parse_rich_line("- point");
         assert_eq!((l.block, l.text.as_str()), (RichBlock::Bullet, "point"));
         let l = parse_rich_line("3. third");
@@ -619,10 +631,13 @@ mod tests {
             "**bold** and *italic*",
             "# Title",
             "## Smaller",
+            "### Third level",
             "- point",
             "* point",
             "3. third",
             "12. numbered here",
+            "***big***",
+            "### ***big third***",
             "plain",
             "#",
             "# ",

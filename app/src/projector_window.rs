@@ -39,7 +39,7 @@ use gpui::{
     App, Bounds, Context, DefiniteLength, Div, Entity, ObjectFit, Render, Rgba, StyledImage,
     Subscription, Window, WindowBounds, WindowHandle, WindowOptions, div, img, px, rgb, size,
 };
-use vp_core::geometry::PercentRect;
+use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
 use vp_core::schema::{Align, BackgroundKind, BgFit, ItemKind, ItemRef, VAlign};
 
@@ -60,6 +60,9 @@ pub struct ProjectorSnapshot {
     pub luminosity: f32,
     pub lum_source: Option<String>,
     pub frame: ProjectorFrame,
+    /// Whether the base (black) screen is engaged — distinct from merely
+    /// having no slide (which shows the background, not black).
+    pub blank: bool,
     pub header: String,
     pub lines: Vec<String>,
     pub footer: String,
@@ -70,6 +73,8 @@ pub struct ProjectorSnapshot {
     /// Body frame as percentages (0..=100) via `resolve_percent`.
     pub body_pct: PercentRect,
     pub font_family: String,
+    /// Projector lyric base size in px (WI-026): the old code hardcoded 44.
+    pub font_size: f32,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -237,14 +242,23 @@ fn standalone_layer(m: &StandaloneMedia) -> Div {
 
 /// Render one snapshot: background, framed lyrics, overlays. No controls.
 ///
-/// `target_h` is the output height in pixels: every text size is authored
-/// against a 1080p reference (the Electron `fitSlide` rule) and scaled by
-/// `target_h / 1080`, then the body lines shrink further until the verse
-/// fits its frame (`vp_core::media::fit_text_factor`, floor 0.45). The real
-/// projector window passes its own height (resize ⇒ re-fit for free); the
-/// in-window projector tab passes the control window height.
-pub(crate) fn render_snapshot(ui: &UI, snap: &ProjectorSnapshot, target_h: f32) -> Div {
-    let scale = (target_h / 1080.0).clamp(0.2, 3.0);
+/// `target_w/target_h` are the output pixels and `ratio` the optional
+/// letterbox preset (`None` = native, "current"): the slide is laid out in
+/// a box fitted to the ratio and centered on black bars, so the presets
+/// visibly move the picture instead of only flipping a chip (WI-026). Text
+/// sizes scale from the box height, exactly like the 1080p rule.
+pub(crate) fn render_snapshot(
+    ui: &UI,
+    snap: &ProjectorSnapshot,
+    target_w: f32,
+    target_h: f32,
+    ratio: Option<AspectRatio>,
+) -> Div {
+    let (bw, bh, ox, oy) = match ratio {
+        Some(r) => letterbox_into(target_w, target_h, r),
+        None => (target_w, target_h, 0.0, 0.0),
+    };
+    let scale = (bh / 1080.0).clamp(0.2, 3.0);
     let bg = apply_luminosity_color(snap.bg_color, snap.luminosity);
     let mut inner = if let Some(m) = &snap.standalone {
         standalone_layer(m)
@@ -255,8 +269,12 @@ pub(crate) fn render_snapshot(ui: &UI, snap: &ProjectorSnapshot, target_h: f32) 
         background_layer(bg, snap.bg_kind, snap.bg_file.as_ref(), snap.bg_fit)
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
-        let fit = vp_core::media::fit_text_factor(snap.lines.len(), 44.0 * scale, fh * target_h);
-        let size = 44.0 * scale * fit;
+        let fit = vp_core::media::fit_text_factor(
+            snap.lines.len(),
+            snap.font_size * scale,
+            fh * bh,
+        );
+        let size = snap.font_size * scale * fit;
         let mut lines: Vec<Div> = snap
             .lines
             .iter()
@@ -393,7 +411,17 @@ pub(crate) fn render_snapshot(ui: &UI, snap: &ProjectorSnapshot, target_h: f32) 
                 .child(snap.clock_text.clone()),
         );
     }
-    inner
+    // Letterbox wrap: the slide lays out in the ratio box, centered on
+    // black bars. With no preset the box IS the output, identical to before.
+    div().size_full().bg(rgb(0x000000)).child(
+        div()
+            .absolute()
+            .left(px(ox))
+            .top(px(oy))
+            .w(px(bw))
+            .h(px(bh))
+            .child(inner),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -409,15 +437,20 @@ pub(crate) struct ProjectorWindow {
 
 impl Render for ProjectorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let (ui, snap) = {
+        let (ui, snap, ratio) = {
             let r = self.root.read(cx);
-            (r.ui(), r.projector_snapshot(cx))
+            (
+                r.ui(),
+                r.projector_snapshot(cx),
+                AspectRatio::from_label(&r.aspect_ratio),
+            )
         };
-        let target_h: f32 = window.bounds().size.height.into();
+        let size = window.bounds().size;
+        let (target_w, target_h): (f32, f32) = (size.width.into(), size.height.into());
         div()
             .size_full()
             .bg(rgb(0x000000))
-            .child(render_snapshot(&ui, &snap, target_h))
+            .child(render_snapshot(&ui, &snap, target_w, target_h, ratio))
     }
 }
 

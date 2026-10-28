@@ -399,6 +399,32 @@ impl AspectRatio {
     }
 }
 
+/// Fit a W×H output into `ratio`, returning the centered content box as
+/// `(box_w, box_h, offset_x, offset_y)`. The renderer paints black bars
+/// around the box (pillarbox for narrower ratios, letterbox for wider
+/// ones). Near-equal ratios (within 0.005) return the full output so the
+/// common case never jitters by a pixel. Pure and tested — this is what
+/// makes the aspect presets actually move the picture (WI-026).
+pub fn letterbox_into(w: f32, h: f32, ratio: AspectRatio) -> (f32, f32, f32, f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return (w, h, 0.0, 0.0);
+    }
+    let r = ratio.aspect() as f32;
+    let have = w / h;
+    if (have - r).abs() < 0.005 {
+        return (w, h, 0.0, 0.0);
+    }
+    if have > r {
+        // Output wider than the ratio: pillarbox (side bars).
+        let bw = h * r;
+        (bw, h, (w - bw) / 2.0, 0.0)
+    } else {
+        // Output taller than the ratio: letterbox (top/bottom bars).
+        let bh = w / r;
+        (w, bh, 0.0, (h - bh) / 2.0)
+    }
+}
+
 impl Rect {
     /// Clamp every component into the normalized square.
     ///
@@ -621,6 +647,29 @@ mod tests {
     // -----------------------------------------------------------------------
     // The space is 10000, not 1000
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn letterbox_into_centers_bars_and_passes_matching_ratios_through() {
+        // 16:9 output asked for 4:3 → pillarbox (side bars).
+        let (bw, bh, ox, oy) = crate::geometry::letterbox_into(1600.0, 900.0, crate::geometry::AspectRatio::W4H3);
+        assert!((bw - 1200.0).abs() < 0.01, "{bw}");
+        assert_eq!((bh, oy), (900.0, 0.0));
+        assert!((ox - 200.0).abs() < 0.01, "{ox}");
+        // 4:3 output asked for 16:9 → letterbox (top/bottom bars).
+        let (bw, bh, ox, oy) = crate::geometry::letterbox_into(1024.0, 768.0, crate::geometry::AspectRatio::W16H9);
+        assert!((bh - 576.0).abs() < 0.01, "{bh}");
+        assert_eq!((bw, ox), (1024.0, 0.0));
+        assert!((oy - 96.0).abs() < 0.01, "{oy}");
+        // Matching ratio (within tolerance) → full output, no jitter.
+        assert_eq!(
+            crate::geometry::letterbox_into(1920.0, 1080.0, crate::geometry::AspectRatio::W16H9),
+            (1920.0, 1080.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            crate::geometry::letterbox_into(1919.0, 1080.0, crate::geometry::AspectRatio::W16H9),
+            (1919.0, 1080.0, 0.0, 0.0)
+        );
+    }
 
     #[test]
     fn normalized_space_is_ten_thousand() {

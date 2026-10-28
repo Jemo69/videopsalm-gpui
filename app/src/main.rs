@@ -65,7 +65,7 @@ use vp_core::bible_ref::{
 };
 use vp_core::cascade::{Cascade, Chain};
 use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
-use vp_core::geometry::{FitMode, Viewport, resolve_percent};
+use vp_core::geometry::{AspectRatio, FitMode, Viewport, resolve_percent};
 use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
 use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector_frame};
@@ -347,6 +347,9 @@ pub(crate) struct Root {
 
     // VideoPsalm-style formatting ribbon (Font group + Styles/Animation).
     font_family: String,
+    /// Projector lyric base size in px (WI-026): the old code hardcoded 44.
+    /// Steppered in the ribbon, persisted, mirrored into style.body.size.
+    font_size: f32,
     bold: bool,
     italic: bool,
     underline: bool,
@@ -657,7 +660,8 @@ impl Root {
             show_number: true,
             show_chords_proj: false,
             clock_overlay: false,
-            font_family: "Sans".into(),
+            font_family: "Verdana".into(),
+            font_size: 44.0,
             bold: false,
             italic: false,
             underline: false,
@@ -854,6 +858,7 @@ impl Root {
             show_chords_proj: self.show_chords_proj,
             clock_overlay: self.clock_overlay,
             font_family: self.font_family.clone(),
+            font_size: self.font_size,
             bold: self.bold,
             italic: self.italic,
             underline: self.underline,
@@ -1780,6 +1785,7 @@ impl Root {
             luminosity,
             lum_source,
             frame,
+            blank: self.blank,
             header,
             lines,
             footer,
@@ -1794,6 +1800,7 @@ impl Root {
                 FitMode::Fill,
             ),
             font_family: self.font_family.clone(),
+            font_size: self.font_size,
             bold: self.bold,
             italic: self.italic,
             underline: self.underline,
@@ -3089,6 +3096,20 @@ impl Root {
                     let _ = vp_core::library::upsert_song(&self.db, s);
                 }
                 let n = imported.items.len();
+                if n == 0 {
+                    // Never blank the room's agenda for an unreadable plan:
+                    // keep everything and say why. The warnings name the
+                    // entries the reader could not use.
+                    let mut msg = format!(
+                        "Plan had no readable items — kept the current agenda. ({})",
+                        imported.title
+                    );
+                    for w in imported.warnings.iter().take(3) {
+                        msg.push_str(&format!(" [{w}]"));
+                    }
+                    self.set_status(cx, msg);
+                    return;
+                }
                 self.agenda = Agenda {
                     version: 1,
                     title: imported.title.clone(),
@@ -3414,7 +3435,7 @@ fn swatch(
 /// Only read by the font-safety test, which is the point: it fails if a glyph
 /// is added that the default Linux UI font cannot draw.
 #[cfg_attr(not(test), allow(dead_code))]
-const APP_GLYPHS: &str = "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●";
+const APP_GLYPHS: &str = "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●↑↓↕▾↗✖…•";
 
 /// Small grid cell (chapter numbers, slide buttons).
 fn mini(
@@ -3603,7 +3624,8 @@ pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.ui();
-        let target_h: f32 = window.bounds().size.height.into();
+        let bounds = window.bounds().size;
+        let (target_w, target_h): (f32, f32) = (bounds.width.into(), bounds.height.into());
         let chrome = viewer_chrome_visible(self.viewer_mode);
         // Viewer mode drops the topbar AND the ribbon (viewer-mode.png opens
         // straight onto the agenda); the body and any live projection stay.
@@ -3635,7 +3657,7 @@ impl Render for Root {
         }
         root.child(match self.mode {
             Mode::Control => self.control_view(&ui, cx),
-            Mode::Projector => self.projector_view(&ui, cx, target_h),
+            Mode::Projector => self.projector_view(&ui, cx, target_w, target_h),
             Mode::Stage => self.stage_view(&ui, cx),
         })
         .child(
@@ -3697,19 +3719,15 @@ impl Root {
                     this.ui_go(Mode::Stage, cx);
                 },
             ))
-            .child(
-                if vp_core::media::hold_names(
+            .child({
+                let held = !vp_core::media::hold_names(
                     self.frozen_slide.is_some(),
                     self.text_hidden,
                     self.blank,
                 )
-                .is_empty()
-                {
-                    div()
-                } else {
-                    self.go_live_button(ui, cx)
-                },
-            )
+                .is_empty();
+                self.go_live_button(ui, cx, held)
+            })
             .child(div().flex_1())
             .child(label(ui, &self.t("theme"), 13.))
             .child(btn(
@@ -3926,6 +3944,21 @@ impl Root {
                 cx.notify();
             }));
         }
+        // Projector lyric size (WI-026): step the base size; everything
+        // projected scales from it (preview proportionally).
+        font_kids.push(label(ui, &format!("A {}", self.font_size.round() as i32), 12.));
+        font_kids.push(btn(ui, cx, "A-", false, |this, _, _, cx| {
+            this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+            this.mirror_font_to_style();
+            this.persist_layout_quiet();
+            cx.notify();
+        }));
+        font_kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
+            this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
+            this.mirror_font_to_style();
+            this.persist_layout_quiet();
+            cx.notify();
+        }));
         font_kids.push(btn(ui, cx, "B", self.bold, |this, _, _, cx| {
             this.bold = !this.bold;
             this.persist_layout_quiet();
@@ -4428,7 +4461,8 @@ impl Root {
                         if let Some(p) = crate::file_picker::pick_folder("VideoPsalm folder") {
                             this.native_path_field
                                 .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                            cx.notify();
+                            // Browse means do it: scan the folder straight away.
+                            this.open_native_folder(cx);
                         } else {
                             this.set_status(cx, "Browse cancelled — no folder chosen.");
                         }
@@ -4440,7 +4474,8 @@ impl Root {
                         ) {
                             this.native_path_field
                                 .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                            cx.notify();
+                            // Browse means do it: import the plan straight away.
+                            this.import_native_plan(cx);
                         } else {
                             this.set_status(cx, "Browse cancelled — no file chosen.");
                         }
@@ -5559,7 +5594,33 @@ impl Root {
         let snap = self.projector_snapshot(cx);
         let bg = projector_window::apply_luminosity_color(snap.bg_color, snap.luminosity);
         let fg = snap.fg_color;
-        let body: Div = if snap.frame.black {
+        // Preview type scales with the projector base size (24px at 44).
+        let pk = snap.font_size / 44.0;
+        // Shared backdrop: the projector's background stack sits behind the
+        // lyrics, the hidden-text note and the nothing-live note alike —
+        // with or without text, the image/video shows. Only the base
+        // screen (blank) is black.
+        let mut bgcol = div().flex().flex_col().flex_1().relative().child(
+            div().absolute().size_full().child(
+                projector_window::background_layer(
+                    bg,
+                    snap.bg_kind,
+                    snap.bg_file.as_ref(),
+                    snap.bg_fit,
+                ),
+            ),
+        );
+        if matches!(snap.bg_kind, BackgroundKind::Image) && snap.luminosity != 0.0 {
+            let (lighten, alpha) = vp_core::media::luminosity_overlay(snap.luminosity);
+            let shade = if lighten { 1.0 } else { 0.0 };
+            bgcol = bgcol.child(div().absolute().size_full().bg(Rgba {
+                r: shade,
+                g: shade,
+                b: shade,
+                a: alpha,
+            }));
+        }
+        let body: Div = if snap.blank {
             // Base screen: mirror the sacred black exactly, plus a tiny
             // operator note (control-side only, never projected).
             div()
@@ -5571,10 +5632,29 @@ impl Root {
                 .justify_center()
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(px((13.0 * pk).max(9.0)))
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
+        } else if snap.frame.item.is_none() {
+            // No slide live: background still shows, with a note naming
+            // the way back.
+            bgcol.child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .p(px(10.))
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px((13.0 * pk).max(9.0)))
+                            .text_color(hex("#BBBBBB"))
+                            .child("(nothing live — press Show)".to_string()),
+                    ),
+            )
         } else {
             match slides.get(cur) {
             Some(s) => {
@@ -5586,7 +5666,7 @@ impl Root {
                     .map(|x| {
                         rich_view::rich_line(
                             x,
-                            24.0,
+                            (24.0 * pk),
                             fg,
                             &self.font_family,
                             self.bold,
@@ -5599,7 +5679,7 @@ impl Root {
                 if lines.is_empty() {
                     lines.push(rich_view::rich_line(
                         "",
-                        24.0,
+                        (24.0 * pk),
                         fg,
                         &self.font_family,
                         self.bold,
@@ -5607,26 +5687,6 @@ impl Root {
                         self.underline,
                         true,
                     ));
-                }
-                let mut col = div().flex().flex_col().flex_1().relative().child(
-                    div().absolute().size_full().child(
-                        projector_window::background_layer(
-                            bg,
-                            snap.bg_kind,
-                            snap.bg_file.as_ref(),
-                            snap.bg_fit,
-                        ),
-                    ),
-                );
-                if matches!(snap.bg_kind, BackgroundKind::Image) && snap.luminosity != 0.0 {
-                    let (lighten, alpha) = vp_core::media::luminosity_overlay(snap.luminosity);
-                    let shade = if lighten { 1.0 } else { 0.0 };
-                    col = col.child(div().absolute().size_full().bg(Rgba {
-                        r: shade,
-                        g: shade,
-                        b: shade,
-                        a: alpha,
-                    }));
                 }
                 let content = if snap.frame.text {
                     let mut content = div()
@@ -5638,14 +5698,14 @@ impl Root {
                         .child(
                             div().flex().flex_row().child(div().flex_1()).child(
                                 div()
-                                    .text_size(px(13.))
+                                    .text_size(px((13.0 * pk).max(9.0)))
                                     .text_color(hex("#BBBBBB"))
                                     .child(header),
                             ),
                         );
                     if let Some(c) = chord {
                         content =
-                            content.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
+                            content.child(div().text_size(px((13.0 * pk).max(9.0))).text_color(ui.accent).child(c));
                     }
                     let mut text_col = div().flex().flex_col().gap_1().flex_1();
                 text_col = match self.valign {
@@ -5664,7 +5724,7 @@ impl Root {
                     content.child(text_col).child(
                         div().flex().flex_row().justify_center().child(
                             div()
-                                .text_size(px(13.))
+                                .text_size(px((13.0 * pk).max(9.0)))
                                 .text_color(hex("#BBBBBB"))
                                 .child(footer),
                         ),
@@ -5682,34 +5742,62 @@ impl Root {
                         .justify_center()
                         .child(
                             div()
-                                .text_size(px(13.))
+                                .text_size(px((13.0 * pk).max(9.0)))
                                 .text_color(hex("#BBBBBB"))
                                 .child(
                                     "(lyrics hidden — background keeps playing)".to_string(),
                                 ),
                         )
                 };
-                col.child(content)
+                bgcol.child(content)
             }
-            None => div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .bg(rgb(0x000000))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(hex("#BBBBBB"))
-                        .child("(nothing live — press Show)"),
-                ),
+            None => bgcol.child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .p(px(10.))
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(hex("#BBBBBB"))
+                            .child("(nothing live — press Show)".to_string()),
+                    ),
+            ),
             }
         };
         let count = if n == 0 {
             "0/0".to_string()
         } else {
             format!("{}/{}", cur + 1, n)
+        };
+        // Aspect-ratio simulation (WI-026): the right column is a fixed
+        // 560px, so a ratio box of known width centers in the black panel
+        // with bars — the presets visibly move the picture. "current"
+        // keeps today's fill behavior.
+        const PREVIEW_INNER_W: f32 = 548.0;
+        let body = match AspectRatio::from_label(&self.aspect_ratio) {
+            None => body,
+            Some(r) => {
+                let bh = PREVIEW_INNER_W / r.aspect() as f32;
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(0x000000))
+                    .child(
+                        div()
+                            .w(px(PREVIEW_INNER_W))
+                            .h(px(bh))
+                            .overflow_hidden()
+                            .child(body),
+                    )
+            }
         };
         div()
             .flex()
@@ -5741,7 +5829,7 @@ impl Root {
                                 .bg(rgb(0x3B82F6))
                                 .text_color(rgb(0xFFFFFF))
                                 .text_size(px(11.))
-                                .child(format!("⛶ {}", self.aspect_ratio)),
+                                .child(format!("↗ {}", self.aspect_ratio)),
                         )
                     }),
             )
@@ -5960,6 +6048,8 @@ impl Root {
         let left =
             vp_core::media::hold_names(self.frozen_slide.is_some(), self.text_hidden, self.blank);
         if left.is_empty() {
+            self.set_status(cx, "Already live — nothing to clear.");
+            cx.notify();
             return;
         }
         self.frozen_slide = None;
@@ -5969,14 +6059,16 @@ impl Root {
         cx.notify();
     }
 
-    /// The easy button: only rendered while a hold is engaged, so its mere
-    /// presence tells a volunteer the projector is not live.
-    fn go_live_button(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    /// The easy button: always visible next to the holds it clears, so a
+    /// volunteer can always find the way back to live. Engaged (orange)
+    /// while a hold is active, quiet otherwise; pressing it with nothing
+    /// engaged just confirms the room is already live.
+    fn go_live_button(&mut self, ui: &UI, cx: &mut Context<Root>, active: bool) -> Div {
         btn(
             ui,
             cx,
             &format!("● {}", self.t("go_live")),
-            true,
+            active,
             |this, _, _, cx| {
                 this.go_live(cx);
             },
@@ -6318,7 +6410,7 @@ impl Root {
                     btn(
                         ui,
                         cx,
-                        "⛶ open window",
+                        "↗ open window",
                         self.projector_window.is_some(),
                         |this, _, _, cx| {
                             this.open_projector(cx, false);
@@ -6327,13 +6419,13 @@ impl Root {
                     btn(
                         ui,
                         cx,
-                        "⛶ open fullscreen",
+                        "↗ open fullscreen",
                         self.projector_window.is_some(),
                         |this, _, _, cx| {
                             this.open_projector(cx, true);
                         },
                     ),
-                    btn(ui, cx, "⛶ fullscreen toggle", false, |this, _, _, cx| {
+                    btn(ui, cx, "↗ fullscreen toggle", false, |this, _, _, cx| {
                         this.toggle_projector_fullscreen(cx);
                     }),
                 ]),
@@ -6640,7 +6732,7 @@ impl Root {
         }
     }
 
-    fn projector_view(&mut self, ui: &UI, cx: &mut Context<Root>, target_h: f32) -> Div {
+    fn projector_view(&mut self, ui: &UI, cx: &mut Context<Root>, target_w: f32, target_h: f32) -> Div {
         // B-12 single-window fallback: this renders the exact same snapshot
         // as the real second window (`projector_window::render_snapshot`),
         // so the view switcher can never disagree with the projector about
@@ -6650,7 +6742,13 @@ impl Root {
         let n = self.projector_slides().len();
         let cur = self.projector_slide_index(self.live_slides().len());
         let frozen = self.frozen_slide.is_some();
-        let inner = projector_window::render_snapshot(ui, &snap, target_h);
+        let inner = projector_window::render_snapshot(
+            ui,
+            &snap,
+            target_w,
+            target_h,
+            AspectRatio::from_label(&self.aspect_ratio),
+        );
         div().flex().flex_col().flex_1().child({
             // Only kinds v1 cannot fully render get a note (video poster,
             // camera stand-in); images and colors render as assigned.
@@ -6690,9 +6788,23 @@ impl Root {
             }
             // The way out, right beside the states: one press leaves every
             // hold (frozen / hidden / blank) and the room sees live lyrics.
-            if !vp_core::media::hold_names(frozen, self.text_hidden, self.blank).is_empty() {
-                top = top.child(self.go_live_button(ui, cx));
-            }
+            // Always shown (a disappearing button reads as broken); the
+            // engaged outline says whether a hold is actually active.
+            let held_here =
+                !vp_core::media::hold_names(frozen, self.text_hidden, self.blank).is_empty();
+            top = top.child(self.go_live_button(ui, cx, held_here));
+            // No second monitor needed: this tab IS the live output. The
+            // button below pops the same slide onto a real projector window
+            // for rooms that have one.
+            top = top.child(btn(
+                ui,
+                cx,
+                "↗ open window",
+                self.projector_window.is_some(),
+                |this, _, _, cx| {
+                    this.open_projector(cx, false);
+                },
+            ));
             if self.clock_overlay {
                 top = top.child(div().flex_1()).child(label(
                     ui,

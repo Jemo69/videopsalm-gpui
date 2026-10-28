@@ -519,8 +519,20 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
 
 /// Font families for the Font ribbon group (system names only; nothing is
 /// bundled — GPUI falls back when a family is missing).
-pub fn font_families() -> [&'static str; 4] {
-    ["Sans", "Serif", "Mono", "Candara"]
+/// Lyric font families: real Windows families, verified present on the
+/// operator's machine (WI-026) — no aliases that resolve unpredictably.
+/// Worship default is Verdana (highly legible projected sans).
+pub fn font_families() -> [&'static str; 8] {
+    [
+        "Verdana",
+        "Arial",
+        "Tahoma",
+        "Trebuchet MS",
+        "Georgia",
+        "Times New Roman",
+        "Calibri",
+        "Segoe UI",
+    ]
 }
 
 /// The vertical command strip beside the slide list, in the original's exact
@@ -619,7 +631,7 @@ impl BibleSearch {
 /// Read by the font-safety test; see the note on `APP_GLYPHS` in main.rs.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const FONT_SAFE_GLYPHS: &str =
-    "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕⬌▪▫✳❀";
+    "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕↑↓▾↗▦✖…•⬌▪▫✳❀";
 
 /// Chapter counts for the 66-book Protestant canon, indexed by
 /// 1-based book number (Genesis .. Revelation). Plain factual data backing
@@ -713,7 +725,11 @@ pub fn slide_verse_id(header: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn d_font() -> String {
-    "Sans".into()
+    "Verdana".into()
+}
+
+fn d_font_size() -> f32 {
+    44.0
 }
 
 fn d_align() -> String {
@@ -760,6 +776,9 @@ pub struct LayoutPrefs {
     /// layout files keep loading).
     #[serde(default = "d_font")]
     pub font_family: String,
+    /// Projector lyric base size in px (WI-026); pre-WI-026 files load 44.
+    #[serde(default = "d_font_size")]
+    pub font_size: f32,
     #[serde(default)]
     pub bold: bool,
     #[serde(default)]
@@ -839,6 +858,7 @@ impl Default for LayoutPrefs {
             bg_kind: "color".to_string(),
             bg_fit: d_bg_fit(),
             font_family: d_font(),
+            font_size: d_font_size(),
             bold: false,
             italic: false,
             underline: false,
@@ -1012,10 +1032,16 @@ mod tests {
     }
 
     #[test]
-    fn font_families_have_system_defaults() {
+    fn font_families_are_real_installed_windows_families() {
         let fams = font_families();
-        assert!(fams.contains(&"Sans"));
-        assert!(fams.len() >= 3);
+        // No generic aliases: every entry names a family verified present
+        // on the operator's machine (WI-026).
+        for alias in ["Sans", "Serif", "Mono"] {
+            assert!(!fams.contains(&alias), "alias {alias} must not ship as a font");
+        }
+        assert!(fams.contains(&"Verdana"));
+        assert!(fams.contains(&"Arial"));
+        assert!(fams.len() >= 6);
     }
 
     #[test]
@@ -1441,7 +1467,8 @@ mod tests {
             "show_abbrev":true,"show_number":true,"show_chords_proj":false,
             "clock_overlay":false,"bg_kind":"color"}"#;
         let p = LayoutPrefs::from_json(old).expect("old layout must still load");
-        assert_eq!(p.font_family, "Sans");
+        assert_eq!(p.font_family, "Verdana");
+        assert_eq!(p.font_size, 44.0);
         assert_eq!(p.align, "center");
         assert_eq!(p.transition, "none");
         assert!(!p.bold && !p.italic && !p.underline);
