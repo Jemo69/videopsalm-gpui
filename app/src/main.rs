@@ -465,6 +465,9 @@ pub(crate) struct Root {
     scroll_agenda: ScrollHandle,
     scroll_songs: ScrollHandle,
     scroll_books: ScrollHandle,
+    /// Songbook group list (WI-033): capped in its own scroller so a long
+    /// book list can never squeeze the songs list to zero height.
+    scroll_songbooks: ScrollHandle,
     scroll_slides: ScrollHandle,
     scroll_shortcuts: ScrollHandle,
     /// Bible keyword-hit list (R-6): every hit renders inside a bounded
@@ -744,6 +747,7 @@ impl Root {
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
+            scroll_songbooks: ScrollHandle::new(),
             scroll_slides: ScrollHandle::new(),
             scroll_shortcuts: ScrollHandle::new(),
             scroll_bible_hits: ScrollHandle::new(),
@@ -1953,12 +1957,51 @@ impl Root {
         cx.notify();
     }
 
+    /// Close the projector window from inside the app. The fullscreen room
+    /// screen has no title bar to dismiss, so this is the way back
+    /// (Alt+F4 on the window itself also works). Closing a window the OS
+    /// already closed is a quiet no-op.
+    fn close_projector(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.projector_window {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            self.projector_window = None;
+            self.projector_on = false;
+            self.set_status(cx, "Projector window closed.");
+        } else {
+            self.set_status(cx, "No projector window open.");
+        }
+        cx.notify();
+    }
+
     pub(crate) fn set_status(&mut self, cx: &mut Context<Self>, msg: impl Into<String>) {
         self.status = msg.into();
         cx.notify();
     }
 
     // ------------------------------------------------------------- search
+
+/// Indices of `songs` shown for an empty query: the scoped songbook if one
+/// is picked, minus excluded books (WI-031: the old code listed every
+/// song regardless, so grouping by book silently did nothing).
+fn scope_song_indices(
+    songs: &[Song],
+    scope: Option<&str>,
+    excluded: &HashSet<String>,
+) -> Vec<usize> {
+    songs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            if let Some(book) = scope {
+                if s.songbook_id != book {
+                    return false;
+                }
+            }
+            !excluded.contains(&s.songbook_id)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
 
     fn refresh_search(&mut self, query: &str, cx: &mut Context<Self>) {
         let scope = self.songbook_filter.clone().map(|s| vec![s]);
@@ -1980,21 +2023,11 @@ impl Root {
                     // No text: list everything in scope, not everything,
                     // period — otherwise clicking a songbook (grouping) and
                     // the exclude switches silently do nothing (WI-031).
-                    let scope = self.songbook_filter.clone();
-                    self.results = self
-                        .songs
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| {
-                            if let Some(book) = scope.as_deref() {
-                                if s.songbook_id != book {
-                                    return false;
-                                }
-                            }
-                            !self.excluded_books.contains(&s.songbook_id)
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
+                    self.results = Self::scope_song_indices(
+                        &self.songs,
+                        self.songbook_filter.as_deref(),
+                        &self.excluded_books,
+                    );
                 }
                 if self.sort_by_number {
                     let songs = &self.songs;
@@ -3939,7 +3972,7 @@ impl Root {
             .gap_2()
             .items_center()
             .p(px(6.))
-            .child(div().text_size(px(16.)).child(self.t("app_title")))
+            .child(div().text_size(px(16.)).child(format!("{} v{}", self.t("app_title"), env!("CARGO_PKG_VERSION"))))
             .child(btn(
                 ui,
                 cx,
@@ -4865,7 +4898,28 @@ impl Root {
             if self.show_scope_grid {
                 kids.push(self.search_scope_panel(ui, cx));
             }
-            kids.extend(self.songbook_rows(ui, cx));
+            // The book groups live in their own capped scroller (WI-033):
+            // with many songbooks the fixed rows used to eat the whole
+            // panel and squeeze the songs list to zero height — now the
+            // groups scroll in ~5 rows and the songs always keep space.
+            kids.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .min_h_0()
+                            .id("scroll:songbooks")
+                            .max_h(px(150.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_songbooks)
+                            .children(self.songbook_rows(ui, cx)),
+                    ),
+            );
             kids.extend(self.songs_browser(ui, cx));
         } else {
             kids.push(row(vec![
@@ -6288,9 +6342,9 @@ impl Root {
     /// blank (base screen) all clear at once and the room sees live lyrics
     /// again. Shield is left alone on purpose — it locks browsing, not the
     /// picture. No-op with a quiet status line when nothing is engaged.
-    /// Go live means ON SCREEN: clear every hold, then make sure the
-    /// projector window is open (focused if it already is). A single
-    /// press is the whole Sunday-morning gesture; the in-window Projector
+    /// Go live means ON THE BIG SCREEN: clear every hold, re-project the
+    /// current selection, and open the projector FULLSCREEN (borderless).
+    /// One press is the whole Sunday gesture. The in-window Projector
     /// tab always works with no second monitor at all.
     fn go_live(&mut self, cx: &mut Context<Root>) {
         let left =
@@ -6306,7 +6360,7 @@ impl Root {
         // Go live means the LIVE selection: re-project it (an edit made
         // while frozen only lands when the operator says so — here).
         self.push_projection(cx);
-        self.open_projector(cx, false);
+        self.open_projector(cx, true);
         // open_projector reports its own failures — only overwrite its
         // status line when we actually have a window to show.
         if self.projector_window.is_some() {
@@ -6676,17 +6730,11 @@ impl Root {
                             this.open_projector(cx, false);
                         },
                     ),
-                    btn(
-                        ui,
-                        cx,
-                        "↗ Open second screen",
-                        self.projector_window.is_some(),
-                        |this, _, _, cx| {
-                            this.open_projector(cx, true);
-                        },
-                    ),
                     btn(ui, cx, "↗ fullscreen toggle", false, |this, _, _, cx| {
                         this.toggle_projector_fullscreen(cx);
+                    }),
+                    btn(ui, cx, "✖ Close projector", self.projector_window.is_none(), |this, _, _, cx| {
+                        this.close_projector(cx);
                     }),
                 ]),
                 // B-12: Single-click monitor switcher
@@ -7058,20 +7106,9 @@ impl Root {
                 !vp_core::media::hold_names(frozen, self.text_hidden, self.blank).is_empty();
             top = top.child(self.go_live_button(ui, cx, held_here));
             // No second monitor needed: this tab IS the live output. The
-            // button below pops the same slide onto a real projector window
-            // for rooms that have one.
-            // Fullscreen, borderless, for the congregation — with no
-            // title bar to dismiss. The windowed twin above stays the
-            // private test screen.
-            top = top.child(btn(
-                ui,
-                cx,
-                "↗ Open second screen",
-                self.projector_window.is_some(),
-                |this, _, _, cx| {
-                    this.open_projector(cx, true);
-                },
-            ));
+            // room screen opens from the topbar Go-live button (project +
+            // fullscreen in one press); this tab keeps the live chips and
+            // the private test controls only.
             if self.clock_overlay {
                 top = top.child(div().flex_1()).child(label(
                     ui,
@@ -7267,6 +7304,35 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_song(id: &str, book: &str) -> Song {
+        Song {
+            id: id.to_string(),
+            title: id.to_string(),
+            songbook_id: book.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_query_lists_only_the_scoped_songbook() {
+        // Grouping by songbook: clicking a book must narrow the list to it.
+        let songs = vec![
+            test_song("a1", "book-a"),
+            test_song("a2", "book-a"),
+            test_song("b1", "book-b"),
+        ];
+        let none = HashSet::new();
+        assert_eq!(Root::scope_song_indices(&songs, Some("book-a"), &none), vec![0, 1]);
+        assert_eq!(Root::scope_song_indices(&songs, Some("book-b"), &none), vec![2]);
+        // No scope: everything (the old show-everything default).
+        assert_eq!(Root::scope_song_indices(&songs, None, &none), vec![0, 1, 2]);
+        // Excluded books stay out even with no query and no scope.
+        let excluded: HashSet<String> = ["book-b".to_string()].into_iter().collect();
+        assert_eq!(Root::scope_song_indices(&songs, None, &excluded), vec![0, 1]);
+        // Scope + exclusion combine by intersection.
+        assert_eq!(Root::scope_song_indices(&songs, Some("book-b"), &excluded), Vec::<usize>::new());
+    }
 
     #[test]
     fn engaged_command_draws_the_orange_outline() {
