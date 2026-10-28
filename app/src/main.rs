@@ -650,7 +650,7 @@ impl Root {
         let mut this = Root {
             focus: cx.focus_handle(),
             mode: Mode::Control,
-            theme_id: "dark".into(),
+            theme_id: "light".into(),
             lang: "en".into(),
             locales,
             status: "Ready.".into(),
@@ -3670,7 +3670,7 @@ pub(crate) fn btn(
     };
     let mut d = div()
         .px_2()
-        .py(px(3.))
+        .py(px(2.))
         .rounded_sm()
         .bg(if shield { SHIELD_ARMED } else { ui.panel })
         .text_color(if shield { ink_on(SHIELD_ARMED) } else { ui.fg })
