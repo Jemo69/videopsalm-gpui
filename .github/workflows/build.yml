@@ -1,8 +1,10 @@
 name: Build
 
 # Tests on every push/PR. Platform packages are built on version tags
-# (v*) and attached to the GitHub release; a manual dispatch can
-# (re)attach them to an existing release.
+# (v*) and attached straight to the GitHub release (no Actions artifacts:
+# the account artifact quota is shared and small; release assets are not
+# counted against it). A manual dispatch can (re)attach them to an
+# existing release.
 on:
   push:
     branches: [ main, cleanroom-port ]
@@ -36,10 +38,12 @@ jobs:
       - run: npm test
 
   package-linux:
-    name: Package (Linux x64)
+    name: Package + upload (Linux x64)
     runs-on: ubuntu-latest
     needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,16 +54,23 @@ jobs:
       - run: npm run package
       - run: zip -qr -1 videopsalm-linux-x64.zip videopsalm-linux-x64
         working-directory: release-pkg
-      - uses: actions/upload-artifact@v4
-        with:
-          name: videopsalm-linux-x64
-          path: release-pkg/videopsalm-linux-x64.zip
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG_NAME" \
+              --notes "Clean-room VideoPsalm 1.29 port (Electron). Offline-first worship presenter."
+          fi
+          gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber release-pkg/videopsalm-linux-x64.zip
 
   package-win:
-    name: Package (Windows x64)
+    name: Package + upload (Windows x64)
     runs-on: windows-latest
     needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,30 +80,12 @@ jobs:
       - run: npm ci
       - run: npm run package:win
       - run: Compress-Archive -Path release-pkg/videopsalm-win32-x64 -DestinationPath release-pkg/videopsalm-win32-x64.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: videopsalm-win32-x64
-          path: release-pkg/videopsalm-win32-x64.zip
-
-  release:
-    name: Attach to GitHub release
-    runs-on: ubuntu-latest
-    needs: [package-linux, package-win]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist-assets
-          merge-multiple: true
-      - run: ls -la dist-assets
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG_NAME" \
+          if (!(gh release view "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" 2>$null)) {
+            gh release create "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" `
+              --title "$env:TAG_NAME" `
               --notes "Clean-room VideoPsalm 1.29 port (Electron). Offline-first worship presenter."
-          fi
-          gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist-assets/*
+          }
+          gh release upload "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" --clobber release-pkg/videopsalm-win32-x64.zip

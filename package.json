@@ -7,7 +7,7 @@
   "scripts": {
     "install:app": "npm install",
     "build": "tsc -p tsconfig.json && npm run bundle:renderer && npm run copy:html",
-    "copy:html": "mkdir -p dist/src/renderer && cp src/renderer/*.html dist/src/renderer/ && cp src/renderer/*.css dist/src/renderer/ 2>/dev/null; true",
+    "copy:html": "node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('dist/src/renderer',{recursive:true});for(const f of fs.readdirSync('src/renderer')){if(/\\.(html|css)$/.test(f))fs.copyFileSync(p.join('src/renderer',f),p.join('dist/src/renderer',f))}\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "start": "npm run build && dbus-run-session -- npx electron dist/src/main.js --disable-gpu --disable-software-rasterizer",
