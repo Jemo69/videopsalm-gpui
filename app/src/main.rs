@@ -6129,12 +6129,12 @@ impl Root {
 // Boot
 // ---------------------------------------------------------------------------
 
-/// No console window on Windows: this is a GUI app, and a stray console
-/// on every launch reads as broken. `--smoke` reattaches to the parent
-/// console first, so headless checks still print when run from a terminal.
+// No console window on Windows: this is a GUI app, and a stray console
+// on every launch reads as broken. `--smoke` reattaches to the parent
+// console first, so headless checks still print when run from a terminal.
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn AttachConsole(dwProcessId: u32) -> i32;
 }
 
