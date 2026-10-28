@@ -5457,6 +5457,12 @@ impl Root {
         let n = slides.len();
         let cur = self.projector_slide_index(self.live_slides().len());
         let chord = self.proj_chord_line();
+        // Room mirror: the same background stack the projector renders, so
+        // an assigned image shows here too (WI-023) — not just on a second
+        // window the operator may not have.
+        let snap = self.projector_snapshot(cx);
+        let bg = projector_window::apply_luminosity_color(snap.bg_color, snap.luminosity);
+        let fg = snap.fg_color;
         let body: Div = match slides.get(cur) {
             Some(s) => {
                 let header = s.header.clone();
@@ -5468,7 +5474,7 @@ impl Root {
                         rich_view::rich_line(
                             x,
                             24.0,
-                            rgb(0xFFFFFF),
+                            fg,
                             &self.font_family,
                             self.bold,
                             self.italic,
@@ -5481,7 +5487,7 @@ impl Root {
                     lines.push(rich_view::rich_line(
                         "",
                         24.0,
-                        rgb(0xFFFFFF),
+                        fg,
                         &self.font_family,
                         self.bold,
                         self.italic,
@@ -5489,11 +5495,30 @@ impl Root {
                         true,
                     ));
                 }
-                let mut col = div()
+                let mut col = div().flex().flex_col().flex_1().relative().child(
+                    div().absolute().size_full().child(
+                        projector_window::background_layer(
+                            bg,
+                            snap.bg_kind,
+                            snap.bg_file.as_ref(),
+                        ),
+                    ),
+                );
+                if matches!(snap.bg_kind, BackgroundKind::Image) && snap.luminosity != 0.0 {
+                    let (lighten, alpha) = vp_core::media::luminosity_overlay(snap.luminosity);
+                    let shade = if lighten { 1.0 } else { 0.0 };
+                    col = col.child(div().absolute().size_full().bg(Rgba {
+                        r: shade,
+                        g: shade,
+                        b: shade,
+                        a: alpha,
+                    }));
+                }
+                let mut content = div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .bg(rgb(0x000000))
                     .p(px(10.))
                     .child(
                         div().flex().flex_row().child(div().flex_1()).child(
@@ -5504,7 +5529,8 @@ impl Root {
                         ),
                     );
                 if let Some(c) = chord {
-                    col = col.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
+                    content =
+                        content.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
                 }
                 let mut text_col = div().flex().flex_col().gap_1().flex_1();
                 text_col = match self.valign {
@@ -5520,14 +5546,14 @@ impl Root {
                 for l in lines {
                     text_col = text_col.child(l);
                 }
-                col.child(text_col).child(
+                col.child(content.child(text_col).child(
                     div().flex().flex_row().justify_center().child(
                         div()
                             .text_size(px(13.))
                             .text_color(hex("#BBBBBB"))
                             .child(footer),
                     ),
-                )
+                ))
             }
             None => div()
                 .flex_1()
