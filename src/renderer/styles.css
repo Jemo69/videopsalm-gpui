@@ -287,6 +287,19 @@ kbd { background: var(--badge-bg); border: 1px solid var(--border); border-botto
    the original spaces it for the same reason. */
 #tool-strip .tool-gap { display: block; height: 14px; border-bottom: 1px solid var(--border); margin: 4px 2px; }
 
+/* Markdown-lite note formatting (lyrics editor rich text). Inline spans
+   inherit the slide colour, so they read on light panels, the black
+   preview and the projector alike. */
+.rl-b { font-weight: bold; }
+.rl-i { font-style: italic; }
+.rl-u { text-decoration: underline; }
+.rl-s { text-decoration: line-through; }
+.rl-h1, .rl-h2 { display: block; font-weight: 800; margin: 0.1em 0; }
+.rl-h1 { font-size: 1.28em; }
+.rl-h2 { font-size: 1.12em; }
+.rl-li { display: list-item; list-style: disc inside; margin-left: 1em; }
+.rl-li.num { list-style: decimal inside; }
+.editor-tools .rich-sep { display: inline-block; width: 1px; align-self: stretch; background: var(--border); margin: 0 0.2em; }
 /* An engaged presentation command gets the orange rounded-rect OUTLINE with
    the background left alone (B-30, OBSERVATIONS §6 — same token as GPUI
    ENGAGED). The old accent fill read as a different, wrong treatment. */

@@ -447,7 +447,17 @@
         <button id="lyrics-insert-b" title="Insert a bridge tag at the start of the current block">B</button>
         <button id="lyrics-wrap-chord" title="Wrap the selected text as a ChordPro chord, e.g. [C]">[chord]</button>
         <button id="lyrics-split" title="Split the current block into two slides (blank line)">split slide</button>
-        <span class="hint">V1/C/B line = verse label · blank = slide break inside a labelled verse, new verse otherwise · [C] = chord</span>
+        <span class="rich-sep" aria-hidden="true"></span>
+        <button id="lyrics-bold" title="Bold the selected text (**…**)" aria-label="Bold">B</button>
+        <button id="lyrics-italic" title="Italicise the selected text (*…*)" aria-label="Italic">I</button>
+        <button id="lyrics-underline" title="Underline the selected text (__…__)" aria-label="Underline">U</button>
+        <button id="lyrics-strike" title="Strikethrough the selected text (~~…~~)" aria-label="Strikethrough">S</button>
+        <button id="lyrics-h1" title="Toggle a big heading on the selected lines (# …)">H1</button>
+        <button id="lyrics-h2" title="Toggle a smaller heading on the selected lines (## …)">H2</button>
+        <button id="lyrics-bullet" title="Toggle a bullet list on the selected lines (- …)">• list</button>
+        <button id="lyrics-bigger" title="Bigger slide text (slide font size +2)">A+</button>
+        <button id="lyrics-smaller" title="Smaller slide text (slide font size −2)">A−</button>
+        <span class="hint">V1/C/B line = verse label · blank = slide break inside a labelled verse, new verse otherwise · [C] = chord · **bold** *italic* __underline__ ~~strike~~ # H1 ## H2 - list</span>
       </div>
       <textarea id="lyrics-editor" rows="6" placeholder="Lyrics / ChordPro editor — edits apply live"></textarea>
       <!--

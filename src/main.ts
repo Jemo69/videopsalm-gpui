@@ -17,6 +17,7 @@ import {
   type VideopsalmFolderScan,
 } from "./core/videopsalm";
 import { readVideopsalmAgenda, writeVideopsalmAgenda } from "./core/videopsalmAgenda";
+import { copyMediaIntoFolder } from "./core/mediaImport";
 import type { Agenda, Song } from "./core/schemas";
 
 // Single-instance lock: worship presentation software must never run two competing projector instances
@@ -372,6 +373,33 @@ function registerIpc(): void {
   });
   // The same export, by path — the test hook (`window.vpTest`) and scripts.
   ipcMain.handle("vp:save-videopsalm-agenda-path", (_e, file: string) => saveVideopsalmAgendaFile(file));
+  // Native media import: pick files in the OS explorer and file them
+  // straight into the VideoPsalm document folder (Images/ or Videos/).
+  // Falls back to the app's own Media dir when no document folder is open.
+  ipcMain.handle("vp:import-media", async (_e, folder?: string) => {
+    const res = await dialog.showOpenDialog({
+      title: "Import media into the VideoPsalm folder",
+      filters: [
+        { name: "Images", extensions: ["jpg", "jpeg", "jpe", "jfif", "png", "bmp", "tif", "tiff", "tga", "gif"] },
+        { name: "Videos", extensions: ["asf", "avi", "mp4", "m4v", "mkv", "mov", "mpg", "mpeg", "wmv", "webm", "ogv"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+      properties: ["openFile", "multiSelections"],
+    });
+    if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true };
+    let docs = (folder ?? "").trim();
+    try {
+      if (!docs || !fs.statSync(docs).isDirectory()) docs = "";
+    } catch {
+      docs = "";
+    }
+    if (!docs) {
+      docs = path.join(app.getPath("userData"), "Media");
+      fs.mkdirSync(docs, { recursive: true });
+    }
+    const { copied, errors } = copyMediaIntoFolder(res.filePaths, docs);
+    return { ok: true, copied, errors, folder: docs };
+  });
   ipcMain.handle("vp:import-sample-data", () => {
     const dir = dataDir();
     const songs = JSON.parse(fs.readFileSync(path.join(dir, "songs.sample.json"), "utf8")) as import("./core/schemas").Song[];

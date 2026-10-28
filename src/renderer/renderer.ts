@@ -19,6 +19,7 @@ import {
 } from "../core/lyrics-document.js";
 import type { Prefs } from "../core/prefs.js";
 import { defaultPrefs, sanitizePrefs } from "../core/prefs.js";
+import { prefixLines, renderRichLine, wrapSelection } from "../core/richtext.js";
 
 function el<T extends HTMLElement>(id: string): T {
   const n = document.getElementById(id);
@@ -849,7 +850,9 @@ function refTextOf(ref?: AgendaItem["ref"]): string {
   return ref.url ?? ref.file ?? ref.songId ?? ref.text ?? "";
 }
 function chordSpans(line: string): string {
-  return escapeHtml(line).replace(/\[([^\]]+)\]/g, '<span class="chord">[$1]</span>');
+  // Escape first (song files are untrusted), then the Markdown-lite subset,
+  // then chords — brackets are not special to the subset, so [C] survives.
+  return renderRichLine(escapeHtml(line)).replace(/\[([^\]]+)\]/g, '<span class="chord">[$1]</span>');
 }
 function bodyInner(bodyText: string, bilingual: boolean): string {
   const paras = bodyText.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p.length > 0);
@@ -1992,6 +1995,40 @@ el<HTMLButtonElement>("lyrics-split").addEventListener("click", () => {
     ta.selectionStart = ta.selectionEnd = start + 2;
   });
 });
+/** Wrap the editor selection in a Markdown-lite marker (B/I/U/S). */
+function richWrap(before: string, after: string): void {
+  transformLyricsEditor((ta) => {
+    const r = wrapSelection(ta.value, ta.selectionStart, ta.selectionEnd, before, after);
+    ta.value = r.text;
+    ta.selectionStart = r.cursorStart;
+    ta.selectionEnd = r.cursorEnd;
+  });
+}
+/** Toggle a line-prefix marker (headings, bullets) over the selection. */
+function richPrefix(prefix: string): void {
+  transformLyricsEditor((ta) => {
+    const r = prefixLines(ta.value, ta.selectionStart, ta.selectionEnd, prefix);
+    ta.value = r.text;
+    ta.selectionStart = r.cursorStart;
+    ta.selectionEnd = r.cursorEnd;
+  });
+}
+el<HTMLButtonElement>("lyrics-bold").addEventListener("click", () => richWrap("**", "**"));
+el<HTMLButtonElement>("lyrics-italic").addEventListener("click", () => richWrap("*", "*"));
+el<HTMLButtonElement>("lyrics-underline").addEventListener("click", () => richWrap("__", "__"));
+el<HTMLButtonElement>("lyrics-strike").addEventListener("click", () => richWrap("~~", "~~"));
+el<HTMLButtonElement>("lyrics-h1").addEventListener("click", () => richPrefix("# "));
+el<HTMLButtonElement>("lyrics-h2").addEventListener("click", () => richPrefix("## "));
+el<HTMLButtonElement>("lyrics-bullet").addEventListener("click", () => richPrefix("- "));
+/** Slide font size steppers (the vendor's A˄/A˅): whole-slide size, live. */
+function stepSlideFont(delta: number): void {
+  const next = Math.max(12, Math.min(200, (parseInt(prefs.styleSize, 10) || 48) + delta));
+  prefs.styleSize = String(next);
+  savePrefs();
+  applyPrefsToDom();
+}
+el<HTMLButtonElement>("lyrics-bigger").addEventListener("click", () => stepSlideFont(2));
+el<HTMLButtonElement>("lyrics-smaller").addEventListener("click", () => stepSlideFont(-2));
 el<HTMLInputElement>("transpose-steps").addEventListener("input", () => renderSongPreview());
 el<HTMLSelectElement>("chord-notation").addEventListener("change", () => renderSongPreview());
 function renderSongPreview(): void {
@@ -3248,7 +3285,54 @@ function mountMediaGalleriesNow(): void {
     getRange: previewRange, setRange: (r) => { if (selectedItemId) cutRanges.set(selectedItemId, r); },
     afterChange: () => { void refreshFilmstrip(); },
     hint: setHint,
+    importBrowse: () => { void importMediaViaPicker(); },
   });
+}
+
+/** Native import flow: OS picker → files copied into the VideoPsalm folder
+ *  (Images/Videos) → one agenda item each → galleries rescanned. The typed
+ *  path box stays for direct references; this is the original's flow. */
+async function importMediaViaPicker(): Promise<void> {
+  let res: {
+    ok?: boolean; canceled?: boolean;
+    copied?: { path: string; kind: string }[];
+    errors?: string[]; folder?: string;
+  };
+  try {
+    res = (await bridge().importMedia(prefs.videopsalmFolder)) as typeof res;
+  } catch (e) {
+    setHint(`Import media: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (!res || res.canceled) return;
+  for (const item of res.copied ?? []) {
+    const kind = item.kind === "video" ? "Video" : "Image";
+    agenda.items.push({
+      id: `item-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`,
+      kind: kind as "Video" | "Image",
+      title: fileBase(item.path),
+      ref: { file: item.path },
+      flowType: "Manual",
+    });
+  }
+  if ((res.copied ?? []).length) {
+    agendaDirty = true;
+    paintDirty();
+    await bridge().setAgenda(agenda);
+    await refreshAgenda();
+  }
+  // Rescan so the new files appear in the galleries right away.
+  if (prefs.videopsalmFolder) {
+    try {
+      const scan = (await bridge().scanVideopsalmFolder(prefs.videopsalmFolder)) as VpFolderResult;
+      if (scan.folder) await applyVpFolderResult(scan, false);
+    } catch { /* scan failure already hinted elsewhere */ }
+  }
+  const n = res.copied?.length ?? 0;
+  setHint(
+    `Imported ${n} file(s) into ${res.folder ?? "the media folder"}` +
+    ((res.errors?.length ?? 0) ? ` (${res.errors!.length} skipped: ${res.errors!.join("; ")})` : "")
+  );
 }
 
 // ---------- init ----------

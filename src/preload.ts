@@ -15,6 +15,8 @@ const api = {
   saveVideopsalmAgenda: () => ipcRenderer.invoke("vp:save-videopsalm-agenda"),
   /** The same export by path (test hook + scripts; no dialog). */
   saveVideopsalmAgendaPath: (file: string) => ipcRenderer.invoke("vp:save-videopsalm-agenda-path", file),
+  /** OS file picker + copy into the VideoPsalm folder (native import flow). */
+  importMedia: (folder: string) => ipcRenderer.invoke("vp:import-media", folder),
   /** True only when launched with `--test-hook` (exposes `window.vpTest`). */
   /* True only when launched with `--test-hook` (exposes `window.vpTest`).
      Resolved in main: Chromium does not reliably propagate custom

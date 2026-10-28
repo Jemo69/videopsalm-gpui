@@ -639,7 +639,8 @@ export function saveSongToVideopsalm(file: string, song: Song, edits?: string[])
 const IMAGE_EXT = /\.(?:jpe?g|jpe|jfif|png|bmp|tiff?|tga|gif)$/i;
 const VIDEO_EXT = /\.(?:asf|avi|divx|dv|flv|gxf|iso|m1v|m2v|m2t|m2ts|m4v|mkv|mov|mp2|mp4|mpe?g|mpeg[1-4]|mpg|mts|mxf|nuv|ogg|ogm|ogv|ogx|ps|rec|rm|rmvb|tod|ts|vob|wmv|webm)$/i;
 
-function kindOfMedia(file: string): "image" | "video" | null {
+/** Media kind by extension (shared with the import flow in mediaImport.ts). */
+export function kindOfMedia(file: string): "image" | "video" | null {
   if (IMAGE_EXT.test(file)) return "image";
   if (VIDEO_EXT.test(file)) return "video";
   return null;

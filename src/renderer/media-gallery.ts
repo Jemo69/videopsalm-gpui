@@ -165,6 +165,9 @@ export function parseRange(text: string): { startMs: number | null; endMs: numbe
 export interface GalleryHooks {
   listMedia(): GalleryEntry[];
   importFile(path: string, kind: GalleryKind): void;
+  /** OS file picker + copy into the VideoPsalm folder (native import flow).
+   *  Absent = typed-path import only (the hook is wired by the host). */
+  importBrowse?: () => void;
   deleteEntry(id: string): void;
   /** `path === null` = black sentinel: unassign back to color/Base (§7). */
   assignBackground(kind: GalleryKind, path: string | null): void;
@@ -379,6 +382,13 @@ export function mountGalleries(root: HTMLElement, hooks: GalleryHooks): void {
   const imp = h("div");
   imp.className = "gallery-row";
   imp.appendChild(h("span", "Import file path:"));
+  if (hooks.importBrowse) {
+    const browse = document.createElement("button");
+    browse.textContent = "Browse…";
+    browse.title = "Pick files in the OS explorer; they are copied into your VideoPsalm folder (Images/Videos)";
+    browse.addEventListener("click", () => hooks.importBrowse?.());
+    imp.appendChild(browse);
+  }
   const pathInput = document.createElement("input");
   pathInput.size = 30;
   pathInput.placeholder = "/path/to/file…";
@@ -510,6 +520,8 @@ export interface GalleryCtx {
   setKeepOpen(b: boolean): void;
   getCollapsed(): boolean;
   setCollapsed(b: boolean): void;
+  /** OS picker import (optional; typed-path import always works). */
+  importBrowse?: () => void;
   getTransport(): Transport;
   doTransport(action: "play" | "pause" | "stop" | "toggle"): void;
   getRange(): CutRange;
@@ -564,6 +576,7 @@ export function mountMediaGalleries(root: HTMLElement, ctx: GalleryCtx): void {
     importFile: (path, kind) => {
       ctx.addItem(kind === "video" ? "Video" : "Image", fileCaption(path), path);
     },
+    importBrowse: ctx.importBrowse,
     deleteEntry: (id) => ctx.removeItem(id),
     assignBackground: (kind, path) => ctx.setBg(path === null ? "color" : assignedBgKind(kind), path ?? ""),
     assignedPath: () => {

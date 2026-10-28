@@ -13,6 +13,8 @@ interface VpBridge {
   saveVideopsalmAgenda(): Promise<unknown>;
   /** The same export by path (test hook + scripts; no dialog). */
   saveVideopsalmAgendaPath(file: string): Promise<unknown>;
+  /** OS file picker + copy into the VideoPsalm folder (native import flow). */
+  importMedia(folder: string): Promise<unknown>;
   /** Open an agenda JSON file by path (test hook + scripts; no dialog). */
   openAgendaPath(file: string): Promise<unknown>;
   /** True only when launched with `--test-hook` (exposes `window.vpTest`). */
