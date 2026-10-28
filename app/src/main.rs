@@ -72,7 +72,7 @@ use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
 };
-use vp_core::schema::{Align, VAlign, Versification};
+use vp_core::schema::{Align, BgFit, VAlign, Versification};
 use vp_core::slides::{Slide, compute_item_slides_templated};
 use vp_core::themes::{self, Theme};
 use vp_core::verse_splitter::SplitOptions;
@@ -336,6 +336,10 @@ pub(crate) struct Root {
     fg_override: Option<String>,
     style_level: String,
     pub(crate) bg_kind: BackgroundKind,
+    /// Background image fit (WI-025): cover crops to fill, contain shows
+    /// the whole image. Global like alignment; the vendor offers no such
+    /// knob (its backgrounds always cover), so cover is the default.
+    pub(crate) bg_fit: BgFit,
     show_abbrev: bool,
     show_number: bool,
     show_chords_proj: bool,
@@ -648,6 +652,7 @@ impl Root {
             fg_override: None,
             style_level: "Song".into(),
             bg_kind: BackgroundKind::Color,
+            bg_fit: BgFit::Cover,
             show_abbrev: true,
             show_number: true,
             show_chords_proj: false,
@@ -885,6 +890,7 @@ impl Root {
                 BackgroundKind::VideoLoop => "videoLoop".to_string(),
                 BackgroundKind::Camera => "camera".to_string(),
             },
+            bg_fit: self.bg_fit.literal().to_string(),
         }
     }
 
@@ -930,6 +936,7 @@ impl Root {
             "camera" => BackgroundKind::Camera,
             _ => BackgroundKind::Color,
         };
+        self.bg_fit = BgFit::from_literal(p.bg_fit.as_str()).unwrap_or_default();
         if !p.font_family.trim().is_empty() {
             self.font_family = p.font_family.clone();
         }
@@ -1763,6 +1770,7 @@ impl Root {
         ProjectorSnapshot {
             bg_kind: self.bg_kind,
             bg_file: self.bg_file.clone(),
+            bg_fit: self.bg_fit,
             bg_color: hex(theme.projection_bg),
             fg_color: self
                 .fg_override
@@ -5551,7 +5559,24 @@ impl Root {
         let snap = self.projector_snapshot(cx);
         let bg = projector_window::apply_luminosity_color(snap.bg_color, snap.luminosity);
         let fg = snap.fg_color;
-        let body: Div = match slides.get(cur) {
+        let body: Div = if snap.frame.black {
+            // Base screen: mirror the sacred black exactly, plus a tiny
+            // operator note (control-side only, never projected).
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .bg(rgb(0x000000))
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(hex("#BBBBBB"))
+                        .child("(base screen — press ● Go live)".to_string()),
+                )
+        } else {
+            match slides.get(cur) {
             Some(s) => {
                 let header = s.header.clone();
                 let footer = s.footer.clone();
@@ -5589,6 +5614,7 @@ impl Root {
                             bg,
                             snap.bg_kind,
                             snap.bg_file.as_ref(),
+                            snap.bg_fit,
                         ),
                     ),
                 );
@@ -5602,25 +5628,26 @@ impl Root {
                         a: alpha,
                     }));
                 }
-                let mut content = div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .p(px(10.))
-                    .child(
-                        div().flex().flex_row().child(div().flex_1()).child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(hex("#BBBBBB"))
-                                .child(header),
-                        ),
-                    );
-                if let Some(c) = chord {
-                    content =
-                        content.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
-                }
-                let mut text_col = div().flex().flex_col().gap_1().flex_1();
+                let content = if snap.frame.text {
+                    let mut content = div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .p(px(10.))
+                        .child(
+                            div().flex().flex_row().child(div().flex_1()).child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(hex("#BBBBBB"))
+                                    .child(header),
+                            ),
+                        );
+                    if let Some(c) = chord {
+                        content =
+                            content.child(div().text_size(px(13.)).text_color(ui.accent).child(c));
+                    }
+                    let mut text_col = div().flex().flex_col().gap_1().flex_1();
                 text_col = match self.valign {
                     VAlign::Top => text_col.justify_start(),
                     VAlign::Center => text_col.justify_center(),
@@ -5634,14 +5661,35 @@ impl Root {
                 for l in lines {
                     text_col = text_col.child(l);
                 }
-                col.child(content.child(text_col).child(
-                    div().flex().flex_row().justify_center().child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(hex("#BBBBBB"))
-                            .child(footer),
-                    ),
-                ))
+                    content.child(text_col).child(
+                        div().flex().flex_row().justify_center().child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(hex("#BBBBBB"))
+                                .child(footer),
+                        ),
+                    )
+                } else {
+                    // Ctrl+T: the background keeps playing natively while the
+                    // lyrics are off — image/video show with or without text.
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .p(px(10.))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(hex("#BBBBBB"))
+                                .child(
+                                    "(lyrics hidden — background keeps playing)".to_string(),
+                                ),
+                        )
+                };
+                col.child(content)
             }
             None => div()
                 .flex_1()
@@ -5656,6 +5704,7 @@ impl Root {
                         .text_color(hex("#BBBBBB"))
                         .child("(nothing live — press Show)"),
                 ),
+            }
         };
         let count = if n == 0 {
             "0/0".to_string()

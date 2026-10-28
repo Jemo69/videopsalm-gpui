@@ -724,6 +724,10 @@ fn d_transition() -> String {
     "none".into()
 }
 
+fn d_bg_fit() -> String {
+    "cover".into()
+}
+
 /// Panel-layout + style prefs persisted to `videopsalm-layout.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayoutPrefs {
@@ -745,6 +749,9 @@ pub struct LayoutPrefs {
     pub show_chords_proj: bool,
     pub clock_overlay: bool,
     pub bg_kind: String,
+    /// Background image fit literal (`"cover"`/`"contain"`, default cover).
+    #[serde(default = "d_bg_fit")]
+    pub bg_fit: String,
     /// Assigned background file path (`""` = none). Restored only when
     /// the file still exists — never a ghost path (WI-024).
     #[serde(default)]
@@ -830,6 +837,7 @@ impl Default for LayoutPrefs {
             show_chords_proj: false,
             clock_overlay: false,
             bg_kind: "color".to_string(),
+            bg_fit: d_bg_fit(),
             font_family: d_font(),
             bold: false,
             italic: false,

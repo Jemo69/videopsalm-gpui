@@ -734,6 +734,38 @@ impl VAlign {
     }
 }
 
+/// How a background image fills the screen (WI-025): `Cover` crops to fill
+/// every pixel (the vendor's only background mode — RESEARCH §1.1), `Contain`
+/// shows the whole image with bars (the vendor's *slideshow* mode, offered
+/// here for backgrounds on user request). Never stretched: the vendor never
+/// stretches, and neither do we.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BgFit {
+    #[default]
+    Cover,
+    Contain,
+}
+
+impl BgFit {
+    /// Canonical literals in declaration order.
+    pub const ALL: [BgFit; 2] = [BgFit::Cover, BgFit::Contain];
+    /// [`BgFit::ALL`] as wire literals, same indices.
+    pub const LITERALS: [&'static str; 2] = ["cover", "contain"];
+    /// Canonical literal for this fit.
+    pub fn literal(&self) -> &'static str {
+        BgFit::LITERALS[BgFit::ALL.iter().position(|a| a == self).unwrap()]
+    }
+    /// Parse a wire/prefs literal; unknown (or empty) means the default.
+    pub fn from_literal(s: &str) -> Option<BgFit> {
+        match s {
+            "cover" => Some(BgFit::Cover),
+            "contain" => Some(BgFit::Contain),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Margins {
     #[serde(default)]
@@ -1306,6 +1338,17 @@ mod tests {
         assert_eq!(refs[1].versification, Versification::Ru);
         assert_eq!(refs[2].versification, Versification::Fr);
         assert_eq!(serde_json::to_value(&refs).unwrap(), f["bibleRefs"]);
+    }
+
+    #[test]
+    fn bgfit_literals_round_trip_with_cover_default() {
+        assert_eq!(BgFit::LITERALS, ["cover", "contain"]);
+        assert_eq!(BgFit::default(), BgFit::Cover);
+        for v in BgFit::ALL {
+            assert_eq!(BgFit::from_literal(v.literal()), Some(v));
+        }
+        assert_eq!(BgFit::from_literal("stretch"), None);
+        assert_eq!(BgFit::from_literal(""), None);
     }
 
     #[test]

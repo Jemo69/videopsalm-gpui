@@ -41,7 +41,7 @@ use gpui::{
 };
 use vp_core::geometry::PercentRect;
 use vp_core::media::ProjectorFrame;
-use vp_core::schema::{Align, BackgroundKind, ItemKind, ItemRef, VAlign};
+use vp_core::schema::{Align, BackgroundKind, BgFit, ItemKind, ItemRef, VAlign};
 
 use crate::rich_view;
 use crate::{Root, UI};
@@ -53,6 +53,8 @@ use crate::{Root, UI};
 pub struct ProjectorSnapshot {
     pub bg_kind: BackgroundKind,
     pub bg_file: Option<PathBuf>,
+    /// Background image fit (WI-025): cover crops, contain letterboxes.
+    pub bg_fit: BgFit,
     pub bg_color: Rgba,
     pub fg_color: Rgba,
     pub luminosity: f32,
@@ -155,13 +157,22 @@ fn frac(v: f32) -> DefiniteLength {
 ///   decoder is not a poster frame. It renders a dark tile with the file's
 ///   caption; the no-decoder note lives in the control window (`background_note`),
 ///   never on the sacred screen.
-pub(crate) fn background_layer(bg: Rgba, kind: BackgroundKind, file: Option<&PathBuf>) -> Div {
+pub(crate) fn background_layer(
+    bg: Rgba,
+    kind: BackgroundKind,
+    file: Option<&PathBuf>,
+    fit: BgFit,
+) -> Div {
+    let object_fit = match fit {
+        BgFit::Cover => ObjectFit::Cover,
+        BgFit::Contain => ObjectFit::Contain,
+    };
     match (kind, file) {
         (BackgroundKind::Color, _) => div().size_full().bg(bg),
         (BackgroundKind::Image, Some(path)) if path.exists() => div()
             .size_full()
             .bg(bg)
-            .child(img(path.clone()).object_fit(ObjectFit::Cover).size_full()),
+            .child(img(path.clone()).object_fit(object_fit).size_full()),
         (BackgroundKind::Image, Some(path)) => {
             div().size_full().bg(bg).child(missing_note(&format!(
                 "(image background: file not found — {})",
@@ -241,7 +252,7 @@ pub(crate) fn render_snapshot(ui: &UI, snap: &ProjectorSnapshot, target_h: f32) 
         div().size_full().bg(rgb(0x000000))
     } else if !snap.frame.text {
         // Ctrl+T: text gone, background keeps playing (RESEARCH §12.7).
-        background_layer(bg, snap.bg_kind, snap.bg_file.as_ref())
+        background_layer(bg, snap.bg_kind, snap.bg_file.as_ref(), snap.bg_fit)
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
         let fit = vp_core::media::fit_text_factor(snap.lines.len(), 44.0 * scale, fh * target_h);
@@ -298,7 +309,7 @@ pub(crate) fn render_snapshot(ui: &UI, snap: &ProjectorSnapshot, target_h: f32) 
         let mut col =
             div()
                 .size_full()
-                .child(background_layer(bg, snap.bg_kind, snap.bg_file.as_ref()));
+                .child(background_layer(bg, snap.bg_kind, snap.bg_file.as_ref(), snap.bg_fit));
         // Luminosity over image pixels: gpui::img exposes no brightness
         // filter, so grade honestly by compositing — a translucent overlay
         // above the image, below the text. Color backgrounds are already

@@ -44,7 +44,7 @@ use gpui::prelude::*;
 use gpui::{Context, Div, MouseButton, ObjectFit, div, img, px};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
-use vp_core::schema::BackgroundKind;
+use vp_core::schema::{BackgroundKind, BgFit};
 
 use crate::{Root, UI, btn, btn_disabled, label, row, section};
 
@@ -198,6 +198,22 @@ pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Di
             12.,
         ),
     ])];
+    // Image aspect handling (WI-025): cover crops to fill every pixel (the
+    // vendor's only background mode); contain shows the whole image with
+    // bars. Never stretched, like the original.
+    kids.push(row(vec![
+        label(ui, "Background image fit:", 12.),
+        btn(ui, cx, "Cover (crop to fill)", root.bg_fit == BgFit::Cover, |this, _, _, cx| {
+            this.bg_fit = BgFit::Cover;
+            this.persist_layout_quiet();
+            cx.notify();
+        }),
+        btn(ui, cx, "Contain (whole image)", root.bg_fit == BgFit::Contain, |this, _, _, cx| {
+            this.bg_fit = BgFit::Contain;
+            this.persist_layout_quiet();
+            cx.notify();
+        }),
+    ]));
     if let Some(kind) = open {
         kids.push(gallery_panel(root, ui, cx, kind));
         kids.push(import_row(root, ui, cx));
