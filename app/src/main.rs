@@ -1903,13 +1903,19 @@ impl Root {
         // Direct field access, NOT root.read(): we are inside Root's own
         // update here, and any entity read of Root would re-enter the map.
         let presentation = self.presentation.clone();
+        // The operator's chosen display (Settings → projector monitor),
+        // resolved now while we can still read our own fields.
+        let display = cx
+            .displays()
+            .get(self.projector_display)
+            .map(|d| d.id());
         // Deferred past the current update: opening a window builds and
         // first-paints its view synchronously, and that paint must never
         // touch Root (WI-033: the projector reads only the published
         // snapshot). Deferral is belt-and-braces on top of the split.
         crash_log::log_line("projector open requested (deferred past update)");
         cx.defer(move |cx: &mut App| {
-            match projector_window::open_projector_window(cx, presentation, fullscreen) {
+            match projector_window::open_projector_window(cx, presentation, fullscreen, display) {
                 Ok(handle) => {
                     let _ = root.update(cx, |this, cx| {
                         this.projector_window = Some(handle);
@@ -3678,6 +3684,43 @@ pub(crate) fn btn(
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
+/// One-line floating help: dark chip, light text, small.
+struct TooltipLabel(String);
+
+impl Render for TooltipLabel {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .bg(rgb(0x1A1A1A))
+            .text_color(rgb(0xFFFFFF))
+            .text_size(px(12.))
+            .px(px(8.))
+            .py(px(4.))
+            .rounded_sm()
+            .child(self.0.clone())
+    }
+}
+
+/// Button with a hover tooltip (WI-033): compact buttons stay understandable
+/// because the full explanation appears on hover. `tip` is plain operator
+/// language, never an internal key.
+pub(crate) fn btn_tip(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    label: &str,
+    tip: &str,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let text = tip.to_string();
+    let mut d = btn(ui, cx, label, active, f);
+    // `tooltip` lives on `Interactivity`, not `Div`: reach in through the
+    // trait (in scope via the prelude) rather than rebuilding as Stateful.
+    d.interactivity().tooltip(move |_: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(text.clone())).into()
+    });
+    d
+}
+
 /// Greyed-out button: visible but inert. The original greys rows like
 /// Delete with nothing selected instead of hiding them; an inert grey box
 /// reads as "unavailable" where a live-looking button reads as broken.
@@ -5071,10 +5114,11 @@ impl Root {
             .text_size(px(12.))
             .text_color(ui.accent)
             .child("▤ songbooks")
-            .child(btn(
+            .child(btn_tip(
                 ui,
                 cx,
                 "+ Songbook",
+                "Create an empty songbook to group new songs",
                 false,
                 |this, _, _, cx| {
                     this.create_songbook(cx);
@@ -5215,10 +5259,11 @@ impl Root {
             vec![
                 label(ui, &hint, 12.),
                 row_wrap(vec![
-                    btn(
+                    btn_tip(
                         ui,
                         cx,
                         &self.t("abbrev"),
+                        "Show the songbook abbreviation before each title",
                         self.show_abbrev,
                         |this, _, _, cx| {
                             this.show_abbrev = !this.show_abbrev;
@@ -5226,10 +5271,11 @@ impl Root {
                             cx.notify();
                         },
                     ),
-                    btn(
+                    btn_tip(
                         ui,
                         cx,
                         &self.t("numbers"),
+                        "Show the song number (or CCLI id) before each title",
                         self.show_number,
                         |this, _, _, cx| {
                             this.show_number = !this.show_number;
@@ -5254,23 +5300,23 @@ impl Root {
                             cx.notify();
                         },
                     ),
-                    btn(ui, cx, "+Agenda", false, |this, _, _, cx| {
+                    btn_tip(ui, cx, "+Agenda", "Add the selected song to the agenda", false, |this, _, _, cx| {
                         this.add_song_to_agenda(cx);
                     }),
-                    btn(ui, cx, "＋ New song", false, |this, _, _, cx| {
+                    btn_tip(ui, cx, "＋ New", "Create a new song in the selected songbook", false, |this, _, _, cx| {
                         this.create_song(cx);
                     }),
-                    btn(ui, cx, "Import songbook…", false, |this, _, _, cx| {
+                    btn_tip(ui, cx, "＋ Book", "Import a songbook file (.json or .vpc) into the library", false, |this, _, _, cx| {
                         this.import_songbook_file(cx);
                     }),
                     // Pager: wheel scrolls, but nothing on screen says so —
                     // these always move the list (WI-031).
-                    btn(ui, cx, "▲", false, |this, _, _, cx| {
+                    btn_tip(ui, cx, "▲", "Scroll the song list up", false, |this, _, _, cx| {
                         let h = this.scroll_songs.clone();
                         h.scroll_to_item(h.top_item().saturating_sub(8));
                         cx.notify();
                     }),
-                    btn(ui, cx, "▼", false, |this, _, _, cx| {
+                    btn_tip(ui, cx, "▼", "Scroll the song list down", false, |this, _, _, cx| {
                         let h = this.scroll_songs.clone();
                         h.scroll_to_item(h.top_item().saturating_add(8));
                         cx.notify();

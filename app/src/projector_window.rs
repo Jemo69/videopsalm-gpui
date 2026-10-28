@@ -469,8 +469,12 @@ pub(crate) fn open_projector_window(
     cx: &mut App,
     presentation: Entity<PresentationState>,
     fullscreen: bool,
+    display: Option<gpui::DisplayId>,
 ) -> Result<WindowHandle<ProjectorWindow>, String> {
-    let restore = Bounds::centered(None, size(px(1920.), px(1080.)), cx);
+    // Honor the operator's display choice (WI-033 follow-up): the old code
+    // always centered on the primary display, so the monitor buttons were
+    // decoration. `None` (or a vanished display) falls back to primary.
+    let restore = Bounds::centered(display, size(px(1920.), px(1080.)), cx);
     let (window_bounds, titlebar) = if fullscreen {
         // True borderless fullscreen for the congregation: no title bar,
         // no minimize/maximize/close (WI-033 — the operator asked for
