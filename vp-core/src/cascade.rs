@@ -174,7 +174,12 @@ impl Chain {
             ],
             Chain::Images => &[Level::Base, Level::Images, Level::Image],
             Chain::Videos => &[Level::Base, Level::Videos, Level::Video],
-            Chain::PowerPoint => &[Level::Base, Level::PowerPoints, Level::PowerPoint, Level::Slides],
+            Chain::PowerPoint => &[
+                Level::Base,
+                Level::PowerPoints,
+                Level::PowerPoint,
+                Level::Slides,
+            ],
         }
     }
 
@@ -388,10 +393,16 @@ impl Cascade {
     ) -> Provenance<T> {
         for level in chain.levels().iter().rev() {
             if let Some(v) = self.get(*level).and_then(&pick) {
-                return Provenance { value: v, source: Some(*level) };
+                return Provenance {
+                    value: v,
+                    source: Some(*level),
+                };
             }
         }
-        Provenance { value: fallback, source: None }
+        Provenance {
+            value: fallback,
+            source: None,
+        }
     }
 
     /// Resolve **every** attribute, so the explorer can show the tree with a
@@ -456,12 +467,32 @@ impl Resolved {
             ("Colour", self.color.value.clone(), self.color.source),
             ("Bold", yes_no(self.bold.value), self.bold.source),
             ("Italic", yes_no(self.italic.value), self.italic.source),
-            ("Underline", yes_no(self.underline.value), self.underline.source),
+            (
+                "Underline",
+                yes_no(self.underline.value),
+                self.underline.source,
+            ),
             ("Strike", yes_no(self.strike.value), self.strike.source),
-            ("Vertical align", self.v_align.value.clone(), self.v_align.source),
-            ("Background", self.bg_color.value.clone(), self.bg_color.source),
-            ("Transition", self.transition.value.clone(), self.transition.source),
-            ("Luminosity", fmt_num(self.luminosity.value), self.luminosity.source),
+            (
+                "Vertical align",
+                self.v_align.value.clone(),
+                self.v_align.source,
+            ),
+            (
+                "Background",
+                self.bg_color.value.clone(),
+                self.bg_color.source,
+            ),
+            (
+                "Transition",
+                self.transition.value.clone(),
+                self.transition.source,
+            ),
+            (
+                "Luminosity",
+                fmt_num(self.luminosity.value),
+                self.luminosity.source,
+            ),
         ]
     }
 
@@ -478,9 +509,7 @@ impl Resolved {
                 label: a.label(),
                 value: self.value_of(*a),
                 source: self.source_of(*a),
-                inherited: at_level.is_some_and(|l| {
-                    self.source_of(*a).is_some_and(|s| s != l)
-                }),
+                inherited: at_level.is_some_and(|l| self.source_of(*a).is_some_and(|s| s != l)),
             })
             .collect()
     }
@@ -630,7 +659,11 @@ fn fmt_num(v: f32) -> String {
 }
 
 fn yes_no(v: bool) -> String {
-    if v { "yes".into() } else { "no".into() }
+    if v {
+        "yes".into()
+    } else {
+        "no".into()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -655,7 +688,11 @@ mod tests {
                 "{chain:?} must start at Base"
             );
             // Strictly increasing specificity.
-            let ds: Vec<usize> = chain.levels().iter().map(|l| chain.depth(*l).unwrap()).collect();
+            let ds: Vec<usize> = chain
+                .levels()
+                .iter()
+                .map(|l| chain.depth(*l).unwrap())
+                .collect();
             for w in ds.windows(2) {
                 assert!(w[1] > w[0], "{chain:?} depths must ascend");
             }
@@ -667,7 +704,12 @@ mod tests {
         // The whole point of five chains: a Bible verse must not inherit from
         // the Songbook, and an Image must not inherit from the Bible.
         let songs = Chain::Songs.levels();
-        for other in [Chain::Bibles, Chain::Images, Chain::Videos, Chain::PowerPoint] {
+        for other in [
+            Chain::Bibles,
+            Chain::Images,
+            Chain::Videos,
+            Chain::PowerPoint,
+        ] {
             for l in other.levels() {
                 if *l == Level::Base {
                     continue;
@@ -684,7 +726,13 @@ mod tests {
     fn the_song_chain_is_five_rungs_and_the_bible_chain_seven() {
         assert_eq!(
             Chain::Songs.levels(),
-            &[Level::Base, Level::Songbooks, Level::Songbook, Level::Song, Level::SongVerse]
+            &[
+                Level::Base,
+                Level::Songbooks,
+                Level::Songbook,
+                Level::Song,
+                Level::SongVerse
+            ]
         );
         assert_eq!(
             Chain::Bibles.levels(),
@@ -712,8 +760,20 @@ mod tests {
     #[test]
     fn a_more_specific_level_wins_and_is_reported_as_the_source() {
         let mut casc = c();
-        casc.set(Level::Base, LevelValues { size: Some(40.0), ..LevelValues::empty() });
-        casc.set(Level::Song, LevelValues { size: Some(90.0), ..LevelValues::empty() });
+        casc.set(
+            Level::Base,
+            LevelValues {
+                size: Some(40.0),
+                ..LevelValues::empty()
+            },
+        );
+        casc.set(
+            Level::Song,
+            LevelValues {
+                size: Some(90.0),
+                ..LevelValues::empty()
+            },
+        );
 
         let r = casc.resolve(Chain::Songs);
         assert_eq!(r.size.value, 90.0, "the song overrides Base");
@@ -727,8 +787,20 @@ mod tests {
         // This is the distinction the original's badges exist to show: the
         // font came from Base, the size from this song.
         let mut casc = c();
-        casc.set(Level::Base, LevelValues { font: Some("Times".into()), ..LevelValues::empty() });
-        casc.set(Level::Song, LevelValues { size: Some(64.0), ..LevelValues::empty() });
+        casc.set(
+            Level::Base,
+            LevelValues {
+                font: Some("Times".into()),
+                ..LevelValues::empty()
+            },
+        );
+        casc.set(
+            Level::Song,
+            LevelValues {
+                size: Some(64.0),
+                ..LevelValues::empty()
+            },
+        );
 
         let r = casc.resolve(Chain::Songs);
         assert_eq!(r.font.source, Some(Level::Base));
@@ -741,8 +813,20 @@ mod tests {
     #[test]
     fn a_bible_verse_never_inherits_from_the_song_chain() {
         let mut casc = c();
-        casc.set(Level::Songbook, LevelValues { size: Some(20.0), ..LevelValues::empty() });
-        casc.set(Level::Bible, LevelValues { size: Some(55.0), ..LevelValues::empty() });
+        casc.set(
+            Level::Songbook,
+            LevelValues {
+                size: Some(20.0),
+                ..LevelValues::empty()
+            },
+        );
+        casc.set(
+            Level::Bible,
+            LevelValues {
+                size: Some(55.0),
+                ..LevelValues::empty()
+            },
+        );
 
         let bible = casc.resolve(Chain::Bibles);
         assert_eq!(
@@ -755,8 +839,20 @@ mod tests {
     #[test]
     fn an_image_style_never_inherits_the_bible_or_song_values() {
         let mut casc = c();
-        casc.set(Level::Song, LevelValues { color: Some("#ff0000".into()), ..LevelValues::empty() });
-        casc.set(Level::Image, LevelValues { luminosity: Some(-0.5), ..LevelValues::empty() });
+        casc.set(
+            Level::Song,
+            LevelValues {
+                color: Some("#ff0000".into()),
+                ..LevelValues::empty()
+            },
+        );
+        casc.set(
+            Level::Image,
+            LevelValues {
+                luminosity: Some(-0.5),
+                ..LevelValues::empty()
+            },
+        );
 
         let img = casc.resolve(Chain::Images);
         assert_ne!(
@@ -769,8 +865,20 @@ mod tests {
     #[test]
     fn reset_removes_the_override_so_the_value_re_inherits() {
         let mut casc = c();
-        casc.set(Level::Base, LevelValues { size: Some(50.0), ..LevelValues::empty() });
-        casc.set(Level::Song, LevelValues { size: Some(80.0), ..LevelValues::empty() });
+        casc.set(
+            Level::Base,
+            LevelValues {
+                size: Some(50.0),
+                ..LevelValues::empty()
+            },
+        );
+        casc.set(
+            Level::Song,
+            LevelValues {
+                size: Some(80.0),
+                ..LevelValues::empty()
+            },
+        );
         assert_eq!(casc.resolve(Chain::Songs).size.value, 80.0);
 
         casc.reset(Level::Song);
@@ -805,8 +913,20 @@ mod tests {
     #[test]
     fn a_cascade_round_trips_through_json() {
         let mut casc = c();
-        casc.set(Level::Song, LevelValues { size: Some(77.0), ..LevelValues::empty() });
-        casc.set(Level::Base, LevelValues { font: Some("Candara".into()), ..LevelValues::empty() });
+        casc.set(
+            Level::Song,
+            LevelValues {
+                size: Some(77.0),
+                ..LevelValues::empty()
+            },
+        );
+        casc.set(
+            Level::Base,
+            LevelValues {
+                font: Some("Candara".into()),
+                ..LevelValues::empty()
+            },
+        );
         let back: Cascade = serde_json::from_str(&serde_json::to_string(&casc).unwrap()).unwrap();
         assert_eq!(back, casc);
         assert_eq!(back.resolve(Chain::Songs).size.source, Some(Level::Song));
@@ -832,7 +952,13 @@ mod tests {
     #[test]
     fn the_explorer_rows_carry_a_source_for_every_attribute() {
         let mut casc = c();
-        casc.set(Level::Base, LevelValues { font: Some("Times".into()), ..LevelValues::empty() });
+        casc.set(
+            Level::Base,
+            LevelValues {
+                font: Some("Times".into()),
+                ..LevelValues::empty()
+            },
+        );
         let r = casc.resolve(Chain::Songs);
         for (label, _value, _src) in r.rows() {
             assert!(!label.is_empty());

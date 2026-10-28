@@ -15,16 +15,13 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, GlobalElementId,
-    IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point,
-    HighlightStyle, SharedString, StyledText, UTF16Selection, Window, actions, div, hsla, prelude::*, px,
-    rgb, rgba,
+    HighlightStyle, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, SharedString, StyledText, UTF16Selection, Window, actions, div,
+    hsla, prelude::*, px, rgb, rgba,
 };
-
 
 actions!(
     doc_field,
@@ -146,7 +143,9 @@ impl DocField {
     }
 
     fn emit(&self, cx: &mut Context<Self>) {
-        cx.emit(DocChanged { text: self.content.to_string() });
+        cx.emit(DocChanged {
+            text: self.content.to_string(),
+        });
     }
 
     /// Start offset of the line containing `offset`.
@@ -279,7 +278,12 @@ impl DocField {
 
     /// `Ctrl+Backspace` — delete the word (plus preceding whitespace) back
     /// to the previous word start, or the selection if one is active.
-    fn delete_word_back(&mut self, _: &DocDeleteWordBack, _window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_back(
+        &mut self,
+        _: &DocDeleteWordBack,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.sel.is_empty() {
             self.replace(self.sel.clone(), "");
         } else {
@@ -296,7 +300,12 @@ impl DocField {
     }
 
     /// `Ctrl+Delete` — mirror of [`Self::delete_word_back`], forward.
-    fn delete_word_fwd(&mut self, _: &DocDeleteWordFwd, _window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_fwd(
+        &mut self,
+        _: &DocDeleteWordFwd,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.sel.is_empty() {
             self.replace(self.sel.clone(), "");
         } else {
@@ -324,12 +333,22 @@ impl DocField {
     }
 
     /// `Ctrl+Shift+Left/Right` — extend the selection by word.
-    fn select_word_left(&mut self, _: &DocSelectWordLeft, _window: &mut Window, cx: &mut Context<Self>) {
+    fn select_word_left(
+        &mut self,
+        _: &DocSelectWordLeft,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let target = prev_word_start(&self.content, self.cursor_offset());
         self.move_to(target, true, cx);
     }
 
-    fn select_word_right(&mut self, _: &DocSelectWordRight, _window: &mut Window, cx: &mut Context<Self>) {
+    fn select_word_right(
+        &mut self,
+        _: &DocSelectWordRight,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let target = next_word_end(&self.content, self.cursor_offset());
         self.move_to(target, true, cx);
     }
@@ -434,7 +453,11 @@ impl DocField {
         window.focus(&self.focus_handle);
         // Double-click selects the word, triple-click the whole line — the
         // two selection gestures singers reach for first.
-        match (event.modifiers.shift, event.click_count, self.hit_test(event.position)) {
+        match (
+            event.modifiers.shift,
+            event.click_count,
+            self.hit_test(event.position),
+        ) {
             (false, 3.., Some(pos)) => {
                 let start = self.line_start(pos);
                 let mut end = self.line_end(pos);
@@ -480,8 +503,15 @@ impl DocField {
     /// Drag-select: while the left button is held, mouse moves extend the
     /// selection from the press anchor (needs `is_selecting`, cleared on
     /// release *anywhere*, hence the `on_mouse_up_out` binding below).
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_selecting && let Some(pos) = self.hit_test(event.position) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_selecting
+            && let Some(pos) = self.hit_test(event.position)
+        {
             self.move_to(pos, true, cx);
         }
     }
@@ -549,7 +579,11 @@ fn prev_boundary(s: &str, at: usize) -> usize {
     if at == 0 {
         return 0;
     }
-    s[..at].grapheme_indices(true).next_back().map(|(i, _)| i).unwrap_or(0)
+    s[..at]
+        .grapheme_indices(true)
+        .next_back()
+        .map(|(i, _)| i)
+        .unwrap_or(0)
 }
 
 /// A word character for lyrics editing: letters and digits (Unicode-aware,
@@ -750,7 +784,6 @@ impl EntityInputHandler for DocField {
         None
     }
 
-
     fn character_index_for_point(
         &mut self,
         position: Point<Pixels>,
@@ -809,7 +842,11 @@ impl Render for DocField {
             .p(px(8.))
             .rounded_sm()
             .border_2()
-            .border_color(if focused { rgb(0x2A5DB0) } else { rgb(0xCCCCCC) })
+            .border_color(if focused {
+                rgb(0x2A5DB0)
+            } else {
+                rgb(0xCCCCCC)
+            })
             .bg(rgb(0xFFFFFF))
             // Hardcoded dark ink: the document surface is white in every
             // theme, so inheriting the theme foreground would put near-white
@@ -822,104 +859,103 @@ impl Render for DocField {
             // Each authored line is its own div, and a blank line stays a real
             // blank line — that gap *is* the slide boundary, so collapsing it
             // would hide the structure from the operator.
-            .children(
-                if empty {
-                    vec![
-                        div()
-                            .text_color(hsla(0., 0., 0., 0.4))
-                            .child(if focused {
-                                format!("| {placeholder}")
-                            } else {
-                                placeholder.to_string()
-                            }),
-                    ]
+            .children(if empty {
+                vec![div().text_color(hsla(0., 0., 0., 0.4)).child(if focused {
+                    format!("| {placeholder}")
                 } else {
-                    content
-                        .split('\n')
-                        .enumerate()
-                        .map(|(i, line)| {
-                            let start = line_start_of(content.as_str(), i);
-                            let end = start + line.len();
-                            // A line lights up when the selection merely touches it;
-                            // the exact character range paints via StyledText below.
-                            // (Whole-line-only highlighting made partial drags
-                            // invisible — the "selection doesn't work" report.)
-                            let overlaps = !sel.is_empty() && sel.start < end && start < sel.end;
-                            let fully_covered =
-                                !sel.is_empty() && sel.start <= start && end <= sel.end;
-                            let cursor_on_line = focused && sel.is_empty() && cursor >= start && cursor <= end;
-                            // SCREENSHOT-1.29-LAYOUT.md: "The tag is rendered with a
-                            // coloured highlight box (`Verse 1` on a pink/red background).
-                            // That is how the editor distinguishes a verse tag from a lyric line."
-                            let is_tag = crate::lyrics_doc::is_tag_line(line);
-                            let sel_run: Option<std::ops::Range<usize>> = if overlaps && !line.is_empty() {
-                                let lo = floor_boundary(line, sel.start.saturating_sub(start).min(line.len()));
-                                let hi = floor_boundary(line, sel.end.saturating_sub(start).min(line.len()));
-                                if lo < hi { Some(lo..hi) } else { None }
-                            } else {
-                                None
-                            };
-                            let display_line = if cursor_on_line {
-                                let local = (cursor - start).min(line.len());
-                                let safe = line
-                                    .char_indices()
-                                    .map(|(b, _)| b)
-                                    .find(|&b| b >= local)
-                                    .unwrap_or(line.len());
-                                format!("{}|{}", &line[..safe], &line[safe..])
-                            } else if line.is_empty() {
-                                " ".to_string()
-                            } else {
-                                line.to_string()
-                            };
-                            let content: AnyElement = match sel_run {
-                                Some(range) => StyledText::new(line.to_string())
-                                    .with_highlights([(
-                                        range,
-                                        HighlightStyle {
-                                            background_color: Some(hsla(217., 0.85, 0.62, 0.4)),
-                                            ..Default::default()
-                                        },
-                                    )])
-                                    .into_any_element(),
-                                None => display_line.into_any_element(),
-                            };
-                            let d = if is_tag {
-                                div()
-                                    .h(px(22.))
-                                    .w_full()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .px_1()
-                                            .rounded_sm()
-                                            .bg(rgb(0xFCE7F3))
-                                            .border_1()
-                                            .border_color(rgb(0xF472B6))
-                                            .text_color(rgb(0x9D174D))
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(content),
-                                    )
-                            } else {
-                                div().h(px(20.)).w_full().child(content)
-                            };
-                            // A blank line has no characters to highlight, so a
-                            // selection crossing it lights the whole row.
-                            let row_selected =
-                                fully_covered || (line.is_empty() && overlaps);
-                            if row_selected {
-                                d.bg(rgba(0x3311ff30))
-                            } else if cursor_on_line {
-                                d.bg(rgba(0x2a5db014))
-                            } else {
-                                d
-                            }
-                        })
-                        .collect()
-                },
-            );
+                    placeholder.to_string()
+                })]
+            } else {
+                content
+                    .split('\n')
+                    .enumerate()
+                    .map(|(i, line)| {
+                        let start = line_start_of(content.as_str(), i);
+                        let end = start + line.len();
+                        // A line lights up when the selection merely touches it;
+                        // the exact character range paints via StyledText below.
+                        // (Whole-line-only highlighting made partial drags
+                        // invisible — the "selection doesn't work" report.)
+                        let overlaps = !sel.is_empty() && sel.start < end && start < sel.end;
+                        let fully_covered = !sel.is_empty() && sel.start <= start && end <= sel.end;
+                        let cursor_on_line =
+                            focused && sel.is_empty() && cursor >= start && cursor <= end;
+                        // SCREENSHOT-1.29-LAYOUT.md: "The tag is rendered with a
+                        // coloured highlight box (`Verse 1` on a pink/red background).
+                        // That is how the editor distinguishes a verse tag from a lyric line."
+                        let is_tag = crate::lyrics_doc::is_tag_line(line);
+                        let sel_run: Option<std::ops::Range<usize>> = if overlaps
+                            && !line.is_empty()
+                        {
+                            let lo = floor_boundary(
+                                line,
+                                sel.start.saturating_sub(start).min(line.len()),
+                            );
+                            let hi =
+                                floor_boundary(line, sel.end.saturating_sub(start).min(line.len()));
+                            if lo < hi { Some(lo..hi) } else { None }
+                        } else {
+                            None
+                        };
+                        let display_line = if cursor_on_line {
+                            let local = (cursor - start).min(line.len());
+                            let safe = line
+                                .char_indices()
+                                .map(|(b, _)| b)
+                                .find(|&b| b >= local)
+                                .unwrap_or(line.len());
+                            format!("{}|{}", &line[..safe], &line[safe..])
+                        } else if line.is_empty() {
+                            " ".to_string()
+                        } else {
+                            line.to_string()
+                        };
+                        let content: AnyElement = match sel_run {
+                            Some(range) => StyledText::new(line.to_string())
+                                .with_highlights([(
+                                    range,
+                                    HighlightStyle {
+                                        background_color: Some(hsla(217., 0.85, 0.62, 0.4)),
+                                        ..Default::default()
+                                    },
+                                )])
+                                .into_any_element(),
+                            None => display_line.into_any_element(),
+                        };
+                        let d = if is_tag {
+                            div()
+                                .h(px(22.))
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .bg(rgb(0xFCE7F3))
+                                        .border_1()
+                                        .border_color(rgb(0xF472B6))
+                                        .text_color(rgb(0x9D174D))
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(content),
+                                )
+                        } else {
+                            div().h(px(20.)).w_full().child(content)
+                        };
+                        // A blank line has no characters to highlight, so a
+                        // selection crossing it lights the whole row.
+                        let row_selected = fully_covered || (line.is_empty() && overlaps);
+                        if row_selected {
+                            d.bg(rgba(0x3311ff30))
+                        } else if cursor_on_line {
+                            d.bg(rgba(0x2a5db014))
+                        } else {
+                            d
+                        }
+                    })
+                    .collect()
+            });
         // Paint-phase bridge: without it the surface renders but never
         // receives typed text (see [`DocSurface`]).
         DocSurface::new(cx.entity(), surface.into_any_element())

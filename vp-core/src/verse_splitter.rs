@@ -51,10 +51,7 @@ pub fn split_verse(lines: &[String], opts: &SplitOptions) -> Vec<Vec<String>> {
     fix_orphan_word(&mut wrapped);
 
     // 3. Chunk into slides.
-    let mut slides: Vec<Vec<String>> = wrapped
-        .chunks(max_lines)
-        .map(|c| c.to_vec())
-        .collect();
+    let mut slides: Vec<Vec<String>> = wrapped.chunks(max_lines).map(|c| c.to_vec()).collect();
 
     // 4. Orphan-slide fix: a trailing single-line slide borrows the last
     //    line of the previous slide.

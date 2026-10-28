@@ -13,7 +13,9 @@
 
 use crate::bible_data::BibleLibrary;
 use crate::native_archive::{build_zip_entries, read_vpac_entries};
-use crate::native_songbook::{member_text, parse as parse_native, song_from_projection, stringify as stringify_native, VpJson};
+use crate::native_songbook::{
+    member_text, parse as parse_native, song_from_projection, stringify as stringify_native, VpJson,
+};
 use crate::schema::{Agenda, AgendaItem, BibleRef, FlowType, ItemKind, ItemRef, Song};
 use std::collections::HashMap;
 use std::path::Path;
@@ -79,9 +81,16 @@ fn split_projection_name(name: &str) -> Option<(String, String)> {
 /// `source_name` is the plan file name (used for the agenda title and the
 /// default media folder); blobs the plan carries are extracted into
 /// `extract_dir`.
-pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Result<PlanImport, String> {
+pub fn read_plan_bytes(
+    data: &[u8],
+    source_name: &str,
+    extract_dir: &Path,
+) -> Result<PlanImport, String> {
     let entries = read_vpac_entries(data, crate::native_archive::VPC_PASSWORD)?;
-    let by_name: HashMap<&str, &[u8]> = entries.iter().map(|e| (e.name.as_str(), e.data.as_slice())).collect();
+    let by_name: HashMap<&str, &[u8]> = entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.data.as_slice()))
+        .collect();
     let mut warnings = Vec::new();
     let mut media = Vec::new();
     let mut songs = Vec::new();
@@ -91,8 +100,16 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
         if file_name.is_empty() {
             return None;
         }
-        let base = file_name.replace('\\', "/").rsplit('/').next().unwrap_or(file_name).to_string();
-        by_name.get(file_name).copied().or_else(|| by_name.get(base.as_str()).copied())
+        let base = file_name
+            .replace('\\', "/")
+            .rsplit('/')
+            .next()
+            .unwrap_or(file_name)
+            .to_string();
+        by_name
+            .get(file_name)
+            .copied()
+            .or_else(|| by_name.get(base.as_str()).copied())
     };
 
     let mut counter = 0u32;
@@ -131,14 +148,27 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                 let book_abbrev = match book_data {
                     Some(b) => {
                         let s = std::str::from_utf8(b).unwrap_or("");
-                        parse_native(s).ok().map(|book| {
-                            let ab = member_text(&book, "Abbreviation");
-                            if ab.is_empty() { member_text(&book, "Text") } else { ab }
-                        }).unwrap_or_default()
+                        parse_native(s)
+                            .ok()
+                            .map(|book| {
+                                let ab = member_text(&book, "Abbreviation");
+                                if ab.is_empty() {
+                                    member_text(&book, "Text")
+                                } else {
+                                    ab
+                                }
+                            })
+                            .unwrap_or_default()
                     }
                     None => String::new(),
                 };
-                match song_from_projection(&projection, "", &book_guid, &book_abbrev, counter as usize) {
+                match song_from_projection(
+                    &projection,
+                    "",
+                    &book_guid,
+                    &book_abbrev,
+                    counter as usize,
+                ) {
                     Some(mut song) => {
                         // The plan carries a *snapshot*: it must never become
                         // a write-back target.
@@ -148,7 +178,11 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                         Some(AgendaItem {
                             id: format!("vpagd-{counter}-{index}"),
                             kind: ItemKind::Song,
-                            title: if title.is_empty() { book_name.clone() } else { title },
+                            title: if title.is_empty() {
+                                book_name.clone()
+                            } else {
+                                title
+                            },
                             reference: ItemRef::Song { song_id: id },
                             flow_type: FlowType::Manual,
                             auto_advance_ms: None,
@@ -159,7 +193,11 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                 }
             }
             ItemKind::BibleVerses => {
-                let verses: Vec<VpJson> = projection.get("Verses").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+                let verses: Vec<VpJson> = projection
+                    .get("Verses")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.to_vec())
+                    .unwrap_or_default();
                 let ctx_text = |prefix: &str| -> String {
                     let key = format!("{prefix}_{index}.json");
                     match by_name.get(key.as_str()) {
@@ -167,12 +205,18 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                         None => String::new(),
                     }
                 };
-                let book_name = parse_native(&ctx_text("BibleBook")).ok().map(|b| member_text(&b, "Text")).unwrap_or_default();
+                let book_name = parse_native(&ctx_text("BibleBook"))
+                    .ok()
+                    .map(|b| member_text(&b, "Text"))
+                    .unwrap_or_default();
                 let chapter_number: u32 = parse_native(&ctx_text("BibleChapter"))
                     .ok()
                     .map(|c| member_text(&c, "ID").parse().unwrap_or(0))
                     .unwrap_or(0);
-                let translation_id = parse_native(&ctx_text("Bible")).ok().map(|b| member_text(&b, "Text")).unwrap_or_default();
+                let translation_id = parse_native(&ctx_text("Bible"))
+                    .ok()
+                    .map(|b| member_text(&b, "Text"))
+                    .unwrap_or_default();
                 let mut verse_numbers = Vec::new();
                 let mut lines = Vec::new();
                 for verse in &verses {
@@ -182,7 +226,11 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                     }
                     let body = member_text(verse, "Text");
                     if !body.is_empty() {
-                        lines.push(if number > 0 { format!("{number} {body}") } else { body });
+                        lines.push(if number > 0 {
+                            format!("{number} {body}")
+                        } else {
+                            body
+                        });
                     }
                 }
                 let first = verse_numbers.first().copied().unwrap_or(0);
@@ -201,7 +249,9 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                     title.clone()
                 };
                 if book_name.is_empty() {
-                    warnings.push(format!("Bible item {index}: the plan has no book information."));
+                    warnings.push(format!(
+                        "Bible item {index}: the plan has no book information."
+                    ));
                 }
                 Some(AgendaItem {
                     id: format!("vpagd-{counter}-{index}"),
@@ -209,7 +259,11 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                     title: reference,
                     reference: ItemRef::Bible {
                         bible_ref: BibleRef {
-                            translation_id: if translation_id.is_empty() { "sample".to_string() } else { translation_id },
+                            translation_id: if translation_id.is_empty() {
+                                "sample".to_string()
+                            } else {
+                                translation_id
+                            },
                             book: book_name,
                             chapter: chapter_number,
                             verses: verse_numbers,
@@ -224,21 +278,46 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
             ItemKind::WebSite => Some(AgendaItem {
                 id: format!("vpagd-{counter}-{index}"),
                 kind: ItemKind::WebSite,
-                title: if title.is_empty() { member_text(&projection, "Url") } else { title },
-                reference: ItemRef::Url { url: member_text(&projection, "Url") },
+                title: if title.is_empty() {
+                    member_text(&projection, "Url")
+                } else {
+                    title
+                },
+                reference: ItemRef::Url {
+                    url: member_text(&projection, "Url"),
+                },
                 flow_type: FlowType::Manual,
                 auto_advance_ms: None,
                 overrides: Default::default(),
             }),
-            ItemKind::Image | ItemKind::Video | ItemKind::Audio | ItemKind::Pdf
-            | ItemKind::PowerPoint | ItemKind::Word | ItemKind::Excel => {
+            ItemKind::Image
+            | ItemKind::Video
+            | ItemKind::Audio
+            | ItemKind::Pdf
+            | ItemKind::PowerPoint
+            | ItemKind::Word
+            | ItemKind::Excel => {
                 let file_name = member_text(&projection, "FileName");
                 let mut target: Option<String> = None;
                 if let Some(blob) = blob_for(&file_name) {
-                    let base = file_name.replace('\\', "/").rsplit('/').next().unwrap_or(&file_name).to_string();
-                    let safe: String = base.chars().map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c }).collect();
-                    let target_path = extract_dir.join(if safe.is_empty() { "file".to_string() } else { safe });
-                    match std::fs::create_dir_all(extract_dir).and_then(|_| std::fs::write(&target_path, blob)) {
+                    let base = file_name
+                        .replace('\\', "/")
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&file_name)
+                        .to_string();
+                    let safe: String = base
+                        .chars()
+                        .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
+                        .collect();
+                    let target_path = extract_dir.join(if safe.is_empty() {
+                        "file".to_string()
+                    } else {
+                        safe
+                    });
+                    match std::fs::create_dir_all(extract_dir)
+                        .and_then(|_| std::fs::write(&target_path, blob))
+                    {
                         Ok(()) => {
                             let s = target_path.to_string_lossy().into_owned();
                             media.push(s.clone());
@@ -264,13 +343,20 @@ pub fn read_plan_bytes(data: &[u8], source_name: &str, extract_dir: &Path) -> Re
                     id: format!("vpagd-{counter}-{index}"),
                     kind,
                     title: if title.is_empty() {
-                        file_name.replace('\\', "/").rsplit('/').next().unwrap_or("").to_string()
+                        file_name
+                            .replace('\\', "/")
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                            .to_string()
                     } else {
                         title
                     },
                     reference: match target {
                         Some(file) => ItemRef::File { file },
-                        None => ItemRef::Text { text: String::new() },
+                        None => ItemRef::Text {
+                            text: String::new(),
+                        },
                     },
                     flow_type: FlowType::Manual,
                     auto_advance_ms: None,
@@ -327,11 +413,44 @@ fn native_flow_type(flow: FlowType) -> i64 {
 
 /// Canonical English names of the 39 Old Testament books.
 const OLD_TESTAMENT: &[&str] = &[
-    "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy", "Joshua", "Judges", "Ruth",
-    "1 Samuel", "2 Samuel", "1 Kings", "2 Kings", "1 Chronicles", "2 Chronicles", "Ezra",
-    "Nehemiah", "Esther", "Job", "Psalm", "Proverbs", "Ecclesiastes", "Song of Solomon",
-    "Isaiah", "Jeremiah", "Lamentations", "Ezekiel", "Daniel", "Hosea", "Joel", "Amos",
-    "Obadiah", "Jonah", "Micah", "Nahum", "Habakkuk", "Zephaniah", "Haggai", "Zechariah",
+    "Genesis",
+    "Exodus",
+    "Leviticus",
+    "Numbers",
+    "Deuteronomy",
+    "Joshua",
+    "Judges",
+    "Ruth",
+    "1 Samuel",
+    "2 Samuel",
+    "1 Kings",
+    "2 Kings",
+    "1 Chronicles",
+    "2 Chronicles",
+    "Ezra",
+    "Nehemiah",
+    "Esther",
+    "Job",
+    "Psalm",
+    "Proverbs",
+    "Ecclesiastes",
+    "Song of Solomon",
+    "Isaiah",
+    "Jeremiah",
+    "Lamentations",
+    "Ezekiel",
+    "Daniel",
+    "Hosea",
+    "Joel",
+    "Amos",
+    "Obadiah",
+    "Jonah",
+    "Micah",
+    "Nahum",
+    "Habakkuk",
+    "Zephaniah",
+    "Haggai",
+    "Zechariah",
     "Malachi",
 ];
 
@@ -387,7 +506,11 @@ fn song_identity(song: &Song) -> SongIdentity {
                 song.songbook_id.clone()
             }
         });
-    SongIdentity { book_guid, book_name, song_guid }
+    SongIdentity {
+        book_guid,
+        book_name,
+        song_guid,
+    }
 }
 
 /// Map one shared song onto its native projection object.
@@ -409,19 +532,28 @@ pub fn native_song_from_song(song: &Song) -> VpJson {
         obj.push(("Author".to_string(), VpJson::String(authors)));
     }
     if !song.composer.is_empty() {
-        obj.push(("Composer".to_string(), VpJson::String(song.composer.clone())));
+        obj.push((
+            "Composer".to_string(),
+            VpJson::String(song.composer.clone()),
+        ));
     }
     if !song.ccli.is_empty() {
         obj.push(("CCLI".to_string(), VpJson::String(song.ccli.clone())));
     }
     if !song.copyright.is_empty() {
-        obj.push(("Copyright".to_string(), VpJson::String(song.copyright.clone())));
+        obj.push((
+            "Copyright".to_string(),
+            VpJson::String(song.copyright.clone()),
+        ));
     }
     if !song.themes.is_empty() {
         obj.push(("Theme".to_string(), VpJson::String(song.themes.join("\n"))));
     }
     if !song.references.is_empty() {
-        obj.push(("Reference".to_string(), VpJson::String(song.references.join("\n"))));
+        obj.push((
+            "Reference".to_string(),
+            VpJson::String(song.references.join("\n")),
+        ));
     }
     if !song.memo1.is_empty() {
         obj.push(("Memo1".to_string(), VpJson::String(song.memo1.clone())));
@@ -447,18 +579,21 @@ pub fn native_song_from_song(song: &Song) -> VpJson {
         .iter()
         .enumerate()
         .map(|(i, block)| {
-            let tag = block.tag.clone().unwrap_or_else(|| "V".to_string()).to_uppercase();
+            let tag = block
+                .tag
+                .clone()
+                .unwrap_or_else(|| "V".to_string())
+                .to_uppercase();
             let tag_num = tag_number(&tag);
-            let mut verse = vec![(
-                "Text".to_string(),
-                VpJson::String(block.lines.join("\n")),
-            )];
+            let mut verse = vec![("Text".to_string(), VpJson::String(block.lines.join("\n")))];
             if tag_num != 0 {
                 verse.push(("Tag".to_string(), VpJson::Number(tag_num as f64)));
             }
             // The native serializer omits the default verse id (V1 has no
             // `ID`); every other verse keeps its tag id.
-            let tag_id = block.tag_id.unwrap_or(if tag == "V" { i as i32 + 1 } else { 1 });
+            let tag_id = block
+                .tag_id
+                .unwrap_or(if tag == "V" { i as i32 + 1 } else { 1 });
             if !(tag == "V" && tag_id == 1) {
                 verse.push(("ID".to_string(), VpJson::Number(tag_id as f64)));
             }
@@ -532,17 +667,33 @@ pub fn build_plan_entries(
 
     for item in &agenda.items {
         let verse_order_index = match &item.reference {
-            ItemRef::Song { song_id } => songs.get(song_id).and_then(|s| s.verse_order_index).unwrap_or(-1),
+            ItemRef::Song { song_id } => songs
+                .get(song_id)
+                .and_then(|s| s.verse_order_index)
+                .unwrap_or(-1),
             _ => -1,
         };
         properties.push(VpJson::Object(vec![
-            ("FlowType".to_string(), VpJson::Number(native_flow_type(item.flow_type) as f64)),
+            (
+                "FlowType".to_string(),
+                VpJson::Number(native_flow_type(item.flow_type) as f64),
+            ),
             (
                 "AutoAdvance".to_string(),
-                VpJson::Number(if item.auto_advance_ms.unwrap_or(0) > 0 { 1.0 } else { 0.0 }),
+                VpJson::Number(if item.auto_advance_ms.unwrap_or(0) > 0 {
+                    1.0
+                } else {
+                    0.0
+                }),
             ),
-            ("Interval".to_string(), VpJson::Number(item.auto_advance_ms.unwrap_or(0) as f64)),
-            ("VerseOrderIndex".to_string(), VpJson::Number(verse_order_index as f64)),
+            (
+                "Interval".to_string(),
+                VpJson::Number(item.auto_advance_ms.unwrap_or(0) as f64),
+            ),
+            (
+                "VerseOrderIndex".to_string(),
+                VpJson::Number(verse_order_index as f64),
+            ),
         ]));
 
         match &item.kind {
@@ -557,8 +708,14 @@ pub fn build_plan_entries(
                     .and_then(|id| songs.get(id))
                     .cloned()
                     .unwrap_or_else(|| crate::schema::Song {
-                        id: song_id.clone().unwrap_or_else(|| format!("local:{}", item.id)),
-                        title: if item.title.is_empty() { "Untitled".to_string() } else { item.title.clone() },
+                        id: song_id
+                            .clone()
+                            .unwrap_or_else(|| format!("local:{}", item.id)),
+                        title: if item.title.is_empty() {
+                            "Untitled".to_string()
+                        } else {
+                            item.title.clone()
+                        },
                         verses: vec![crate::schema::SongVerse {
                             id: "1".to_string(),
                             lines: vec![item.title.clone()],
@@ -568,17 +725,30 @@ pub fn build_plan_entries(
                         }],
                         ..Default::default()
                     });
-                if song_id.as_ref().map(|id| songs.contains_key(id)).unwrap_or(false) {
+                if song_id
+                    .as_ref()
+                    .map(|id| songs.contains_key(id))
+                    .unwrap_or(false)
+                {
                 } else {
-                    warnings.push(format!("Song \"{}\" is not in the library; written as a placeholder.", item.title));
+                    warnings.push(format!(
+                        "Song \"{}\" is not in the library; written as a placeholder.",
+                        item.title
+                    ));
                 }
                 let id = song_identity(&resolved);
-                entries.push((format!("Song_{n}.json"), json_bytes(&native_song_from_song(&resolved))));
+                entries.push((
+                    format!("Song_{n}.json"),
+                    json_bytes(&native_song_from_song(&resolved)),
+                ));
                 entries.push((
                     format!("SongBook_{n}.json"),
                     json_bytes(&VpJson::Object(vec![
                         ("Text".to_string(), VpJson::String(id.book_name.clone())),
-                        ("Abbreviation".to_string(), VpJson::String(id.book_name.clone())),
+                        (
+                            "Abbreviation".to_string(),
+                            VpJson::String(id.book_name.clone()),
+                        ),
                         ("Guid".to_string(), VpJson::String(id.book_guid)),
                     ])),
                 ));
@@ -617,14 +787,22 @@ pub fn build_plan_entries(
                         VpJson::Number(bible_ref.map(|r| r.chapter).unwrap_or(0) as f64),
                     )])),
                 ));
-                let book = bible_ref.map(|r| r.book.clone()).unwrap_or_else(|| item.title.clone());
+                let book = bible_ref
+                    .map(|r| r.book.clone())
+                    .unwrap_or_else(|| item.title.clone());
                 entries.push((
                     format!("BibleBook_{n}.json"),
-                    json_bytes(&VpJson::Object(vec![("Text".to_string(), VpJson::String(book.clone()))])),
+                    json_bytes(&VpJson::Object(vec![(
+                        "Text".to_string(),
+                        VpJson::String(book.clone()),
+                    )])),
                 ));
                 entries.push((
                     format!("Testament_{n}.json"),
-                    json_bytes(&VpJson::Object(vec![("Text".to_string(), VpJson::String(testament_for(&book).to_string()))])),
+                    json_bytes(&VpJson::Object(vec![(
+                        "Text".to_string(),
+                        VpJson::String(testament_for(&book).to_string()),
+                    )])),
                 ));
                 entries.push((
                     format!("Bible_{n}.json"),
@@ -644,7 +822,10 @@ pub fn build_plan_entries(
                     _ => String::new(),
                 };
                 if item.kind == ItemKind::YouTube && url.is_empty() {
-                    warnings.push(format!("YouTube item \"{}\" has no URL; skipped (no native projection).", item.title));
+                    warnings.push(format!(
+                        "YouTube item \"{}\" has no URL; skipped (no native projection).",
+                        item.title
+                    ));
                     continue;
                 }
                 let n = next("website", &mut counters);
@@ -656,15 +837,25 @@ pub fn build_plan_entries(
                     ])),
                 ));
             }
-            ItemKind::Image | ItemKind::Video | ItemKind::Audio | ItemKind::Pdf
-            | ItemKind::PowerPoint | ItemKind::Word | ItemKind::Excel => {
+            ItemKind::Image
+            | ItemKind::Video
+            | ItemKind::Audio
+            | ItemKind::Pdf
+            | ItemKind::PowerPoint
+            | ItemKind::Word
+            | ItemKind::Excel => {
                 let file = match &item.reference {
                     ItemRef::File { file } => file.clone(),
                     _ => String::new(),
                 };
                 let mut file_name = file.clone();
                 if !file.is_empty() {
-                    let base = file.replace('\\', "/").rsplit('/').next().unwrap_or(&file).to_string();
+                    let base = file
+                        .replace('\\', "/")
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&file)
+                        .to_string();
                     if !embedded.contains(&base) {
                         match std::fs::read(&file) {
                             Ok(data) => {
@@ -672,14 +863,30 @@ pub fn build_plan_entries(
                                 embedded.push(base.clone());
                                 media.push(file.clone());
                             }
-                            Err(_) => warnings.push(format!("Media file not found, linked by path only: {file}")),
+                            Err(_) => warnings
+                                .push(format!("Media file not found, linked by path only: {file}")),
                         }
                     }
-                    if embedded.contains(&file.replace('\\', "/").rsplit('/').next().unwrap_or(&file).to_string()) {
-                        file_name = file.replace('\\', "/").rsplit('/').next().unwrap_or(&file).to_string();
+                    if embedded.contains(
+                        &file
+                            .replace('\\', "/")
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&file)
+                            .to_string(),
+                    ) {
+                        file_name = file
+                            .replace('\\', "/")
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&file)
+                            .to_string();
                     }
                 } else {
-                    warnings.push(format!("{:?} item \"{}\" has no file; written with an empty FileName.", item.kind, item.title));
+                    warnings.push(format!(
+                        "{:?} item \"{}\" has no file; written with an empty FileName.",
+                        item.kind, item.title
+                    ));
                 }
                 let prefix = match item.kind {
                     ItemKind::Image => "image",
@@ -700,7 +907,10 @@ pub fn build_plan_entries(
                 ));
             }
             _ => {
-                warnings.push(format!("{:?} item \"{}\" has no native projection and was skipped.", item.kind, item.title));
+                warnings.push(format!(
+                    "{:?} item \"{}\" has no native projection and was skipped.",
+                    item.kind, item.title
+                ));
             }
         }
     }
@@ -708,11 +918,18 @@ pub fn build_plan_entries(
     entries.extend(blobs);
     entries.push((
         "AgendaItemProperties.json".to_string(),
-        json_bytes(&VpJson::Object(vec![("Items".to_string(), VpJson::Array(properties))])),
+        json_bytes(&VpJson::Object(vec![(
+            "Items".to_string(),
+            VpJson::Array(properties),
+        )])),
     ));
     let mut versioned = vec![("Version.json".to_string(), b"2".to_vec())];
     versioned.extend(entries);
-    PlanEntries { entries: versioned, media, warnings }
+    PlanEntries {
+        entries: versioned,
+        media,
+        warnings,
+    }
 }
 
 /// Write an agenda back to the native `.vpagd` shape (plain multi-entry
@@ -725,7 +942,11 @@ pub fn write_plan_file(
     bibles: &BibleLibrary,
 ) -> Result<PlanEntries, String> {
     let built = build_plan_entries(agenda, songs, bibles);
-    let refs: Vec<(&str, &[u8])> = built.entries.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = built
+        .entries
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
     let zip = build_zip_entries(&refs);
     std::fs::write(file, zip).map_err(|e| format!("Cannot write {file}: {e}"))?;
     Ok(built)
@@ -796,7 +1017,9 @@ mod tests {
                     id: "a1".to_string(),
                     kind: ItemKind::Song,
                     title: "Amazing Grace".to_string(),
-                    reference: ItemRef::Song { song_id: "videopsalm:book-guid-1:song-guid-1".to_string() },
+                    reference: ItemRef::Song {
+                        song_id: "videopsalm:book-guid-1:song-guid-1".to_string(),
+                    },
                     flow_type: FlowType::Manual,
                     auto_advance_ms: None,
                     overrides: Default::default(),
@@ -822,7 +1045,9 @@ mod tests {
                     id: "a3".to_string(),
                     kind: ItemKind::Image,
                     title: "Welcome".to_string(),
-                    reference: ItemRef::File { file: media.to_string() },
+                    reference: ItemRef::File {
+                        file: media.to_string(),
+                    },
                     flow_type: FlowType::Manual,
                     auto_advance_ms: None,
                     overrides: Default::default(),
@@ -831,7 +1056,9 @@ mod tests {
                     id: "a4".to_string(),
                     kind: ItemKind::WebSite,
                     title: "Church".to_string(),
-                    reference: ItemRef::Url { url: "https://example.test".to_string() },
+                    reference: ItemRef::Url {
+                        url: "https://example.test".to_string(),
+                    },
                     flow_type: FlowType::Manual,
                     auto_advance_ms: None,
                     overrides: Default::default(),
@@ -840,7 +1067,9 @@ mod tests {
                     id: "a5".to_string(),
                     kind: ItemKind::Alert,
                     title: "Doors open".to_string(),
-                    reference: ItemRef::Text { text: "Doors open".to_string() },
+                    reference: ItemRef::Text {
+                        text: "Doors open".to_string(),
+                    },
                     flow_type: FlowType::Manual,
                     auto_advance_ms: None,
                     overrides: Default::default(),
@@ -864,10 +1093,15 @@ mod tests {
             names,
             vec![
                 "Version.json",
-                "Song_0.json", "SongBook_0.json",
-                "BibleVerses_0.json", "BibleChapter_0.json", "BibleBook_0.json",
-                "Testament_0.json", "Bible_0.json",
-                "Image_0.json", "WebSite_0.json",
+                "Song_0.json",
+                "SongBook_0.json",
+                "BibleVerses_0.json",
+                "BibleChapter_0.json",
+                "BibleBook_0.json",
+                "Testament_0.json",
+                "Bible_0.json",
+                "Image_0.json",
+                "WebSite_0.json",
                 "welcome.jpg",
                 "AgendaItemProperties.json",
             ],
@@ -893,9 +1127,20 @@ mod tests {
         // Strict external validation: Python's zipfile must accept it.
         let imported = read_plan_bytes(&bytes, "Sunday.vpagd", &dir.join("media")).unwrap();
         let kinds: Vec<ItemKind> = imported.items.iter().map(|i| i.kind).collect();
-        assert_eq!(kinds, vec![ItemKind::Song, ItemKind::BibleVerses, ItemKind::Image, ItemKind::WebSite]);
+        assert_eq!(
+            kinds,
+            vec![
+                ItemKind::Song,
+                ItemKind::BibleVerses,
+                ItemKind::Image,
+                ItemKind::WebSite
+            ]
+        );
         assert_eq!(imported.songs.len(), 1);
-        assert_eq!(imported.songs[0].verses[1].lines, vec!["That saved a wretch like me".to_string()]);
+        assert_eq!(
+            imported.songs[0].verses[1].lines,
+            vec!["That saved a wretch like me".to_string()]
+        );
         assert_eq!(imported.songs[0].verse_order_index, Some(0));
         match &imported.items[1].reference {
             ItemRef::Bible { bible_ref } => {
@@ -914,7 +1159,11 @@ mod tests {
         let bytes = crate::cross_port_fixture("sunday.vpagd");
         let dir = std::env::temp_dir().join(format!("vp-plan-{}-3", std::process::id()));
         let imported = read_plan_bytes(&bytes, "Sunday.vpagd", &dir).unwrap();
-        assert!(imported.items.len() >= 4, "items: {:?}", imported.items.iter().map(|i| &i.kind).collect::<Vec<_>>());
+        assert!(
+            imported.items.len() >= 4,
+            "items: {:?}",
+            imported.items.iter().map(|i| &i.kind).collect::<Vec<_>>()
+        );
         assert!(matches!(imported.items[0].kind, ItemKind::Song));
         assert!(matches!(imported.items[1].kind, ItemKind::BibleVerses));
     }

@@ -101,7 +101,10 @@ pub fn format_template(template: &str, ctx: &SlideTemplateContext) -> String {
     out = out.replace("[SongCopyright]", ctx.copyright.unwrap_or_default());
     out = out.replace("[SongCCLI]", ctx.ccli.unwrap_or_default());
     out = out.replace("[SongBookTitle]", ctx.songbook.unwrap_or_default());
-    out = out.replace("[SongBookAbbreviation]", ctx.songbook_abbrev.unwrap_or_default());
+    out = out.replace(
+        "[SongBookAbbreviation]",
+        ctx.songbook_abbrev.unwrap_or_default(),
+    );
     out = out.replace("[SongVerseRank]", &rank_str);
     out = out.replace("[SongVerseCount]", &count_str);
     out = out.replace("[SongVerseTag]", ctx.verse_tag.unwrap_or_default());
@@ -162,11 +165,17 @@ mod tests {
 
         // VideoPsalm original tokens
         let legacy = "[SongTitle] ([SongBookAbbreviation]) - [SongVerseTag] ([SongVerseRank]/[SongVerseCount])";
-        assert_eq!(format_template(legacy, &ctx), "Amazing Grace (HYM) - Verse 3 (3/5)");
+        assert_eq!(
+            format_template(legacy, &ctx),
+            "Amazing Grace (HYM) - Verse 3 (3/5)"
+        );
 
         // Curly aliases
         let modern = "{title} — {position 3/5} | {author}";
-        assert_eq!(format_template(modern, &ctx), "Amazing Grace — 3/5 | John Newton");
+        assert_eq!(
+            format_template(modern, &ctx),
+            "Amazing Grace — 3/5 | John Newton"
+        );
 
         let pos = "{position}";
         assert_eq!(format_template(pos, &ctx), "3/5");

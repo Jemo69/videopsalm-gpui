@@ -352,7 +352,12 @@ impl AspectRatio {
     /// Look up by vendor label. Accepts the aliases a UI or a hand-written
     /// file is likely to use; unknown labels return `None`.
     pub fn from_label(label: &str) -> Option<AspectRatio> {
-        match label.trim().to_ascii_lowercase().replace([' ', ':'], "x").as_str() {
+        match label
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', ':'], "x")
+            .as_str()
+        {
             "4x3.2" | "5x4" | "4:3.2" => Some(AspectRatio::W5H4),
             "4x3" | "4:3" => Some(AspectRatio::W4H3),
             "16x10" | "16:10" => Some(AspectRatio::W16H10),
@@ -366,8 +371,7 @@ impl AspectRatio {
     /// pixels. 1080 → 16:9 gives 1920.
     pub fn size_with_height(&self, height: i32) -> (i32, i32) {
         let height = height.max(1);
-        let width =
-            ((height as f64 * self.num() as f64 / self.den() as f64).round() as i32).max(1);
+        let width = ((height as f64 * self.num() as f64 / self.den() as f64).round() as i32).max(1);
         (width, height)
     }
 
@@ -375,8 +379,7 @@ impl AspectRatio {
     /// pixels. 1920 → 16:9 gives 1080.
     pub fn size_with_width(&self, width: i32) -> (i32, i32) {
         let width = width.max(1);
-        let height =
-            ((width as f64 * self.den() as f64 / self.num() as f64).round() as i32).max(1);
+        let height = ((width as f64 * self.den() as f64 / self.num() as f64).round() as i32).max(1);
         (width, height)
     }
 
@@ -581,7 +584,11 @@ pub fn letterbox(viewport: Viewport, mode: FitMode) -> Letterbox {
 /// Resolve with an explicit fit mode but a rect that has already been
 /// normalized, for callers batching several rects against one output.
 pub fn resolve_normalized(rect: Rect, viewport: Viewport, mode: FitMode) -> PixelRect {
-    resolve(rect.normalized(mode.canvas_aspect(viewport)), viewport, mode)
+    resolve(
+        rect.normalized(mode.canvas_aspect(viewport)),
+        viewport,
+        mode,
+    )
 }
 
 /// Scale a normalized font size to pixels.
@@ -654,16 +661,39 @@ mod tests {
         let vp = Viewport::from_pixels(1920, 1080);
         let px = resolve(Rect::FULL, vp, FitMode::Letterbox);
         // 16:9 output, square content: 1080×1080 centred, 420 bars each side.
-        assert_eq!(px, PixelRect { x: 420, y: 0, w: 1080, h: 1080 });
-        assert_eq!(letterbox(vp, FitMode::Letterbox),
-                   Letterbox { left: 420, top: 0, right: 420, bottom: 0 });
+        assert_eq!(
+            px,
+            PixelRect {
+                x: 420,
+                y: 0,
+                w: 1080,
+                h: 1080
+            }
+        );
+        assert_eq!(
+            letterbox(vp, FitMode::Letterbox),
+            Letterbox {
+                left: 420,
+                top: 0,
+                right: 420,
+                bottom: 0
+            }
+        );
     }
 
     #[test]
     fn fill_reaches_every_corner_with_no_bars() {
         let vp = Viewport::from_pixels(1920, 1080);
         let px = resolve(Rect::FULL, vp, FitMode::Fill);
-        assert_eq!(px, PixelRect { x: 0, y: 0, w: 1920, h: 1080 });
+        assert_eq!(
+            px,
+            PixelRect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080
+            }
+        );
         assert_eq!(letterbox(vp, FitMode::Fill), Letterbox::default());
     }
 
@@ -767,9 +797,20 @@ mod tests {
             ("footer", authored.footer),
         ] {
             let sq43 = crate::geometry::resolve_percent(Rect::FULL, four_three, FitMode::Letterbox);
-            let sq169 = crate::geometry::resolve_percent(Rect::FULL, sixteen_nine, FitMode::Letterbox);
-            let s43 = Frame { x: sq43.x, y: sq43.y, w: sq43.w, h: sq43.h };
-            let s169 = Frame { x: sq169.x, y: sq169.y, w: sq169.w, h: sq169.h };
+            let sq169 =
+                crate::geometry::resolve_percent(Rect::FULL, sixteen_nine, FitMode::Letterbox);
+            let s43 = Frame {
+                x: sq43.x,
+                y: sq43.y,
+                w: sq43.w,
+                h: sq43.h,
+            };
+            let s169 = Frame {
+                x: sq169.x,
+                y: sq169.y,
+                w: sq169.w,
+                h: sq169.h,
+            };
             let left = inset(four_three, rect, s43);
             let right = inset(sixteen_nine, rect, s169);
             assert!(
@@ -792,13 +833,39 @@ mod tests {
         // 4:3 output bars the *sides*: the square is 768 wide, centred in 1024,
         // hence x = 128 and not 0. A 16:9 output is the same square limited by
         // height, so it bars top and bottom instead and x = 420.
-        assert_eq!(at43, PixelRect { x: 128, y: 0, w: 768, h: 714 });
-        assert_eq!(at169, PixelRect { x: 420, y: 0, w: 1080, h: 1004 });
+        assert_eq!(
+            at43,
+            PixelRect {
+                x: 128,
+                y: 0,
+                w: 768,
+                h: 714
+            }
+        );
+        assert_eq!(
+            at169,
+            PixelRect {
+                x: 420,
+                y: 0,
+                w: 1080,
+                h: 1004
+            }
+        );
         // …and each is 93% of the *content square's* height. Measured through
         // `resolve_percent`, because a rounded pixel count is 714/768 = 92.97%:
         // pixel rounding is not a percentage.
-        let h43 = crate::geometry::resolve_percent(body, Viewport::from_pixels(1024, 768), FitMode::Letterbox).h;
-        let h169 = crate::geometry::resolve_percent(body, Viewport::from_pixels(1920, 1080), FitMode::Letterbox).h;
+        let h43 = crate::geometry::resolve_percent(
+            body,
+            Viewport::from_pixels(1024, 768),
+            FitMode::Letterbox,
+        )
+        .h;
+        let h169 = crate::geometry::resolve_percent(
+            body,
+            Viewport::from_pixels(1920, 1080),
+            FitMode::Letterbox,
+        )
+        .h;
         assert!((h43 - 93.0).abs() < 0.01, "4:3 content height {h43}");
         assert!((h169 - 93.0).abs() < 0.01, "16:9 content height {h169}");
     }
@@ -808,9 +875,24 @@ mod tests {
         // A 1080×1920 projector: bars top and bottom, not left and right.
         let vp = Viewport::from_pixels(1080, 1920);
         let px = resolve(Rect::FULL, vp, FitMode::Letterbox);
-        assert_eq!(px, PixelRect { x: 0, y: 420, w: 1080, h: 1080 });
-        assert_eq!(letterbox(vp, FitMode::Letterbox),
-                   Letterbox { left: 0, top: 420, right: 0, bottom: 420 });
+        assert_eq!(
+            px,
+            PixelRect {
+                x: 0,
+                y: 420,
+                w: 1080,
+                h: 1080
+            }
+        );
+        assert_eq!(
+            letterbox(vp, FitMode::Letterbox),
+            Letterbox {
+                left: 0,
+                top: 420,
+                right: 0,
+                bottom: 420
+            }
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -833,8 +915,14 @@ mod tests {
     fn two_dimensions_given_are_never_overwritten() {
         // The authored value wins over any derivation, even when it does not
         // match the canvas aspect — the operator dragged it there.
-        assert_eq!(r(0, 0, 1_234, 5_678).with_aspect(1.0), r(0, 0, 1_234, 5_678));
-        assert_eq!(r(0, 0, 1_234, 5_678).with_aspect(2.0), r(0, 0, 1_234, 5_678));
+        assert_eq!(
+            r(0, 0, 1_234, 5_678).with_aspect(1.0),
+            r(0, 0, 1_234, 5_678)
+        );
+        assert_eq!(
+            r(0, 0, 1_234, 5_678).with_aspect(2.0),
+            r(0, 0, 1_234, 5_678)
+        );
     }
 
     #[test]
@@ -842,7 +930,10 @@ mod tests {
         assert_eq!(r(10, 20, 0, 0).with_aspect(1.0), r(10, 20, 10_000, 10_000));
         // Including the negative case: a rect with nothing usable is still a
         // full frame, not a zero-sized hole.
-        assert_eq!(r(10, 20, -5, -5).with_aspect(1.0), r(10, 20, 10_000, 10_000));
+        assert_eq!(
+            r(10, 20, -5, -5).with_aspect(1.0),
+            r(10, 20, 10_000, 10_000)
+        );
     }
 
     #[test]
@@ -930,8 +1021,14 @@ mod tests {
                         && (0..=NORMALIZED_SPACE).contains(&n.h),
                     "{rect:?} @ {aspect} -> {n:?}"
                 );
-                assert!(n.x + n.w <= NORMALIZED_SPACE, "{rect:?} @ {aspect} -> {n:?}");
-                assert!(n.y + n.h <= NORMALIZED_SPACE, "{rect:?} @ {aspect} -> {n:?}");
+                assert!(
+                    n.x + n.w <= NORMALIZED_SPACE,
+                    "{rect:?} @ {aspect} -> {n:?}"
+                );
+                assert!(
+                    n.y + n.h <= NORMALIZED_SPACE,
+                    "{rect:?} @ {aspect} -> {n:?}"
+                );
             }
         }
     }
@@ -1011,8 +1108,14 @@ mod tests {
 
     #[test]
     fn viewport_from_a_base_edge_is_stable_for_a_preset() {
-        assert_eq!(AspectRatio::W16H9.viewport(1920), Viewport::from_pixels(1920, 1080));
-        assert_eq!(AspectRatio::W4H3.viewport(1024), Viewport::from_pixels(1024, 768));
+        assert_eq!(
+            AspectRatio::W16H9.viewport(1920),
+            Viewport::from_pixels(1920, 1080)
+        );
+        assert_eq!(
+            AspectRatio::W4H3.viewport(1024),
+            Viewport::from_pixels(1024, 768)
+        );
         // A nonsense base still yields a usable viewport.
         assert!(AspectRatio::W16H9.viewport(0).width >= 1);
         assert!(AspectRatio::W16H9.viewport(-5).height >= 1);
@@ -1027,7 +1130,15 @@ mod tests {
         let vp = Viewport::from_pixels(0, 0);
         assert_eq!(vp, Viewport::from_pixels(1, 1));
         let px = resolve(Rect::FULL, vp, FitMode::Letterbox);
-        assert_eq!(px, PixelRect { x: 0, y: 0, w: 1, h: 1 });
+        assert_eq!(
+            px,
+            PixelRect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1
+            }
+        );
         assert!(vp.aspect().is_finite());
         assert!(!vp.matches_aspect(AspectRatio::W16H9, 4));
     }
@@ -1125,9 +1236,18 @@ mod tests {
         fn resolve(s: &StyleRects, vp: Viewport, mode: FitMode) -> PercentRects {
             let of = |rect: Rect| {
                 let p = crate::geometry::resolve_percent(rect, vp, mode);
-                Frame { x: p.x, y: p.y, w: p.w, h: p.h }
+                Frame {
+                    x: p.x,
+                    y: p.y,
+                    w: p.w,
+                    h: p.h,
+                }
             };
-            PercentRects { body: of(s.body), header: of(s.header), footer: of(s.footer) }
+            PercentRects {
+                body: of(s.body),
+                header: of(s.header),
+                footer: of(s.footer),
+            }
         }
     }
 }

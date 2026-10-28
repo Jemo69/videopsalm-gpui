@@ -38,10 +38,10 @@
 //! this file. Rendering is thin glue over `crate` helpers and is NOT
 //! unit-testable headless (needs `cx` + a window).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use gpui::{Context, Div, div, px};
 use gpui::prelude::*;
+use gpui::{Context, Div, div, px};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
 use vp_core::schema::BackgroundKind;
@@ -188,6 +188,22 @@ pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Di
             gallery_panel(root, ui, cx, MediaFileKind::Image),
             gallery_panel(root, ui, cx, MediaFileKind::Video),
             import_row(root, ui, cx),
+            row(vec![
+                btn(
+                    ui,
+                    cx,
+                    "Browse & assign background…",
+                    false,
+                    |this, _, _, cx| {
+                        browse_assign_background(this, cx);
+                    },
+                ),
+                label(
+                    ui,
+                    "Pick any image/video file; it is imported and assigned in one step.",
+                    12.,
+                ),
+            ]),
             row(vec![btn(
                 ui,
                 cx,
@@ -212,8 +228,14 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
 
     // Search row (§2.1 row 5).
     let (filter_text, count) = match kind {
-        MediaFileKind::Image => (root.galleries.image_filter.clone(), root.galleries.filtered_images().len()),
-        MediaFileKind::Video => (root.galleries.video_filter.clone(), root.galleries.filtered_videos().len()),
+        MediaFileKind::Image => (
+            root.galleries.image_filter.clone(),
+            root.galleries.filtered_images().len(),
+        ),
+        MediaFileKind::Video => (
+            root.galleries.video_filter.clone(),
+            root.galleries.filtered_videos().len(),
+        ),
     };
     kids.push(row(vec![
         label(ui, "Search:", 12.),
@@ -224,7 +246,14 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     let mut thumbs: Vec<Div> = Vec::new();
     if kind == MediaFileKind::Video {
         let assigned = root.bg_kind == BackgroundKind::Color;
-        thumbs.push(thumb_btn(ui, cx, kind, BLACK_SENTINEL_ID, "■ black (remove bg)", assigned));
+        thumbs.push(thumb_btn(
+            ui,
+            cx,
+            kind,
+            BLACK_SENTINEL_ID,
+            "■ black (remove bg)",
+            assigned,
+        ));
     }
     let entries: Vec<(String, String, bool)> = {
         let shown = match kind {
@@ -305,7 +334,11 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     kids.push(row(vec![btn(
         ui,
         cx,
-        if pin { "☑ Keep the gallery opened" } else { "☐ Keep the gallery opened" },
+        if pin {
+            "☑ Keep the gallery opened"
+        } else {
+            "☐ Keep the gallery opened"
+        },
         pin,
         |this, _, _, cx| {
             this.galleries.keep_open = !this.galleries.keep_open;
@@ -346,7 +379,9 @@ fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileK
         (p.value, p.source)
     };
     let shown = value.round() as i32;
-    let src = source.map(|l| l.literal().to_string()).unwrap_or_else(|| "default".to_string());
+    let src = source
+        .map(|l| l.literal().to_string())
+        .unwrap_or_else(|| "default".to_string());
     row(vec![
         label(ui, &format!("Luminosité [{}]:", level.literal()), 12.),
         btn(ui, cx, "⊟", false, move |this, _, _, cx| {
@@ -359,13 +394,29 @@ fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileK
     ])
 }
 
-/// Shared import row: a path field plus per-kind Import buttons. v1 adds by
-/// path (no embedded file picker, no folder watching — there is no live
-/// gallery folder in this port).
+/// Shared import row: a path field plus per-kind Import buttons. The path
+/// can be typed, pasted, or filled from the OS file picker (Browse); imports
+/// stay path-based (no folder watching — there is no live gallery folder in
+/// this port).
 fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
     row(vec![
         label(ui, "Import file path:", 12.),
         div().flex_1().child(root.gallery_import_field.clone()),
+        btn(ui, cx, "Browse…", false, |this, _, _, cx| {
+            if let Some(p) = crate::file_picker::pick_file(
+                "Import image or video",
+                &[
+                    crate::file_picker::IMAGE_FILTER,
+                    crate::file_picker::VIDEO_FILTER,
+                ],
+            ) {
+                this.gallery_import_field
+                    .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                cx.notify();
+            } else {
+                this.set_status(cx, "Browse cancelled — no file chosen.");
+            }
+        }),
         btn(ui, cx, "+ Import image", false, |this, _, _, cx| {
             import_path(this, cx, MediaFileKind::Image);
         }),
@@ -380,7 +431,13 @@ fn div_grid() -> Div {
 }
 
 /// Filter text field for one gallery (search-as-you-type, RESEARCH §8).
-fn div_field(root: &Root, ui: &UI, _cx: &mut Context<Root>, current: &str, kind: MediaFileKind) -> Div {
+fn div_field(
+    root: &Root,
+    ui: &UI,
+    _cx: &mut Context<Root>,
+    current: &str,
+    kind: MediaFileKind,
+) -> Div {
     let _ = current;
     let field = match kind {
         MediaFileKind::Image => root.gallery_image_filter.clone(),
@@ -397,24 +454,82 @@ fn div_field(root: &Root, ui: &UI, _cx: &mut Context<Root>, current: &str, kind:
 pub(crate) fn wire_gallery_fields(root: &mut Root, cx: &mut Context<Root>) {
     use crate::text_field::Changed;
     let f = root.gallery_image_filter.clone();
-    root._subs.push(cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
-        if emitter == this.gallery_image_filter {
-            this.galleries.image_filter = ev.text.clone();
-            cx.notify();
-        }
-    }));
+    root._subs.push(
+        cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
+            if emitter == this.gallery_image_filter {
+                this.galleries.image_filter = ev.text.clone();
+                cx.notify();
+            }
+        }),
+    );
     let f = root.gallery_video_filter.clone();
-    root._subs.push(cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
-        if emitter == this.gallery_video_filter {
-            this.galleries.video_filter = ev.text.clone();
-            cx.notify();
-        }
-    }));
+    root._subs.push(
+        cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
+            if emitter == this.gallery_video_filter {
+                this.galleries.video_filter = ev.text.clone();
+                cx.notify();
+            }
+        }),
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Mutations (called from button closures above and from tests via Root)
 // ---------------------------------------------------------------------------
+
+/// Browse-button flow: pick any image/video file, import it, assign it as
+/// the background — one step. When a native folder is open (the typed path
+/// points at a directory), the file is copied into its Images/Videos
+/// library first, so the background survives as managed media; otherwise
+/// the picked path is listed directly, like a typed import.
+pub(crate) fn browse_assign_background(root: &mut Root, cx: &mut Context<Root>) {
+    let Some(picked) = crate::file_picker::pick_file(
+        "Pick background image or video",
+        &[
+            crate::file_picker::IMAGE_FILTER,
+            crate::file_picker::VIDEO_FILTER,
+        ],
+    ) else {
+        root.set_status(cx, "Browse cancelled — no file chosen.");
+        return;
+    };
+    let kind = match picked
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v") => MediaFileKind::Video,
+        _ => MediaFileKind::Image,
+    };
+    let doc = root.native_path_field.read(cx).text();
+    let listed = if !doc.trim().is_empty() && Path::new(doc.trim()).is_dir() {
+        let sub = if kind == MediaFileKind::Video {
+            "video"
+        } else {
+            "image"
+        };
+        match vp_core::native_folder::import_media_file(&picked, doc.trim(), sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(
+                    cx,
+                    format!("Copy failed ({e}) — listing the picked file instead."),
+                );
+                picked.clone()
+            }
+        }
+    } else {
+        picked.clone()
+    };
+    root.gallery_import_field
+        .update(cx, |f, cx| f.set_text(&listed.to_string_lossy(), cx));
+    import_path(root, cx, kind);
+    if let Some(id) = root.galleries.selection(kind).map(str::to_string) {
+        assign_pick(root, cx, kind, &id);
+    }
+    cx.notify();
+}
 
 /// Click-to-assign: set the background kind + file, highlight the thumbnail,
 /// collapse unless pinned (RESEARCH §§5–6.2). Assigning a video also loads it
@@ -430,14 +545,23 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
                 root.media.open(path);
             }
             root.persist_layout_quiet();
-            root.set_status(cx, format!("Background assigned: {} (level Images/Videos — tune Luminosité above).", GalleryState::assigned_kind(kind).literal()));
+            root.set_status(
+                cx,
+                format!(
+                    "Background assigned: {} (level Images/Videos — tune Luminosité above).",
+                    GalleryState::assigned_kind(kind).literal()
+                ),
+            );
         }
         None => {
             // Black sentinel (§7): unassign; the level falls through to Base.
             root.bg_kind = BackgroundKind::Color;
             root.bg_file = None;
             root.persist_layout_quiet();
-            root.set_status(cx, "Background removed (black sentinel) — falls through to Base.");
+            root.set_status(
+                cx,
+                "Background removed (black sentinel) — falls through to Base.",
+            );
         }
     }
     if !root.galleries.keep_open {
@@ -452,7 +576,10 @@ pub(crate) fn delete_selected(root: &mut Root, cx: &mut Context<Root>, kind: Med
         return;
     };
     if id == BLACK_SENTINEL_ID {
-        root.set_status(cx, "Delete: the black sentinel is built in — it cannot be deleted.");
+        root.set_status(
+            cx,
+            "Delete: the black sentinel is built in — it cannot be deleted.",
+        );
         return;
     }
     // If the assigned file is deleted, fall back to a plain color (§7 logic).
@@ -472,11 +599,23 @@ pub(crate) fn delete_selected(root: &mut Root, cx: &mut Context<Root>, kind: Med
     cx.notify();
 }
 
-pub(crate) fn step_luminosity(root: &mut Root, cx: &mut Context<Root>, kind: MediaFileKind, delta: f32) {
+pub(crate) fn step_luminosity(
+    root: &mut Root,
+    cx: &mut Context<Root>,
+    kind: MediaFileKind,
+    delta: f32,
+) {
     let level = GalleryState::luminosity_level(kind);
     let cur = media::resolve_luminosity(&root.cascade, GalleryState::chain(kind)).value;
     media::set_luminosity(&mut root.cascade, level, cur + delta);
-    root.set_status(cx, format!("Luminosité {kind:?}: {:+} at {} (cascade).", (cur + delta).round() as i32, level.literal()));
+    root.set_status(
+        cx,
+        format!(
+            "Luminosité {kind:?}: {:+} at {} (cascade).",
+            (cur + delta).round() as i32,
+            level.literal()
+        ),
+    );
     cx.notify();
 }
 
@@ -492,7 +631,10 @@ pub(crate) fn import_path(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
         // Still list it: the file may appear later (network share, USB stick
         // plugged in at the venue). The projector shows an honest
         // "missing file" note rather than failing silently.
-        root.set_status(cx, format!("Import: {p} is not reachable now — listed anyway, projector will say so."));
+        root.set_status(
+            cx,
+            format!("Import: {p} is not reachable now — listed anyway, projector will say so."),
+        );
     } else {
         root.set_status(cx, format!("Imported {p}."));
     }
@@ -508,7 +650,10 @@ pub(crate) fn explore_folder(root: &mut Root, cx: &mut Context<Root>, kind: Medi
     let folder = gallery_folder(&root.galleries, kind);
     // A `…`-prefixed label means "no real folder configured".
     if folder.starts_with('…') {
-        root.set_status(cx, "Explore: no gallery folder configured — imports are by path in v1.");
+        root.set_status(
+            cx,
+            "Explore: no gallery folder configured — imports are by path in v1.",
+        );
         return;
     }
     #[cfg(target_os = "linux")]
@@ -542,39 +687,62 @@ mod tests {
 
     #[test]
     fn assignment_kind_follows_the_gallery() {
-        assert_eq!(GalleryState::assigned_kind(MediaFileKind::Image), BackgroundKind::Image);
-        assert_eq!(GalleryState::assigned_kind(MediaFileKind::Video), BackgroundKind::VideoLoop);
+        assert_eq!(
+            GalleryState::assigned_kind(MediaFileKind::Image),
+            BackgroundKind::Image
+        );
+        assert_eq!(
+            GalleryState::assigned_kind(MediaFileKind::Video),
+            BackgroundKind::VideoLoop
+        );
     }
 
     #[test]
     fn media_resolve_through_their_own_chains() {
         assert_eq!(GalleryState::chain(MediaFileKind::Image), Chain::Images);
         assert_eq!(GalleryState::chain(MediaFileKind::Video), Chain::Videos);
-        assert_eq!(GalleryState::luminosity_level(MediaFileKind::Image), Level::Images);
-        assert_eq!(GalleryState::luminosity_level(MediaFileKind::Video), Level::Videos);
+        assert_eq!(
+            GalleryState::luminosity_level(MediaFileKind::Image),
+            Level::Images
+        );
+        assert_eq!(
+            GalleryState::luminosity_level(MediaFileKind::Video),
+            Level::Videos
+        );
     }
 
     #[test]
     fn black_sentinel_unassigns_unknown_ids_do_nothing() {
         let mut s = GalleryState::default();
-        s.library.add(PathBuf::from("/v/a.mp4"), MediaFileKind::Video);
+        s.library
+            .add(PathBuf::from("/v/a.mp4"), MediaFileKind::Video);
         // Sentinel first: None = unassign (§7).
         assert_eq!(s.assign_path(MediaFileKind::Video, BLACK_SENTINEL_ID), None);
         assert_eq!(s.assign_path(MediaFileKind::Video, "nope"), None);
         // Images have no sentinel (GAP in §7: unverified for images).
         assert_eq!(s.assign_path(MediaFileKind::Image, BLACK_SENTINEL_ID), None);
-        let id = s.library.add(PathBuf::from("/p/b.jpg"), MediaFileKind::Image);
-        assert_eq!(s.assign_path(MediaFileKind::Image, &id), Some(PathBuf::from("/p/b.jpg")));
+        let id = s
+            .library
+            .add(PathBuf::from("/p/b.jpg"), MediaFileKind::Image);
+        assert_eq!(
+            s.assign_path(MediaFileKind::Image, &id),
+            Some(PathBuf::from("/p/b.jpg"))
+        );
     }
 
     #[test]
     fn filters_are_per_gallery_and_order_free() {
         let mut s = GalleryState::default();
-        s.library.add(PathBuf::from("/v/Red Sunset.mp4"), MediaFileKind::Video);
-        s.library.add(PathBuf::from("/p/Red Sunset.jpg"), MediaFileKind::Image);
+        s.library
+            .add(PathBuf::from("/v/Red Sunset.mp4"), MediaFileKind::Video);
+        s.library
+            .add(PathBuf::from("/p/Red Sunset.jpg"), MediaFileKind::Image);
         s.video_filter = "sunset red".into();
         assert_eq!(s.filtered_videos().len(), 1);
-        assert!(s.filtered_images().len() == 1, "image filter is independent (empty = all)");
+        assert!(
+            s.filtered_images().len() == 1,
+            "image filter is independent (empty = all)"
+        );
         s.image_filter = "desert".into();
         assert!(s.filtered_images().is_empty());
     }

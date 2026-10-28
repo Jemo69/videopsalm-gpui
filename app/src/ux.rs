@@ -103,12 +103,9 @@ pub fn digit_slide_index(key: char, slide_count: usize) -> Option<usize> {
 /// `V1`, `C1` (chorus), `B1` (bridge), `E1` (ending), `O1` (outro).
 pub fn verse_shortcut_target(verse_ids: &[&str], key: char) -> Option<usize> {
     let want = key.to_ascii_uppercase();
-    verse_ids.iter().position(|id| {
-        id.chars()
-            .next()
-            .map(|c| c.to_ascii_uppercase())
-            == Some(want)
-    })
+    verse_ids
+        .iter()
+        .position(|id| id.chars().next().map(|c| c.to_ascii_uppercase()) == Some(want))
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +144,14 @@ pub fn kind_badge(kind: ItemKind) -> &'static str {
 /// files keep loading.
 pub fn style_levels() -> [&'static str; 8] {
     [
-        "Base", "Songbooks", "Song", "Verse", "Bible", "Media", "Alert", "Clock",
+        "Base",
+        "Songbooks",
+        "Song",
+        "Verse",
+        "Bible",
+        "Media",
+        "Alert",
+        "Clock",
     ]
 }
 
@@ -472,7 +476,10 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Space / → / ↓ / PgDn", "next slide"),
         ("← / ↑ / PgUp / Backspace", "previous slide"),
         ("1…9, 0", "go to verse/slide 1…10"),
-        ("B C I O P N S T U V E", "jump to bridge/chorus/instrumental/other/pre-chorus/intro/slide/tag/outro/verse/ending"),
+        (
+            "B C I O P N S T U V E",
+            "jump to bridge/chorus/instrumental/other/pre-chorus/intro/slide/tag/outro/verse/ending",
+        ),
         (". or ,", "toggle base (black) screen ↔ current slide"),
         ("Shift+→ / Shift+↓", "next slide without displaying it"),
         ("Shift+← / Shift+↑", "previous slide without displaying it"),
@@ -487,11 +494,17 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         // F5 restarts from the beginning (§1.6); the player-focus play/pause
         // the changelog adds has no focusable widget in this port, so media
         // toggling lives on the Message-tab transport button instead.
-        ("F5", "start presentation from the beginning (play/pause: Message-tab transport)"),
+        (
+            "F5",
+            "start presentation from the beginning (play/pause: Message-tab transport)",
+        ),
         ("X", "next PowerPoint slide"),
         ("F6", "focus the slide panel"),
         // Save is per-document: the song in the editor, otherwise the agenda.
-        ("Ctrl+S", "save (the song in the editor, otherwise the agenda)"),
+        (
+            "Ctrl+S",
+            "save (the song in the editor, otherwise the agenda)",
+        ),
         ("Alt+S / Alt+B", "jump to Songbooks / Bibles"),
         // 1.10: "add one of those songs by pressing Ctrl+song position" —
         // never view switches, which the original does not bind.
@@ -605,15 +618,16 @@ impl BibleSearch {
 /// `font_safe_glyphs_cover_every_glyph_the_app_draws` fails if one comes back.
 /// Read by the font-safety test; see the note on `APP_GLYPHS` in main.rs.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const FONT_SAFE_GLYPHS: &str = "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕⬌▪▫✳❀";
+pub const FONT_SAFE_GLYPHS: &str =
+    "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕⬌▪▫✳❀";
 
 /// Chapter counts for the 66-book Protestant canon, indexed by
 /// 1-based book number (Genesis .. Revelation). Plain factual data backing
 /// the Bible browser's chapter-number grid.
 const CHAPTERS: [u32; 66] = [
-    50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13, 10, 42, 150, 31, 12, 8, 66,
-    52, 5, 48, 12, 14, 3, 9, 1, 4, 7, 3, 3, 3, 2, 14, 4, 28, 16, 24, 21, 28, 16, 16, 13, 6, 6,
-    4, 4, 5, 3, 6, 4, 3, 1, 13, 5, 5, 3, 5, 1, 1, 1, 22,
+    50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13, 10, 42, 150, 31, 12, 8, 66, 52,
+    5, 48, 12, 14, 3, 9, 1, 4, 7, 3, 3, 3, 2, 14, 4, 28, 16, 24, 21, 28, 16, 16, 13, 6, 6, 4, 4, 5,
+    3, 6, 4, 3, 1, 13, 5, 5, 3, 5, 1, 1, 1, 22,
 ];
 
 /// Chapters in a book (0 for out-of-range numbers).
@@ -628,16 +642,16 @@ pub fn chapter_count(book_number: u8) -> u32 {
 /// translation carries that chapter (B-10/B-29/B-34 3rd-column verse grid).
 pub fn default_verse_count(book_number: u8, chapter: u32) -> u32 {
     match (book_number, chapter) {
-        (1, 1) => 31,   // Genesis 1
-        (19, 23) => 6,  // Psalm 23
-        (19, 117) => 2, // Psalm 117
+        (1, 1) => 31,     // Genesis 1
+        (19, 23) => 6,    // Psalm 23
+        (19, 117) => 2,   // Psalm 117
         (19, 119) => 176, // Psalm 119
-        (40, 26) => 75, // Matthew 26
-        (43, 3) => 36,  // John 3
-        (45, 3) => 31,  // Romans 3
-        (46, 2) => 16,  // 1 Corinthians 2
-        (55, 3) => 17,  // 2 Timothy 3
-        (58, 11) => 40, // Hebrews 11
+        (40, 26) => 75,   // Matthew 26
+        (43, 3) => 36,    // John 3
+        (45, 3) => 31,    // Romans 3
+        (46, 2) => 16,    // 1 Corinthians 2
+        (55, 3) => 17,    // 2 Timothy 3
+        (58, 11) => 40,   // Hebrews 11
         _ => 31,
     }
 }
@@ -655,7 +669,9 @@ pub fn apply_verse_grid_click(
     ctrl: bool,
 ) -> (Vec<u32>, u32) {
     if shift {
-        let a = anchor.or_else(|| current.first().copied()).unwrap_or(clicked);
+        let a = anchor
+            .or_else(|| current.first().copied())
+            .unwrap_or(clicked);
         let lo = a.min(clicked);
         let hi = a.max(clicked);
         ((lo..=hi).collect(), a)
@@ -907,7 +923,16 @@ mod tests {
     fn kind_badges_are_distinct_for_core_kinds() {
         use ItemKind::*;
         let kinds = [
-            Song, BibleVerses, Image, Video, Audio, Pdf, PowerPoint, YouTube, Clock, Alert,
+            Song,
+            BibleVerses,
+            Image,
+            Video,
+            Audio,
+            Pdf,
+            PowerPoint,
+            YouTube,
+            Clock,
+            Alert,
         ];
         let mut badges: Vec<&str> = kinds.iter().map(|k| kind_badge(*k)).collect();
         badges.sort_unstable();
@@ -987,10 +1012,7 @@ mod tests {
 
     #[test]
     fn slide_headers_yield_verse_ids() {
-        assert_eq!(
-            slide_verse_id("Amazing Grace — V1"),
-            Some("V1".to_string())
-        );
+        assert_eq!(slide_verse_id("Amazing Grace — V1"), Some("V1".to_string()));
         assert_eq!(slide_verse_id("Holy — C (2/3)"), Some("C".to_string()));
         assert_eq!(slide_verse_id("John 3:16-18"), None);
         assert_eq!(slide_verse_id(""), None);
@@ -1017,8 +1039,23 @@ mod tests {
         // Badges for all agenda kinds.
         use vp_core::schema::ItemKind::*;
         for kind in [
-            Song, SongPowerPoint, Bible, BibleVerses, Image, Video, Audio, Pdf,
-            PowerPoint, PowerPointSlide, Excel, Word, YouTube, WebSite, Ccli, Alert, Clock,
+            Song,
+            SongPowerPoint,
+            Bible,
+            BibleVerses,
+            Image,
+            Video,
+            Audio,
+            Pdf,
+            PowerPoint,
+            PowerPointSlide,
+            Excel,
+            Word,
+            YouTube,
+            WebSite,
+            Ccli,
+            Alert,
+            Clock,
         ] {
             used.extend(kind_badge(kind).chars());
         }
@@ -1050,14 +1087,19 @@ mod tests {
         let actions: Vec<&str> = strip.iter().map(|(_, a)| *a).collect();
         assert_eq!(
             actions,
-            vec!["next", "base", "text", "shield", "freeze", "project", "mode"]
+            vec![
+                "next", "base", "text", "shield", "freeze", "project", "mode"
+            ]
         );
         // The pencil is the last entry and is separated from the six.
         assert_eq!(TOOL_STRIP_PENCIL_INDEX, 6);
         assert_eq!(strip.len(), TOOL_STRIP_PENCIL_INDEX + 1);
         // Alert and stage-view are NOT in this strip; they live elsewhere.
         for absent in ["alert", "stage", "show"] {
-            assert!(!actions.contains(&absent), "{absent} does not belong in the command strip");
+            assert!(
+                !actions.contains(&absent),
+                "{absent} does not belong in the command strip"
+            );
         }
     }
 
@@ -1086,13 +1128,24 @@ mod tests {
         assert_eq!(BibleSearch::default(), BibleSearch::Reference);
         assert_eq!(BibleSearch::Reference.toggled(), BibleSearch::Keyword);
         assert_eq!(BibleSearch::Keyword.toggled(), BibleSearch::Reference);
-        assert_eq!(BibleSearch::Reference.toggled().toggled(), BibleSearch::Reference);
+        assert_eq!(
+            BibleSearch::Reference.toggled().toggled(),
+            BibleSearch::Reference
+        );
         assert_eq!(BibleSearch::Reference.id(), "reference");
         assert_eq!(BibleSearch::Keyword.id(), "keyword");
         // Placeholders tell the operator what the box expects, per language.
-        assert!(BibleSearch::Reference.placeholder("en").contains("Reference"));
+        assert!(
+            BibleSearch::Reference
+                .placeholder("en")
+                .contains("Reference")
+        );
         assert!(BibleSearch::Keyword.placeholder("en").contains("phrase"));
-        assert!(BibleSearch::Reference.placeholder("fr").contains("Référence"));
+        assert!(
+            BibleSearch::Reference
+                .placeholder("fr")
+                .contains("Référence")
+        );
     }
 
     // ------------------------------------------------------------ keymap
@@ -1282,11 +1335,30 @@ mod tests {
     fn shortcut_help_covers_every_documented_group() {
         let rows = shortcut_help();
         assert!(rows.len() >= 20);
-        let text = rows.iter().map(|(k, d)| format!("{k} {d}")).collect::<Vec<_>>().join("\n");
+        let text = rows
+            .iter()
+            .map(|(k, d)| format!("{k} {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         for needle in [
-            "Space", "PgDn", "1…9", "B C I O P N S T U V E", "Escape", "Ctrl+P",
-            "Ctrl+T", "Ctrl+B", "Ctrl+R", "Ctrl+E", "Ctrl+F1", "Alt", "Shift+→", "+ / -", "Home / End",
-            "F5", "Ctrl+1…9", "Alt+S / Alt+B",
+            "Space",
+            "PgDn",
+            "1…9",
+            "B C I O P N S T U V E",
+            "Escape",
+            "Ctrl+P",
+            "Ctrl+T",
+            "Ctrl+B",
+            "Ctrl+R",
+            "Ctrl+E",
+            "Ctrl+F1",
+            "Alt",
+            "Shift+→",
+            "+ / -",
+            "Home / End",
+            "F5",
+            "Ctrl+1…9",
+            "Alt+S / Alt+B",
         ] {
             assert!(text.contains(needle), "help table missing {needle}");
         }
@@ -1378,7 +1450,7 @@ mod tests {
 
         // Canonical chapter verse counts for documented screenshot chapters.
         assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
-        assert_eq!(default_verse_count(43, 3), 36);  // John 3
-        assert_eq!(default_verse_count(19, 23), 6);  // Psalm 23
+        assert_eq!(default_verse_count(43, 3), 36); // John 3
+        assert_eq!(default_verse_count(19, 23), 6); // Psalm 23
     }
 }

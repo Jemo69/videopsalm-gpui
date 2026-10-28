@@ -270,7 +270,11 @@ impl MediaLibrary {
     /// Add a user file. Duplicate *paths* are rejected (same file picked
     /// twice); the existing id is returned so the UI can select it.
     pub fn add(&mut self, path: PathBuf, kind: MediaFileKind) -> String {
-        if let Some(e) = self.entries.iter().find(|e| e.path == path && e.kind == kind) {
+        if let Some(e) = self
+            .entries
+            .iter()
+            .find(|e| e.path == path && e.kind == kind)
+        {
             return e.id.clone();
         }
         let id = format!("m{}", self.entries.len() + 1);
@@ -294,11 +298,15 @@ impl MediaLibrary {
     }
 
     pub fn images(&self) -> impl Iterator<Item = &MediaEntry> {
-        self.entries.iter().filter(|e| e.kind == MediaFileKind::Image)
+        self.entries
+            .iter()
+            .filter(|e| e.kind == MediaFileKind::Image)
     }
 
     pub fn videos(&self) -> impl Iterator<Item = &MediaEntry> {
-        self.entries.iter().filter(|e| e.kind == MediaFileKind::Video)
+        self.entries
+            .iter()
+            .filter(|e| e.kind == MediaFileKind::Video)
     }
 }
 
@@ -374,6 +382,24 @@ pub fn luminosity_overlay(value: f32) -> (bool, f32) {
     }
     let alpha = (value.abs() * 0.08).clamp(0.0, 0.8);
     (value > 0.0, alpha)
+}
+
+/// Shrink factor so a verse fits its frame, mirroring the Electron
+/// projector's auto-fit (`MIN_SCALE = 0.45`): the authored size is scaled by
+/// the output height (1080p reference), then shrunk until the estimated
+/// text block fits the frame. GPUI 0.2.2 cannot measure laid-out text during
+/// render, so the block height is estimated from the line count —
+/// conservative on purpose (slightly small beats clipped). Width is not
+/// estimated: verses are short lines and the frame clips width only on
+/// pathological input. Pure and tested; the renderer applies it to every
+/// projected text size.
+pub fn fit_text_factor(line_count: usize, base_px: f32, avail_h_px: f32) -> f32 {
+    if line_count == 0 || base_px <= 0.0 || avail_h_px <= 0.0 {
+        return 1.0;
+    }
+    // 1.3 ≈ line-height plus the flex gap between lines.
+    let est_h = line_count as f32 * base_px * 1.3;
+    (avail_h_px / est_h).clamp(0.45, 1.0)
 }
 
 /// What the projector window shows. Computed purely from live/freeze/blank/
@@ -494,7 +520,11 @@ mod tests {
 
     #[test]
     fn caption_is_the_file_name_never_blank() {
-        let e = MediaEntry::new("m1", PathBuf::from("/v/4a1a7a75-5346.mp4"), MediaFileKind::Video);
+        let e = MediaEntry::new(
+            "m1",
+            PathBuf::from("/v/4a1a7a75-5346.mp4"),
+            MediaFileKind::Video,
+        );
         assert_eq!(e.caption(), "4a1a7a75-5346.mp4");
         assert_eq!(file_caption(std::path::Path::new("")), "(unnamed)");
     }
@@ -509,7 +539,10 @@ mod tests {
     #[test]
     fn filter_matches_filename_words_order_free() {
         let mut lib = MediaLibrary::new();
-        lib.add(PathBuf::from("/v/Red Sunset Loop.mp4"), MediaFileKind::Video);
+        lib.add(
+            PathBuf::from("/v/Red Sunset Loop.mp4"),
+            MediaFileKind::Video,
+        );
         lib.add(PathBuf::from("/v/Blue Ocean.jpg"), MediaFileKind::Image);
         let all: Vec<&MediaEntry> = lib.entries().iter().collect();
         assert_eq!(filter_media(all.clone().into_iter(), "").len(), 2);
@@ -548,6 +581,20 @@ mod tests {
         assert!(!up);
         let (_, a) = luminosity_overlay(1000.0);
         assert_eq!(a, 0.8, "unbounded model value, bounded overlay");
+    }
+
+    #[test]
+    fn fit_factor_fits_short_verses_and_floors_long_ones() {
+        // 4 lines at 44px ≈ 229px est; 500px available → no shrink.
+        assert_eq!(fit_text_factor(4, 44.0, 500.0), 1.0);
+        // 8 lines at 44px ≈ 458px est; 300px available → shrink, no floor.
+        let f = fit_text_factor(8, 44.0, 300.0);
+        assert!(f > 0.45 && f < 1.0, "{f}");
+        // A wall of text floors at the Electron MIN_SCALE.
+        assert_eq!(fit_text_factor(40, 44.0, 300.0), 0.45);
+        // Degenerate inputs never shrink or explode.
+        assert_eq!(fit_text_factor(0, 44.0, 300.0), 1.0);
+        assert_eq!(fit_text_factor(4, 44.0, 0.0), 1.0);
     }
 
     // --- B-12 projector state machine ------------------------------------
