@@ -41,7 +41,7 @@ use gpui::{
 };
 use vp_core::geometry::PercentRect;
 use vp_core::media::ProjectorFrame;
-use vp_core::schema::{Align, BackgroundKind, ItemKind, ItemRef};
+use vp_core::schema::{Align, BackgroundKind, ItemKind, ItemRef, VAlign};
 
 use crate::rich_view;
 use crate::{Root, UI};
@@ -72,6 +72,8 @@ pub struct ProjectorSnapshot {
     pub italic: bool,
     pub underline: bool,
     pub align: Align,
+    /// Vertical placement of the lyric block in its frame (WI-021).
+    pub valign: VAlign,
     pub chord: Option<String>,
     pub accent: Rgba,
     /// Standalone agenda media replacing the slide (§12.1), if the live item
@@ -272,7 +274,12 @@ pub(crate) fn render_snapshot(ui: &UI, snap: &ProjectorSnapshot, target_h: f32) 
                 true,
             ));
         }
-        let mut body = div().flex().flex_col().gap_2().justify_center();
+        let mut body = div().flex().flex_col().gap_2();
+        body = match snap.valign {
+            VAlign::Top => body.justify_start(),
+            VAlign::Center => body.justify_center(),
+            VAlign::Bottom => body.justify_end(),
+        };
         body = match snap.align {
             Align::Left => body.items_start(),
             Align::Center => body.items_center(),

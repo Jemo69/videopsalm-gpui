@@ -754,6 +754,8 @@ pub struct LayoutPrefs {
     pub underline: bool,
     #[serde(default = "d_align")]
     pub align: String,
+    #[serde(default = "d_align")]
+    pub valign: String,
     #[serde(default = "d_transition")]
     pub transition: String,
     /// Presentation flags (all default off; old layout files still load).
@@ -824,6 +826,7 @@ impl Default for LayoutPrefs {
             italic: false,
             underline: false,
             align: d_align(),
+            valign: d_align(),
             transition: d_transition(),
             text_hidden: false,
             shield: false,
