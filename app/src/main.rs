@@ -1,4 +1,7 @@
 //! VideoPsalm v1 clean-room reimplementation (GPUI target).
+// Windows GUI subsystem: no console window on launch (a stray console
+// reads as broken). `--smoke` reattaches to the parent console itself.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 //!
 //! Single native window with a toolbar + view switcher:
 //! control window (VideoPsalm-style formatting ribbon, 3-pane layout with
@@ -6126,11 +6129,25 @@ impl Root {
 // Boot
 // ---------------------------------------------------------------------------
 
+/// No console window on Windows: this is a GUI app, and a stray console
+/// on every launch reads as broken. `--smoke` reattaches to the parent
+/// console first, so headless checks still print when run from a terminal.
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+extern "system" {
+    fn AttachConsole(dwProcessId: u32) -> i32;
+}
+
 fn main() {
     // Headless smoke mode for automated checks (mirrors Electron's
     // `window.vpTest`): no window opens, the summary goes to stdout.
     let args: Vec<String> = std::env::args().collect();
     if let Some(i) = args.iter().position(|a| a == "--smoke") {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            // ATTACH_PARENT_PROCESS; ignored when there is no parent console.
+            AttachConsole(!0);
+        }
         let folder = args.get(i + 1).cloned().unwrap_or_default();
         match smoke::run_smoke(&folder) {
             Ok(summary) => println!("{summary}"),

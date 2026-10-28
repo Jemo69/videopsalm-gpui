@@ -16,6 +16,8 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::doc_field::{next_word_end, prev_word_start};
+
 actions!(
     text_field,
     [
@@ -23,6 +25,12 @@ actions!(
         FieldDelete,
         FieldLeft,
         FieldRight,
+        FieldDeleteWordBack,
+        FieldDeleteWordFwd,
+        FieldWordLeft,
+        FieldWordRight,
+        FieldSelectWordLeft,
+        FieldSelectWordRight,
         FieldSelectLeft,
         FieldSelectRight,
         FieldSelectAll,
@@ -46,6 +54,12 @@ pub fn bind_field_keys(cx: &mut App) {
         KeyBinding::new("delete", FieldDelete, Some("TextField")),
         KeyBinding::new("left", FieldLeft, Some("TextField")),
         KeyBinding::new("right", FieldRight, Some("TextField")),
+        KeyBinding::new("ctrl-backspace", FieldDeleteWordBack, Some("TextField")),
+        KeyBinding::new("ctrl-delete", FieldDeleteWordFwd, Some("TextField")),
+        KeyBinding::new("ctrl-left", FieldWordLeft, Some("TextField")),
+        KeyBinding::new("ctrl-right", FieldWordRight, Some("TextField")),
+        KeyBinding::new("ctrl-shift-left", FieldSelectWordLeft, Some("TextField")),
+        KeyBinding::new("ctrl-shift-right", FieldSelectWordRight, Some("TextField")),
         KeyBinding::new("shift-left", FieldSelectLeft, Some("TextField")),
         KeyBinding::new("shift-right", FieldSelectRight, Some("TextField")),
         KeyBinding::new("ctrl-a", FieldSelectAll, Some("TextField")),
@@ -158,6 +172,42 @@ impl TextField {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
         }
         self.replace_text_in_range(None, "", window, cx)
+    }
+
+    /// `Ctrl+Backspace` / `Ctrl+Delete`: same word rule as the lyrics
+    /// document ([`prev_word_start`]/[`next_word_end`]).
+    fn delete_word_back(&mut self, _: &FieldDeleteWordBack, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(prev_word_start(self.content.as_str(), self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_word_fwd(&mut self, _: &FieldDeleteWordFwd, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            let end = next_word_end(self.content.as_str(), self.cursor_offset());
+            if end == self.cursor_offset() {
+                return;
+            }
+            self.select_to(end, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn word_left(&mut self, _: &FieldWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(prev_word_start(self.content.as_str(), self.cursor_offset()), cx)
+    }
+
+    fn word_right(&mut self, _: &FieldWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(next_word_end(self.content.as_str(), self.cursor_offset()), cx)
+    }
+
+    fn select_word_left(&mut self, _: &FieldSelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(prev_word_start(self.content.as_str(), self.cursor_offset()), cx)
+    }
+
+    fn select_word_right(&mut self, _: &FieldSelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(next_word_end(self.content.as_str(), self.cursor_offset()), cx)
     }
 
     fn on_mouse_down(
@@ -604,10 +654,16 @@ impl Render for TextField {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_back))
+            .on_action(cx.listener(Self::delete_word_fwd))
             .on_action(cx.listener(Self::field_left))
             .on_action(cx.listener(Self::field_right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::field_home))
             .on_action(cx.listener(Self::field_end))

@@ -19,8 +19,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, GlobalElementId,
-    IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
-    SharedString, UTF16Selection, Window, actions, div, hsla, prelude::*, px, rgb, rgba,
+    IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point,
+    HighlightStyle, SharedString, StyledText, UTF16Selection, Window, actions, div, hsla, prelude::*, px,
+    rgb, rgba,
 };
 
 
@@ -29,15 +31,23 @@ actions!(
     [
         DocBackspace,
         DocDelete,
+        DocDeleteWordBack,
+        DocDeleteWordFwd,
         DocLeft,
         DocRight,
         DocUp,
         DocDown,
+        DocWordLeft,
+        DocWordRight,
         DocSelectLeft,
         DocSelectRight,
         DocSelectUp,
         DocSelectDown,
+        DocSelectWordLeft,
+        DocSelectWordRight,
         DocSelectAll,
+        DocSelectHome,
+        DocSelectEnd,
         DocHome,
         DocEnd,
         DocPaste,
@@ -51,14 +61,22 @@ pub fn bind_doc_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("backspace", DocBackspace, Some("DocField")),
         KeyBinding::new("delete", DocDelete, Some("DocField")),
+        KeyBinding::new("ctrl-backspace", DocDeleteWordBack, Some("DocField")),
+        KeyBinding::new("ctrl-delete", DocDeleteWordFwd, Some("DocField")),
         KeyBinding::new("left", DocLeft, Some("DocField")),
         KeyBinding::new("right", DocRight, Some("DocField")),
         KeyBinding::new("up", DocUp, Some("DocField")),
         KeyBinding::new("down", DocDown, Some("DocField")),
+        KeyBinding::new("ctrl-left", DocWordLeft, Some("DocField")),
+        KeyBinding::new("ctrl-right", DocWordRight, Some("DocField")),
         KeyBinding::new("shift-left", DocSelectLeft, Some("DocField")),
         KeyBinding::new("shift-right", DocSelectRight, Some("DocField")),
         KeyBinding::new("shift-up", DocSelectUp, Some("DocField")),
         KeyBinding::new("shift-down", DocSelectDown, Some("DocField")),
+        KeyBinding::new("ctrl-shift-left", DocSelectWordLeft, Some("DocField")),
+        KeyBinding::new("ctrl-shift-right", DocSelectWordRight, Some("DocField")),
+        KeyBinding::new("shift-home", DocSelectHome, Some("DocField")),
+        KeyBinding::new("shift-end", DocSelectEnd, Some("DocField")),
         KeyBinding::new("ctrl-a", DocSelectAll, Some("DocField")),
         KeyBinding::new("ctrl-v", DocPaste, Some("DocField")),
         KeyBinding::new("ctrl-c", DocCopy, Some("DocField")),
@@ -85,6 +103,9 @@ pub struct DocField {
     sel: Range<usize>,
     selection_reversed: bool,
     last_bounds: Option<Bounds<Pixels>>,
+    /// True between left-button down and up: mouse moves extend the
+    /// selection (drag-select), cleared on release *anywhere*.
+    is_selecting: bool,
 }
 
 impl EventEmitter<DocChanged> for DocField {}
@@ -98,6 +119,7 @@ impl DocField {
             sel: 0..0,
             selection_reversed: false,
             last_bounds: None,
+            is_selecting: false,
         }
     }
 
@@ -255,6 +277,74 @@ impl DocField {
         cx.notify();
     }
 
+    /// `Ctrl+Backspace` — delete the word (plus preceding whitespace) back
+    /// to the previous word start, or the selection if one is active.
+    fn delete_word_back(&mut self, _: &DocDeleteWordBack, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sel.is_empty() {
+            self.replace(self.sel.clone(), "");
+        } else {
+            let from = prev_word_start(&self.content, self.sel.start);
+            if from < self.sel.start {
+                self.replace(from..self.sel.start, "");
+            } else {
+                cx.notify();
+                return;
+            }
+        }
+        self.emit(cx);
+        cx.notify();
+    }
+
+    /// `Ctrl+Delete` — mirror of [`Self::delete_word_back`], forward.
+    fn delete_word_fwd(&mut self, _: &DocDeleteWordFwd, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sel.is_empty() {
+            self.replace(self.sel.clone(), "");
+        } else {
+            let to = next_word_end(&self.content, self.sel.end);
+            if to > self.sel.end {
+                self.replace(self.sel.end..to, "");
+            } else {
+                cx.notify();
+                return;
+            }
+        }
+        self.emit(cx);
+        cx.notify();
+    }
+
+    /// `Ctrl+Left` / `Ctrl+Right` — jump by word, clearing the selection.
+    fn word_left(&mut self, _: &DocWordLeft, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = prev_word_start(&self.content, self.cursor_offset());
+        self.move_to(target, false, cx);
+    }
+
+    fn word_right(&mut self, _: &DocWordRight, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = next_word_end(&self.content, self.cursor_offset());
+        self.move_to(target, false, cx);
+    }
+
+    /// `Ctrl+Shift+Left/Right` — extend the selection by word.
+    fn select_word_left(&mut self, _: &DocSelectWordLeft, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = prev_word_start(&self.content, self.cursor_offset());
+        self.move_to(target, true, cx);
+    }
+
+    fn select_word_right(&mut self, _: &DocSelectWordRight, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = next_word_end(&self.content, self.cursor_offset());
+        self.move_to(target, true, cx);
+    }
+
+    /// `Shift+Home/End` — extend the selection to the line edge.
+    fn select_home(&mut self, _: &DocSelectHome, _window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.line_start(self.cursor_offset());
+        self.move_to(at, true, cx);
+    }
+
+    fn select_end(&mut self, _: &DocSelectEnd, _window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.line_end(self.cursor_offset());
+        self.move_to(at, true, cx);
+    }
+
     fn replace(&mut self, range: Range<usize>, with: &str) {
         self.content =
             (self.content[0..range.start].to_owned() + with + &self.content[range.end..]).into();
@@ -285,6 +375,7 @@ impl DocField {
 
     fn select_all(&mut self, _: &DocSelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.sel = 0..self.content.len();
+        self.selection_reversed = false;
         cx.notify();
     }
 
@@ -341,10 +432,39 @@ impl DocField {
         // without `window.focus` prevented clicking from ever focusing the
         // lyrics editor!
         window.focus(&self.focus_handle);
+        // Double-click selects the word, triple-click the whole line — the
+        // two selection gestures singers reach for first.
+        match (event.modifiers.shift, event.click_count, self.hit_test(event.position)) {
+            (false, 3.., Some(pos)) => {
+                let start = self.line_start(pos);
+                let mut end = self.line_end(pos);
+                if end < self.content.len() {
+                    end += 1; // include the newline: cut removes the line
+                }
+                self.selection_reversed = false;
+                self.sel = start..end;
+                self.is_selecting = true;
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            (false, 2, Some(pos)) => {
+                if let Some(word) = word_at(&self.content, pos) {
+                    self.selection_reversed = false;
+                    self.sel = word;
+                    self.is_selecting = true;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+            }
+            _ => {}
+        }
         self.selection_reversed = event.modifiers.shift;
         if let Some(pos) = self.hit_test(event.position) {
             self.move_to(pos, event.modifiers.shift, cx);
         }
+        self.is_selecting = true;
         cx.stop_propagation();
     }
 
@@ -354,6 +474,16 @@ impl DocField {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
+        self.is_selecting = false;
+    }
+
+    /// Drag-select: while the left button is held, mouse moves extend the
+    /// selection from the press anchor (needs `is_selecting`, cleared on
+    /// release *anywhere*, hence the `on_mouse_up_out` binding below).
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_selecting && let Some(pos) = self.hit_test(event.position) {
+            self.move_to(pos, true, cx);
+        }
     }
 
     /// Map a click to a character offset. The document is rendered with a
@@ -377,7 +507,14 @@ impl DocField {
             }
         }
         let end = self.line_end(start);
-        Some((start + col).min(end))
+        // `col` counts characters but offsets are bytes: translate, so
+        // clicking past `é`/`’` lands on the right character.
+        let col_bytes = self.content[start..end]
+            .char_indices()
+            .nth(col)
+            .map(|(b, _)| b)
+            .unwrap_or(end - start);
+        Some(start + col_bytes)
     }
 
     fn range_from_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -400,11 +537,128 @@ impl DocField {
     }
 }
 
+fn floor_boundary(s: &str, mut offset: usize) -> usize {
+    offset = offset.min(s.len());
+    while offset > 0 && !s.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 fn prev_boundary(s: &str, at: usize) -> usize {
     if at == 0 {
         return 0;
     }
-    s[..at].grapheme_indices(true).last().map(|(i, _)| i).unwrap_or(0)
+    s[..at].grapheme_indices(true).next_back().map(|(i, _)| i).unwrap_or(0)
+}
+
+/// A word character for lyrics editing: letters and digits (Unicode-aware,
+/// so `café` and `Geist` are single words), `_`, apostrophes (`don't`,
+/// `l'amour`) and hyphens (`well-known`). Everything else — spaces,
+/// newlines, punctuation — is a word break.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '\'' | '\u{2019}' | '-' | '\u{2010}' | '\u{2011}')
+}
+
+fn prev_char(s: &str, at: usize) -> Option<(usize, char)> {
+    s[..at].char_indices().next_back()
+}
+
+fn next_char(s: &str, at: usize) -> Option<(usize, char)> {
+    s[at..].char_indices().next().map(|(i, c)| (at + i, c))
+}
+
+/// Byte offset where the word before `at` starts (readline-style: a run of
+/// whitespace counts as the first word back, then the word itself).
+/// `"hello   "` at end → 0; `"hello world"` at end → 6.
+/// Three character classes drive word motion: whitespace, word
+/// characters ([`is_word_char`]), and everything else (punctuation).
+/// A word step skips one whitespace run, then one run of whatever comes
+/// next — so `Ctrl+Backspace` on `"hello, |"` removes `", "` in a single
+/// press instead of dying on the comma.
+fn char_class(c: char) -> u8 {
+    if c.is_whitespace() {
+        0
+    } else if is_word_char(c) {
+        1
+    } else {
+        2
+    }
+}
+
+pub(crate) fn prev_word_start(s: &str, at: usize) -> usize {
+    let mut i = at.min(s.len());
+    while let Some((j, c)) = prev_char(s, i) {
+        if char_class(c) != 0 {
+            break;
+        }
+        i = j;
+    }
+    let class = match prev_char(s, i) {
+        Some((_, c)) => char_class(c),
+        None => return i,
+    };
+    if class == 0 {
+        return i;
+    }
+    while let Some((j, c)) = prev_char(s, i) {
+        if char_class(c) != class {
+            break;
+        }
+        i = j;
+    }
+    i
+}
+
+/// Byte offset where the word after `at` ends (mirror of
+/// [`prev_word_start`]: whitespace run, then the word itself).
+pub(crate) fn next_word_end(s: &str, at: usize) -> usize {
+    let mut i = at.min(s.len());
+    while let Some((_, c)) = next_char(s, i) {
+        if char_class(c) != 0 {
+            break;
+        }
+        i += c.len_utf8();
+    }
+    let class = match next_char(s, i) {
+        Some((_, c)) => char_class(c),
+        None => return i,
+    };
+    if class == 0 {
+        return i;
+    }
+    while let Some((_, c)) = next_char(s, i) {
+        if char_class(c) != class {
+            break;
+        }
+        i += c.len_utf8();
+    }
+    i
+}
+
+/// Word under `at`, for double-click selection: the word-char run around
+/// the cursor. `None` on whitespace (leaves a bare caret, like VS Code).
+fn word_at(s: &str, at: usize) -> Option<Range<usize>> {
+    let at = at.min(s.len());
+    let here = next_char(s, at).map(|(_, c)| c)?;
+    if !is_word_char(here) {
+        return None;
+    }
+    let mut start = at;
+    while let Some((j, c)) = prev_char(s, start) {
+        if !is_word_char(c) {
+            break;
+        }
+        start = j;
+    }
+    let mut end = at;
+    while let Some((_, c)) = next_char(s, end) {
+        if !is_word_char(c) {
+            break;
+        }
+        end += c.len_utf8();
+    }
+    Some(start..end)
 }
 
 fn next_boundary(s: &str, at: usize) -> usize {
@@ -460,7 +714,7 @@ impl EntityInputHandler for DocField {
             .as_ref()
             .map(|r| self.range_from_utf16(r))
             .unwrap_or_else(|| self.sel.clone());
-        self.replace(range, &new_text);
+        self.replace(range, new_text);
         self.emit(cx);
         cx.notify();
     }
@@ -525,16 +779,24 @@ impl Render for DocField {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_back))
+            .on_action(cx.listener(Self::delete_word_fwd))
             .on_action(cx.listener(Self::enter))
             .on_action(cx.listener(Self::doc_left))
             .on_action(cx.listener(Self::doc_right))
             .on_action(cx.listener(Self::doc_up))
             .on_action(cx.listener(Self::doc_down))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::copy))
@@ -542,6 +804,8 @@ impl Render for DocField {
             .on_action(cx.listener(Self::paste))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
             .p(px(8.))
             .rounded_sm()
             .border_2()
@@ -576,12 +840,25 @@ impl Render for DocField {
                         .map(|(i, line)| {
                             let start = line_start_of(content.as_str(), i);
                             let end = start + line.len();
-                            let selected = !sel.is_empty() && sel.start <= start && end <= sel.end;
+                            // A line lights up when the selection merely touches it;
+                            // the exact character range paints via StyledText below.
+                            // (Whole-line-only highlighting made partial drags
+                            // invisible — the "selection doesn't work" report.)
+                            let overlaps = !sel.is_empty() && sel.start < end && start < sel.end;
+                            let fully_covered =
+                                !sel.is_empty() && sel.start <= start && end <= sel.end;
                             let cursor_on_line = focused && sel.is_empty() && cursor >= start && cursor <= end;
                             // SCREENSHOT-1.29-LAYOUT.md: "The tag is rendered with a
                             // coloured highlight box (`Verse 1` on a pink/red background).
                             // That is how the editor distinguishes a verse tag from a lyric line."
                             let is_tag = crate::lyrics_doc::is_tag_line(line);
+                            let sel_run: Option<std::ops::Range<usize>> = if overlaps && !line.is_empty() {
+                                let lo = floor_boundary(line, sel.start.saturating_sub(start).min(line.len()));
+                                let hi = floor_boundary(line, sel.end.saturating_sub(start).min(line.len()));
+                                if lo < hi { Some(lo..hi) } else { None }
+                            } else {
+                                None
+                            };
                             let display_line = if cursor_on_line {
                                 let local = (cursor - start).min(line.len());
                                 let safe = line
@@ -594,6 +871,18 @@ impl Render for DocField {
                                 " ".to_string()
                             } else {
                                 line.to_string()
+                            };
+                            let content: AnyElement = match sel_run {
+                                Some(range) => StyledText::new(line.to_string())
+                                    .with_highlights([(
+                                        range,
+                                        HighlightStyle {
+                                            background_color: Some(hsla(217., 0.85, 0.62, 0.4)),
+                                            ..Default::default()
+                                        },
+                                    )])
+                                    .into_any_element(),
+                                None => display_line.into_any_element(),
                             };
                             let d = if is_tag {
                                 div()
@@ -611,12 +900,16 @@ impl Render for DocField {
                                             .border_color(rgb(0xF472B6))
                                             .text_color(rgb(0x9D174D))
                                             .font_weight(FontWeight::BOLD)
-                                            .child(display_line),
+                                            .child(content),
                                     )
                             } else {
-                                div().h(px(20.)).w_full().child(display_line)
+                                div().h(px(20.)).w_full().child(content)
                             };
-                            if selected {
+                            // A blank line has no characters to highlight, so a
+                            // selection crossing it lights the whole row.
+                            let row_selected =
+                                fully_covered || (line.is_empty() && overlaps);
+                            if row_selected {
                                 d.bg(rgba(0x3311ff30))
                             } else if cursor_on_line {
                                 d.bg(rgba(0x2a5db014))
@@ -816,5 +1109,63 @@ mod tests {
         let normalised = pasted.replace("\r\n", "\n");
         assert!(normalised.contains("\n\n"), "the blank line survives");
         assert_eq!(lyrics_doc::slide_count(&normalised), 2);
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_the_word_and_preceding_blanks() {
+        // "hello world" with the caret at the end: one Ctrl+Backspace
+        // takes the word, the newline-aware variant the line before it.
+        assert_eq!(prev_word_start("hello world", 11), 6);
+        assert_eq!(prev_word_start("hello world", 6), 0);
+        assert_eq!(prev_word_start("hello world", 0), 0);
+        // Trailing blanks go with the word (one press, readline-style).
+        assert_eq!(prev_word_start("hello   ", 8), 0);
+        assert_eq!(prev_word_start("  hello", 7), 2);
+        // Newlines are word breaks too.
+        assert_eq!(prev_word_start("one\ntwo", 7), 4);
+        assert_eq!(prev_word_start("one\n", 4), 0);
+    }
+
+    #[test]
+    fn punctuation_is_its_own_word_step() {
+        // `Ctrl+Backspace` on `"hello, |"` takes `", "` in one press
+        // instead of dying on the comma; a second press takes the word.
+        assert_eq!(prev_word_start("hello, world", 7), 5);
+        assert_eq!(prev_word_start("hello, world", 5), 0);
+        // Bare punctuation after the caret deletes as its own step.
+        assert_eq!(prev_word_start("hello, world", 6), 5);
+        assert_eq!(next_word_end("hello, world", 5), 6);
+    }
+
+    #[test]
+    fn ctrl_delete_mirrors_ctrl_backspace_forward() {
+        assert_eq!(next_word_end("hello world", 0), 5);
+        assert_eq!(next_word_end("hello world", 5), 11);
+        assert_eq!(next_word_end("hello world", 11), 11);
+        assert_eq!(next_word_end("   hello", 0), 8);
+        assert_eq!(next_word_end("one\ntwo", 0), 3);
+    }
+
+    #[test]
+    fn apostrophes_hyphens_and_accents_stay_inside_words() {
+        // `don't` is one word for a singer, not two.
+        assert_eq!(prev_word_start("don't stop", 5), 0);
+        assert_eq!(next_word_end("don't stop", 0), 5);
+        // Same for hyphens and accented letters.
+        assert_eq!(prev_word_start("well-known x", 10), 0);
+        assert_eq!(prev_word_start("caf\u{e9} au", 8), 6);
+        assert_eq!(prev_word_start("caf\u{e9} au", 6), 0);
+        assert_eq!(next_word_end("caf\u{e9} au", 0), 5);
+        // ...but punctuation still breaks words.
+        assert_eq!(next_word_end("hello, world", 0), 5);
+    }
+
+    #[test]
+    fn double_click_selects_the_word_only() {
+        assert_eq!(word_at("hello world", 2), Some(0..5));
+        assert_eq!(word_at("hello world", 8), Some(6..11));
+        // On whitespace there is no word: bare caret, like VS Code.
+        assert_eq!(word_at("hello world", 5), None);
+        assert_eq!(word_at("", 0), None);
     }
 }
