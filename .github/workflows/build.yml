@@ -50,17 +50,17 @@ jobs:
       - name: Install X11 link deps (GPUI links xcb/xkbcommon)
         run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p videopsalm-gpui
-      - run: cp target/release/videopsalm-gpui videopsalm-gpui-linux-x64
+      - run: cargo build --release -p perez-rs
+      - run: cp target/release/perez-rs perez-rs-linux-x64
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if ! gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "$TAG_NAME" \
-              --notes "Clean-room VideoPsalm 1.29 port (Rust/GPUI). Offline-first worship presenter."
+              --notes "Perez (clean-room worship presenter, Rust/GPUI). Offline-first."
           fi
-          gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber videopsalm-gpui-linux-x64
+          gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber perez-rs-linux-x64
 
   package-win:
     name: Package + upload (Windows x64)
@@ -73,14 +73,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p videopsalm-gpui
-      - run: Copy-Item target/release/videopsalm-gpui.exe videopsalm-gpui-windows-x64.exe
+      - run: cargo build --release -p perez-rs
+      - run: Copy-Item target/release/perez-rs.exe perez-rs-windows-x64.exe
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if (!(gh release view "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" 2>$null)) {
             gh release create "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" `
               --title "$env:TAG_NAME" `
-              --notes "Clean-room VideoPsalm 1.29 port (Rust/GPUI). Offline-first worship presenter."
+              --notes "Perez (clean-room worship presenter, Rust/GPUI). Offline-first."
           }
-          gh release upload "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" --clobber videopsalm-gpui-windows-x64.exe
+          gh release upload "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" --clobber perez-rs-windows-x64.exe

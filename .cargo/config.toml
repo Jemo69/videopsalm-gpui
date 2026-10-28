@@ -1,6 +1,6 @@
 [alias]
 # Dev entry point: `cargo dev` == debug run of the GPUI app.
-dev = "run -p videopsalm-gpui"
+dev = "run -p perez-rs"
 
 # Machine-local linker path: libxkbcommon-x11.so.0 exists but the linker
 # name libxkbcommon-x11.so is missing from the system lib dirs; the symlink

@@ -1,7 +1,7 @@
 //! Pure UX helpers for the GPUI target.
 //!
 //! No GPUI dependency here on purpose: everything in this module is unit
-//! testable headless (`cargo test -p videopsalm-gpui`).
+//! testable headless (`cargo test -p perez-rs`).
 //!
 //! * [`RibbonTab`] — toolbar tabs mirroring the original ribbon
 //!   (File | Agenda | Songs | Bibles | Media | Style | View).

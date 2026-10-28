@@ -40,7 +40,7 @@ fn smoke_bibles() -> BibleLibrary {
 /// Returns a JSON summary string, or an error describing the first failure.
 pub fn run_smoke(folder: &str) -> Result<String, String> {
     if folder.trim().is_empty() {
-        return Err("usage: videopsalm-gpui --smoke <VideoPsalm-folder>".to_string());
+        return Err("usage: perez-rs --smoke <VideoPsalm-folder>".to_string());
     }
     let scan = vp_core::native_folder::scan_folder(folder);
     if !scan.errors.is_empty() {

@@ -3804,6 +3804,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "perez-rs"
+version = "0.1.15"
+dependencies = [
+ "gpui",
+ "rfd",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+ "vp-core",
+]
+
+[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6062,19 +6075,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "videopsalm-gpui"
-version = "0.1.14"
-dependencies = [
- "gpui",
- "rfd",
- "rusqlite",
- "serde",
- "serde_json",
- "unicode-segmentation",
- "vp-core",
-]
 
 [[package]]
 name = "vp-core"

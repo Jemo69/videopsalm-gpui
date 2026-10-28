@@ -1,12 +1,12 @@
 [package]
-name = "videopsalm-gpui"
-version = "0.1.14"
+name = "perez-rs"
+version = "0.1.15"
 edition = "2024"
-description = "VideoPsalm clean-room v1: GPUI control window + projector + stage view"
+description = "Perez: clean-room worship presentation (GPUI control window + projector + stage view)"
 license = "MIT"
 
 [[bin]]
-name = "videopsalm-gpui"
+name = "perez-rs"
 path = "src/main.rs"
 
 [dependencies]

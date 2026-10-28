@@ -1,7 +1,7 @@
 //! Lane G drawn icon set (BACKLOG B-27).
 //!
 //! No GPUI dependency for the data half on purpose: ids, the manifest and
-//! the SVG bytes are unit testable headless (`cargo test -p videopsalm-gpui`).
+//! the SVG bytes are unit the SVG bytes are unit testable headless (`cargo test -p perez-rs`).
 //! The render half is thin on purpose too:
 //!
 //! * `img()` **does** render SVG in gpui 0.2.2 — `elements/img.rs` falls back

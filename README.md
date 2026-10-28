@@ -1,4 +1,4 @@
-# VideoPsalm v1 — GPUI reimplementation (clean-room)
+# Perez — GPUI worship presenter (clean-room)
 
 Worship-presentation app rebuilt from scratch against
 `work/video-psalm-1-29/report/SPEC.md` (static triage of VideoPsalm 1.29;
@@ -71,7 +71,7 @@ sudo apt install libwayland-dev libxkbcommon-dev libx11-dev \
 > (transitive via `gpui → gpui_http_client → zed-async-tar`) with a 6-line
 > errno patch (`ENOATTR` → `ENODATA` on non-macOS, since current `libc`
 > removed the alias on Linux). See the `[patch.crates-io]` section in
-> `Cargo.toml`. Re-verify with `cargo build -p videopsalm-gpui` after any
+> `Cargo.toml`. Re-verify with `cargo build -p perez-rs` after any
 > `cargo update`.
 
 ## Run
@@ -79,7 +79,7 @@ sudo apt install libwayland-dev libxkbcommon-dev libx11-dev \
 ```sh
 cd gpui-app
 ./dev.sh     # build + run: forces X11 backend, carries linker path
-cargo dev    # alias for cargo run -p videopsalm-gpui (builds fine;
+cargo dev    # alias for cargo run -p perez-rs (builds fine;
              # running needs WAYLAND_DISPLAY unset — ./dev.sh does that)
 ```
 
@@ -190,7 +190,7 @@ agenda file; v1 projects hard cuts (no animated GL transitions yet).
 ```sh
 cd gpui-app
 cargo test -p vp-core
-cargo test -p videopsalm-gpui
+cargo test -p perez-rs
 ```
 
 Covers the four required core modules and more: verse-splitter (8),
