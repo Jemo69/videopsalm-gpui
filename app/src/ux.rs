@@ -731,6 +731,9 @@ pub struct LayoutPrefs {
     pub lang: String,
     pub ribbon: String,
     pub accent_override: Option<String>,
+    /// Lyric text color override (`None` = theme default, "Auto").
+    #[serde(default)]
+    pub fg_override: Option<String>,
     pub style_level: String,
     pub max_lines: usize,
     pub max_chars: usize,
@@ -742,6 +745,10 @@ pub struct LayoutPrefs {
     pub show_chords_proj: bool,
     pub clock_overlay: bool,
     pub bg_kind: String,
+    /// Assigned background file path (`""` = none). Restored only when
+    /// the file still exists — never a ghost path (WI-024).
+    #[serde(default)]
+    pub bg_file: String,
     /// Font ribbon state (new keys carry serde defaults so pre-existing
     /// layout files keep loading).
     #[serde(default = "d_font")]
@@ -810,6 +817,8 @@ impl Default for LayoutPrefs {
             lang: "en".to_string(),
             ribbon: "agenda".to_string(),
             accent_override: None,
+            fg_override: None,
+            bg_file: String::new(),
             style_level: "Song".to_string(),
             max_lines: 4,
             max_chars: 40,

@@ -41,12 +41,12 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{Context, Div, div, px};
+use gpui::{Context, Div, MouseButton, ObjectFit, div, img, px};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
 use vp_core::schema::BackgroundKind;
 
-use crate::{Root, UI, btn, label, row, section};
+use crate::{Root, UI, btn, btn_disabled, label, row, section};
 
 /// Sentinel id for the video gallery's leading black entry (RESEARCH §7):
 /// picking it *unassigns* the background (falls through the cascade to
@@ -61,10 +61,14 @@ pub struct GalleryState {
     pub video_filter: String,
     pub selected_image: Option<String>,
     pub selected_video: Option<String>,
+    /// Which gallery dropdown is open, if any (vendor: the Background tab
+    /// opens a gallery flyout; v1 renders it inline under the tab buttons —
+    /// press Images/Videos to drop it down, pick a thumbnail to assign and
+    /// it closes unless pinned). `None` = both closed.
+    pub open: Option<MediaFileKind>,
     /// "Keep the gallery opened" pin (RESEARCH §5): without it, picking a
-    /// thumbnail collapses the panel back to its one-line summary.
+    /// thumbnail closes the dropdown back to the tab buttons.
     pub keep_open: bool,
-    pub collapsed: bool,
     /// Last reported gallery folder for the Explore-folder row. Defaults to
     /// the vendor's documented `…/VideoPsalm/Images|Videos` layout *as a
     /// label only* — v1 never creates directories there.
@@ -149,73 +153,76 @@ pub fn gallery_folder(state: &GalleryState, kind: MediaFileKind) -> String {
 // Rendering (thin glue; needs cx, not unit-tested)
 // ---------------------------------------------------------------------------
 
-/// The Background ribbon tab: both galleries + the shared import row.
-///
-/// The vendor docks galleries as an expandable flyout off the Background tab
-/// (RESEARCH §9); v1 renders them inline in the tab body with the same rows,
-/// collapsed to a one-line summary by Close and restored by clicking it.
+/// The Background ribbon tab: Images/Videos dropdown buttons, exactly the
+/// vendor interaction (the real tab drops a gallery flyout; v1 drops the
+/// same panel inline under the buttons). Picking a thumbnail assigns it as
+/// the background and closes the dropdown unless pinned open.
 pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
-    let collapsed = root.galleries.collapsed;
-    if collapsed {
-        let (ni, nv) = (
-            root.galleries.library.images().count(),
-            root.galleries.library.videos().count(),
-        );
-        return section(
+    let (ni, nv) = (
+        root.galleries.library.images().count(),
+        root.galleries.library.videos().count(),
+    );
+    let open = root.galleries.open;
+    let mut kids = vec![row(vec![
+        btn(
             ui,
-            "Background — galleries",
-            vec![row(vec![btn(
+            cx,
+            &format!("▦ Images ({ni}) ▾"),
+            open == Some(MediaFileKind::Image),
+            |this, _, _, cx| {
+                this.galleries.open = if this.galleries.open == Some(MediaFileKind::Image) {
+                    None
+                } else {
+                    Some(MediaFileKind::Image)
+                };
+                cx.notify();
+            },
+        ),
+        btn(
+            ui,
+            cx,
+            &format!("▶ Videos ({nv}) ▾"),
+            open == Some(MediaFileKind::Video),
+            |this, _, _, cx| {
+                this.galleries.open = if this.galleries.open == Some(MediaFileKind::Video) {
+                    None
+                } else {
+                    Some(MediaFileKind::Video)
+                };
+                cx.notify();
+            },
+        ),
+        label(
+            ui,
+            "Press a button to drop the gallery down; click a thumbnail to set the background.",
+            12.,
+        ),
+    ])];
+    if let Some(kind) = open {
+        kids.push(gallery_panel(root, ui, cx, kind));
+        kids.push(import_row(root, ui, cx));
+        kids.push(row(vec![
+            btn(ui, cx, "Browse & assign background…", false, |this, _, _, cx| {
+                browse_assign_background(this, cx);
+            }),
+            label(
                 ui,
-                cx,
-                &format!("▸ Galleries: {ni} image(s), {nv} video(s) — click to expand"),
-                false,
-                |this, _, _, cx| {
-                    this.galleries.collapsed = false;
-                    cx.notify();
-                },
-            )])],
-        );
-    }
-    section(
-        ui,
-        "Background — image + video galleries (user files only)",
-        vec![
-            row(vec![label(
-                ui,
-                "Backgrounds are a style-level property: pick a thumbnail to assign it. Search filters file names as you type.",
+                "Pick any image/video file; it is imported and assigned in one step.",
                 12.,
-            )]),
-            gallery_panel(root, ui, cx, MediaFileKind::Image),
-            gallery_panel(root, ui, cx, MediaFileKind::Video),
-            import_row(root, ui, cx),
-            row(vec![
-                btn(
-                    ui,
-                    cx,
-                    "Browse & assign background…",
-                    false,
-                    |this, _, _, cx| {
-                        browse_assign_background(this, cx);
-                    },
-                ),
-                label(
-                    ui,
-                    "Pick any image/video file; it is imported and assigned in one step.",
-                    12.,
-                ),
-            ]),
-            row(vec![btn(
-                ui,
-                cx,
-                "✖ Close galleries",
-                false,
-                |this, _, _, cx| {
-                    this.galleries.collapsed = true;
-                    cx.notify();
-                },
-            )]),
-        ],
-    )
+            ),
+        ]));
+        kids.push(row(vec![btn(
+            ui,
+            cx,
+            "✖ Close gallery",
+            false,
+            |this, _, _, cx| {
+                this.galleries.open = None;
+                cx.notify();
+            },
+        )]));
+    }
+    section(ui, "Background — image + video galleries (user files only)", kids)
 }
 
 /// One gallery: caption grid + the documented control stack (RESEARCH §3).
@@ -242,7 +249,9 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         div_field(root, ui, cx, &filter_text, kind),
     ]));
 
-    // Thumbnail grid. The video gallery leads with the black sentinel (§7).
+    // Thumbnail grid (vendor: 5 columns; v1 caps at 60 cells so a big
+    // folder stays fast — the count line says how many match, Search
+    // narrows it). The video gallery leads with the black sentinel (§7).
     let mut thumbs: Vec<Div> = Vec::new();
     if kind == MediaFileKind::Video {
         let assigned = root.bg_kind == BackgroundKind::Color;
@@ -253,9 +262,10 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             BLACK_SENTINEL_ID,
             "■ black (remove bg)",
             assigned,
+            None,
         ));
     }
-    let entries: Vec<(String, String, bool)> = {
+    let entries: Vec<(String, String, bool, Option<PathBuf>)> = {
         let shown = match kind {
             MediaFileKind::Image => root.galleries.filtered_images(),
             MediaFileKind::Video => root.galleries.filtered_videos(),
@@ -264,19 +274,30 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             .into_iter()
             .map(|e| {
                 let assigned = root.bg_file.as_deref() == Some(e.path.as_path());
-                (e.id.clone(), e.caption(), assigned)
+                (e.id.clone(), e.caption(), assigned, Some(e.path.clone()))
             })
             .collect()
     };
     if thumbs.is_empty() && entries.is_empty() {
+        // Images only (the video grid always holds the black sentinel): a
+        // one-line way in, not a void. The import row sits directly below.
         thumbs.push(label(
             ui,
-            "(empty — galleries list user-added files only; add one below)",
+            "No images yet — Browse… below (or type a path + Import). Thumbnails appear here; click one to set it as the background.",
             12.,
         ));
     }
-    for (id, caption, assigned) in entries {
-        thumbs.push(thumb_btn(ui, cx, kind, &id, &caption, assigned));
+    const GRID_CAP: usize = 60;
+    let total = entries.len();
+    for (id, caption, assigned, path) in entries.into_iter().take(GRID_CAP) {
+        thumbs.push(thumb_btn(ui, cx, kind, &id, &caption, assigned, path.as_deref()));
+    }
+    if total > GRID_CAP {
+        thumbs.push(label(
+            ui,
+            &format!("+{} more — refine Search to narrow the grid.", total - GRID_CAP),
+            11.,
+        ));
     }
     kids.push(
         div_grid()
@@ -285,40 +306,48 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     );
 
     // Control stack (§3): Delete · Explore · Rebuild · Luminosité · Keep-open.
+    // Delete is greyed with nothing selected (the original greys the row);
+    // Explore is greyed until a gallery folder exists (imports by path need
+    // none, so the button must not pretend otherwise).
     let selected = root.galleries.selection(kind).map(str::to_string);
-    let sel_label = selected.clone().unwrap_or_default();
+    let has_sel = selected.is_some();
     kids.push(row(vec![
-        btn(
-            ui,
-            cx,
-            "Delete selected video/image",
-            false,
-            move |this, _, _, cx| {
+        if has_sel {
+            btn(ui, cx, "Delete selected video/image", false, move |this, _, _, cx| {
                 delete_selected(this, cx, kind);
-            },
-        ),
+            })
+        } else {
+            btn_disabled(ui, "Delete selected video/image")
+        },
         label(
             ui,
-            &format!(
-                "{}",
-                if sel_label.is_empty() {
-                    "(nothing selected — row is greyed in the original)"
-                } else {
-                    "selected — Delete removes it from the library"
-                }
-            ),
+            if has_sel {
+                "selected — Delete removes it from the library"
+            } else {
+                "(nothing selected)"
+            },
             11.,
         ),
     ]));
-    kids.push(row(vec![btn(
-        ui,
-        cx,
-        "Explore media folder",
-        false,
-        move |this, _, _, cx| {
-            explore_folder(this, cx, kind);
+    let has_folder = root.galleries.folder.is_some();
+    kids.push(row(vec![
+        if has_folder {
+            btn(ui, cx, "Explore media folder", false, move |this, _, _, cx| {
+                explore_folder(this, cx, kind);
+            })
+        } else {
+            btn_disabled(ui, "Explore media folder")
         },
-    )]));
+        label(
+            ui,
+            if has_folder {
+                ""
+            } else {
+                "(opens the gallery folder — none yet; open a VideoPsalm folder first)"
+            },
+            11.,
+        ),
+    ]));
     kids.push(row(vec![btn(
         ui,
         cx,
@@ -356,8 +385,48 @@ fn thumb_btn(
     id: &str,
     caption: &str,
     assigned: bool,
+    thumb: Option<&Path>,
 ) -> Div {
     let id_owned = id.to_string();
+    // Images with a reachable file render a real thumbnail (vendor parity);
+    // everything else (videos, sentinel, missing files) stays a captioned
+    // tile — gpui 0.2.2 has no video decoder for poster frames.
+    if kind == MediaFileKind::Image && let Some(p) = thumb && p.exists() {
+        let file = p.to_path_buf();
+                let mut cell = div()
+                    .p(px(4.))
+                    .rounded_sm()
+                    .bg(ui.panel)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .cursor_pointer();
+                cell = if assigned {
+                    cell.border_2().border_color(ui.engaged)
+                } else {
+                    cell.border_1().border_color(ui.border)
+                };
+                return cell
+                    .child(
+                        img(file)
+                            .object_fit(ObjectFit::Cover)
+                            .w(px(96.))
+                            .h(px(54.)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(ui.fg)
+                            .child(caption.to_string()),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            assign_pick(this, cx, kind, &id_owned);
+                        }),
+                    );
+    }
     let prefix = match kind {
         MediaFileKind::Image => "▦",
         MediaFileKind::Video => "▶",
@@ -565,7 +634,7 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
         }
     }
     if !root.galleries.keep_open {
-        root.galleries.collapsed = true;
+        root.galleries.open = None;
     }
     cx.notify();
 }

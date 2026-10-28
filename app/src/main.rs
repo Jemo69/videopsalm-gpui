@@ -332,6 +332,8 @@ pub(crate) struct Root {
     ribbon: RibbonTab,
     // Open-styling prefs (persisted to videopsalm-layout.json).
     accent_override: Option<String>,
+    /// Lyric text color override; `None` = theme default ("Auto").
+    fg_override: Option<String>,
     style_level: String,
     pub(crate) bg_kind: BackgroundKind,
     show_abbrev: bool,
@@ -643,6 +645,7 @@ impl Root {
             whole_ref_header: true,
             ribbon: RibbonTab::Text,
             accent_override: None,
+            fg_override: None,
             style_level: "Song".into(),
             bg_kind: BackgroundKind::Color,
             show_abbrev: true,
@@ -829,6 +832,12 @@ impl Root {
             lang: self.lang.clone(),
             ribbon: self.ribbon.id().to_string(),
             accent_override: self.accent_override.clone(),
+            fg_override: self.fg_override.clone(),
+            bg_file: self
+                .bg_file
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             style_level: self.style_level.clone(),
             max_lines: self.max_lines,
             max_chars: self.max_chars,
@@ -890,6 +899,19 @@ impl Root {
             self.ribbon = tab;
         }
         self.accent_override = p.accent_override.clone();
+        self.fg_override = p.fg_override.clone();
+        // The background file persists by path; a file that no longer
+        // exists (moved USB stick) restores as unset, not as a stale path
+        // — the projector must never point at a ghost (WI-024).
+        self.bg_file = {
+            let f = p.bg_file.trim();
+            if f.is_empty() {
+                None
+            } else {
+                let pb = PathBuf::from(f);
+                if pb.exists() { Some(pb) } else { None }
+            }
+        };
         if !p.style_level.trim().is_empty() {
             self.style_level = p.style_level.clone();
         }
@@ -1649,6 +1671,9 @@ impl Root {
         style.body.font = self.font_family.clone();
         style.body.align = self.align;
         style.body.valign = self.valign;
+        if let Some(c) = &self.fg_override {
+            style.body.color = c.clone();
+        }
         if style.level.trim().is_empty() {
             style.level = self.style_level.clone();
         }
@@ -1739,7 +1764,11 @@ impl Root {
             bg_kind: self.bg_kind,
             bg_file: self.bg_file.clone(),
             bg_color: hex(theme.projection_bg),
-            fg_color: hex(theme.projection_fg),
+            fg_color: self
+                .fg_override
+                .as_deref()
+                .map(hex)
+                .unwrap_or_else(|| hex(theme.projection_fg)),
             luminosity,
             lum_source,
             frame,
@@ -3282,6 +3311,22 @@ pub(crate) fn btn(
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
+/// Greyed-out button: visible but inert. The original greys rows like
+/// Delete with nothing selected instead of hiding them; an inert grey box
+/// reads as "unavailable" where a live-looking button reads as broken.
+/// No click handler, default cursor.
+pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
+    div()
+        .px_2()
+        .py(px(3.))
+        .rounded_sm()
+        .bg(ui.panel)
+        .text_color(ui.border)
+        .border_1()
+        .border_color(ui.border)
+        .child(label.to_string())
+}
+
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
     let mut col = div()
         .flex()
@@ -3514,6 +3559,22 @@ fn rail_index_for(title: &str) -> usize {
 
 pub(crate) fn row(kids: Vec<Div>) -> Div {
     let mut r = div().flex().flex_row().gap_1().items_center();
+    for k in kids {
+        r = r.child(k);
+    }
+    r
+}
+
+/// Like [`row`], but children flow onto the next line instead of clipping
+/// past a fixed-width panel (the 360px agenda column plus Browse buttons
+/// overflowed and clipped button labels — WI-024).
+pub(crate) fn row_wrap(kids: Vec<Div>) -> Div {
+    let mut r = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap_1()
+        .items_center();
     for k in kids {
         r = r.child(k);
     }
@@ -3912,6 +3973,33 @@ impl Root {
                 cx.notify();
             }));
         }
+        // Lyric text color (WI-024): preset swatches + Auto (theme). The
+        // Colors group next door drives the accent; this one drives the
+        // words on the screen — the vendor styles text color per level,
+        // v1 keeps one global setting like alignment.
+        for sw in [
+            "#FFFFFF", "#FACC15", "#38BDF8", "#22C55E", "#F97316", "#000000",
+        ] {
+            let active = self.fg_override.as_deref() == Some(sw);
+            font_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
+                this.fg_override = Some(sw.into());
+                this.mirror_font_to_style();
+                this.persist_layout_quiet();
+                cx.notify();
+            }));
+        }
+        font_kids.push(btn(
+            ui,
+            cx,
+            "◌ Auto",
+            self.fg_override.is_none(),
+            |this, _, _, cx| {
+                this.fg_override = None;
+                this.mirror_font_to_style();
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ));
         font_kids.push(btn(
             ui,
             cx,
@@ -4299,7 +4387,7 @@ impl Root {
                 self.agenda.title
             ),
             vec![
-                row(vec![
+                row_wrap(vec![
                     div().flex_1().child(self.path_field.clone()),
                     btn(ui, cx, "Browse…", false, |this, _, _, cx| {
                         if let Some(p) = crate::file_picker::pick_file(
@@ -4326,7 +4414,7 @@ impl Root {
                 ]),
                 // Native VideoPsalm interop (E-005..E-008): folder scan and
                 // `.vpagd` plan import/export through the typed path field.
-                row(vec![
+                row_wrap(vec![
                     div().flex_1().child(self.native_path_field.clone()),
                     btn(ui, cx, "Browse folder…", false, |this, _, _, cx| {
                         if let Some(p) = crate::file_picker::pick_folder("VideoPsalm folder") {
