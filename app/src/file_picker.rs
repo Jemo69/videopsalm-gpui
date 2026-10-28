@@ -9,18 +9,66 @@
 use std::path::PathBuf;
 
 /// Pick one existing file. `filters` are `(label, &[extensions])` pairs,
-/// e.g. `("Images", &["jpg", "png"])`.
+/// e.g. `("Images", &["jpg", "png"])`. The dialog starts in the
+/// VideoPsalm folder when one is known, so the operator usually just
+/// clicks through.
 pub fn pick_file(title: &str, filters: &[(&str, &[&str])]) -> Option<PathBuf> {
     let mut dlg = rfd::FileDialog::new().set_title(title);
     for (label, exts) in filters {
         dlg = dlg.add_filter(*label, exts);
     }
+    if let Some(start) = videopsalm_start_dir() {
+        dlg = dlg.set_directory(start);
+    }
     dlg.pick_file()
 }
 
 /// Pick a folder (gallery folders, the VideoPsalm document folder).
+/// Starts in the VideoPsalm folder when one is known.
 pub fn pick_folder(title: &str) -> Option<PathBuf> {
-    rfd::FileDialog::new().set_title(title).pick_folder()
+    let mut dlg = rfd::FileDialog::new().set_title(title);
+    if let Some(start) = videopsalm_start_dir() {
+        dlg = dlg.set_directory(start);
+    }
+    dlg.pick_folder()
+}
+
+/// Best-known VideoPsalm document folder, if it exists on this machine.
+/// Order: explicit override, Windows public documents (where the vendor
+/// installs its shared folder), the operator's documents, then home.
+pub fn videopsalm_start_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(v) = std::env::var("VIDEOPSALM_FOLDER") {
+        if !v.trim().is_empty() {
+            candidates.push(PathBuf::from(v.trim()));
+        }
+    }
+    // Mirror `native_folder::folder_candidates` plus the vendor's public
+    // documents home on Windows (`C:\Users\Public\Documents\VideoPsalm`).
+    if let Ok(public) = std::env::var("PUBLIC") {
+        if !public.trim().is_empty() {
+            candidates.push(
+                PathBuf::from(public.trim()).join("Documents").join("VideoPsalm"),
+            );
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            let h = PathBuf::from(home.trim());
+            candidates.push(h.join("Documents").join("VideoPsalm"));
+            candidates.push(h.join("VideoPsalm"));
+        }
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        if !profile.trim().is_empty() {
+            candidates.push(
+                PathBuf::from(profile.trim())
+                    .join("Documents")
+                    .join("VideoPsalm"),
+            );
+        }
+    }
+    candidates.into_iter().find(|p| p.is_dir())
 }
 
 /// Image extensions accepted by the gallery + background picker.

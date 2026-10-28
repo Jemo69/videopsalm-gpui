@@ -41,6 +41,7 @@ mod file_picker;
 mod icons;
 mod lyrics_doc;
 mod media_gallery;
+mod presentation;
 mod preview_resize;
 mod projector_window;
 mod rich_view;
@@ -54,7 +55,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, Context, Div, FocusHandle, Focusable, FontWeight,
+    App, Application, AsyncApp, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
     KeyBinding, MouseButton, MouseUpEvent, Rgba, ScrollHandle, Subscription, WeakEntity, Window,
     WindowBounds, WindowHandle, WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
@@ -285,6 +286,16 @@ pub(crate) struct Root {
     live_item: Option<usize>,
     live_slide: usize,
     blank: bool,
+    /// Snapshot of what the room sees (WI-033): the projector, the
+    /// projector tab and the control preview render ONLY from here — never
+    /// from the live library. Typing, browsing, importing or rescanning
+    /// never moves the projected slide by itself; only an explicit project
+    /// action (`push_projection`) does. That is the whole fix for
+    /// half-typed lyrics leaking onto the screen mid-edit.
+    projected_item: Option<usize>,
+    projected_slide: usize,
+    projected_slides: Vec<Slide>,
+    projected_chord: Option<String>,
 
     songs: Vec<Song>,
     results: Vec<usize>,
@@ -438,6 +449,12 @@ pub(crate) struct Root {
     pub(crate) bg_file: Option<PathBuf>,
     pub(crate) cut_scope: CutScope,
     pub(crate) projector_window: Option<WindowHandle<ProjectorWindow>>,
+    /// Deferred-open guard (WI-033): set while a projector open is queued
+    /// so double-clicks and Go-live spam cannot stack duplicate windows.
+    projector_opening: bool,
+    /// Shared projection snapshot (WI-033): the control window publishes
+    /// here on presentation actions; the projector window reads ONLY this.
+    presentation: Entity<crate::presentation::PresentationState>,
     pub(crate) aspect_ratio: String,
     pub(crate) projector_display: usize,
 
@@ -638,6 +655,10 @@ impl Root {
             sel_item: Some(0),
             live_item: None,
             live_slide: 0,
+            projected_item: None,
+            projected_slide: 0,
+            projected_slides: Vec::new(),
+            projected_chord: None,
             blank: false,
             songs,
             results: vec![0, 1],
@@ -716,6 +737,8 @@ impl Root {
             bg_file: None,
             cut_scope: CutScope::default(),
             projector_window: None,
+            projector_opening: false,
+            presentation: cx.new(|_| crate::presentation::PresentationState::empty()),
             aspect_ratio: "current".to_string(),
             projector_display: 0,
             scroll_agenda: ScrollHandle::new(),
@@ -1715,30 +1738,46 @@ impl Root {
         }
     }
 
-    /// The **projector's** frozen slide, or `None` when live.
-    ///
-    /// Freeze is one of four distinct presentation states (UX-RESEARCH §3.3):
-    /// it holds the projected slide so the congregation keeps seeing it while
-    /// the operator browses the preview. It is *not* the clock, and it is not
-    /// the shield (which blocks browsing from reaching the panel at all).
-    fn projector_slides(&self) -> Vec<Slide> {
-        match self.frozen_slide {
-            Some((Some(item), _)) => self.item_slides(item),
-            _ => self.live_slides(),
+    /// Push the current live selection to the projector (WI-033). The room
+    /// only ever changes here: navigation and explicit project actions call
+    /// this after mutating live state; everything else (typing in the
+    /// editor, browsing, importing, rescanning, toggling display flags)
+    /// leaves the snapshot alone, so the operator re-clicks to project an
+    /// edit. Frozen holds by construction — pushes are skipped while a
+    /// hold is engaged (unfreezing re-syncs explicitly). Publishing to the
+    /// shared [`PresentationState`](crate::presentation::PresentationState)
+    /// is part of the same step: it is what repaints the second window.
+    fn push_projection(&mut self, cx: &mut Context<Self>) {
+        if self.frozen_slide.is_some() {
+            return;
         }
+        self.projected_item = self.live_item;
+        let live = self.live_slides();
+        self.projected_slide = if live.is_empty() {
+            0
+        } else {
+            self.live_slide.min(live.len() - 1)
+        };
+        self.projected_slides = live;
+        self.projected_chord = self.proj_chord_line();
+        crate::presentation::publish(self, cx);
     }
 
-    /// Slide the projector is actually showing, honouring a freeze.
-    fn projector_slide_index(&self, live_len: usize) -> usize {
-        match self.frozen_slide {
-            Some((item, slide)) => {
-                let len = match item {
-                    Some(i) => self.item_slides(i).len(),
-                    None => live_len,
-                };
-                if len == 0 { 0 } else { slide.min(len - 1) }
-            }
-            None => self.live_slide.min(live_len.saturating_sub(1)),
+    /// The **projector's** slides: always the pushed snapshot, frozen or
+    /// not. Freeze works by *withholding* pushes, not by re-resolving — so
+    /// mid-edit typing can never leak onto the room's screen through it.
+    fn projector_slides(&self) -> Vec<Slide> {
+        self.projected_slides.clone()
+    }
+
+    /// Slide the projector is actually showing: the pushed position,
+    /// clamped to the pushed slides.
+    fn projector_slide_index(&self) -> usize {
+        let n = self.projected_slides.len();
+        if n == 0 {
+            0
+        } else {
+            self.projected_slide.min(n - 1)
         }
     }
 
@@ -1749,26 +1788,25 @@ impl Root {
     ///
     /// The decision itself (`blank > freeze > live`, hide-text keeps the
     /// background) is `vp_core::media::projector_frame` — pure and tested;
-    /// this only packs owned data out of the control state.
+    /// this only packs owned data out of the control state. The slide
+    /// content itself always comes from the pushed snapshot, never from a
+    /// live re-resolve (WI-033).
     pub(crate) fn projector_snapshot(&self, cx: &App) -> ProjectorSnapshot {
         let theme = self.theme();
-        let live = self.live_slides();
-        let frozen_len = match self.frozen_slide {
-            Some((Some(i), _)) => self.item_slides(i).len(),
-            _ => live.len(),
-        };
+        let slides = self.projector_slides();
+        let len = slides.len();
         let frame = projector_frame(
             self.blank,
             self.text_hidden,
             self.frozen_slide,
-            self.live_item,
-            self.live_slide,
-            live.len(),
-            frozen_len,
+            self.projected_item,
+            self.projected_slide,
+            len,
+            len,
         );
         let slide = frame
             .item
-            .and_then(|it| self.item_slides(it).get(frame.slide).cloned());
+            .and_then(|_| slides.get(frame.slide).cloned());
         let (header, lines, footer) = match slide {
             Some(s) => (s.header, s.lines, s.footer),
             None => (String::new(), Vec::new(), String::new()),
@@ -1830,8 +1868,9 @@ impl Root {
             underline: self.underline,
             align: self.align,
             valign: self.valign,
-            chord: self.proj_chord_line(),
+            chord: self.projected_chord.clone(),
             accent: self.ui().accent,
+            danger: self.ui().danger,
         }
     }
 
@@ -1849,19 +1888,28 @@ impl Root {
             self.set_status(cx, "Projector window already open — focused.");
             return;
         }
+        // One flight at a time: a second click (or Go-live) while the
+        // deferred open below is still queued must not stack windows.
+        if self.projector_opening {
+            self.set_status(cx, "Projector window opening…");
+            return;
+        }
+        self.projector_opening = true;
         let root = cx.entity();
+        // Direct field access, NOT root.read(): we are inside Root's own
+        // update here, and any entity read of Root would re-enter the map.
+        let presentation = self.presentation.clone();
         // Deferred past the current update: opening a window builds and
-        // first-paints its view synchronously, and that paint reads Root —
-        // doing it inside Root's own update panics the entity map
-        // ("cannot read Root while it is already being updated", caught
-        // by the WI-029 crash log). Deferred, the update has finished.
+        // first-paints its view synchronously, and that paint must never
+        // touch Root (WI-033: the projector reads only the published
+        // snapshot). Deferral is belt-and-braces on top of the split.
         crash_log::log_line("projector open requested (deferred past update)");
-        let root2 = root.clone();
         cx.defer(move |cx: &mut App| {
-            match projector_window::open_projector_window(cx, root2, fullscreen) {
+            match projector_window::open_projector_window(cx, presentation, fullscreen) {
                 Ok(handle) => {
                     let _ = root.update(cx, |this, cx| {
                         this.projector_window = Some(handle);
+                        this.projector_opening = false;
                         this.projector_on = true;
                         this.persist_layout_quiet();
                         crash_log::log_line(if fullscreen {
@@ -1882,6 +1930,7 @@ impl Root {
                 Err(e) => {
                     crash_log::log_line(&format!("projector open FAILED: {e}"));
                     let _ = root.update(cx, |this, cx| {
+                        this.projector_opening = false;
                         this.set_status(cx, format!("Projector window failed: {e}"));
                     });
                 }
@@ -2209,6 +2258,95 @@ impl Root {
 
     // ------------------------------------------------------------- agenda
 
+    /// Create an empty local songbook to group songs into, and scope the
+    /// browser to it so `＋ New song` files straight in.
+    fn create_songbook(&mut self, cx: &mut Context<Root>) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let book = vp_core::schema::Songbook {
+            id: format!("local-book:{stamp}"),
+            name: "New songbook".to_string(),
+            abbrev: "New".to_string(),
+            read_only: false,
+        };
+        let name = book.name.clone();
+        if vp_core::library::upsert_songbook(&self.db, &book).is_err() {
+            self.set_status(cx, "Could not create the songbook.");
+            return;
+        }
+        self.songbook_filter = Some(book.id.clone());
+        let q = self.search_field.read(cx).text();
+        self.refresh_search(&q, cx);
+        self.persist_layout_quiet();
+        self.set_status(cx, format!("{name} created and selected — add songs to it."));
+        cx.notify();
+    }
+
+    /// Create a new song in the scoped songbook (or a fresh "My Songs"
+    /// book when nothing is scoped) and open it in the editor for immediate
+    /// typing. Local songs save into the library database like imports.
+    fn create_song(&mut self, cx: &mut Context<Root>) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let book_id = match self.songbook_filter.clone() {
+            Some(id)
+                if self
+                    .songs
+                    .iter()
+                    .any(|s| s.songbook_id == id) =>
+            {
+                id
+            }
+            _ => {
+                // No usable scope: file under "My Songs", creating that
+                // book the first time it is needed.
+                let id = "local-book:my-songs".to_string();
+                let book = vp_core::schema::Songbook {
+                    id: id.clone(),
+                    name: "My Songs".to_string(),
+                    abbrev: "Mine".to_string(),
+                    read_only: false,
+                };
+                if vp_core::library::upsert_songbook(&self.db, &book).is_err() {
+                    self.set_status(cx, "Could not create the My Songs book.");
+                    return;
+                }
+                id
+            }
+        };
+        let song = vp_core::schema::Song {
+            id: format!("local:{stamp}"),
+            title: "New song".to_string(),
+            songbook_id: book_id,
+            verses: vec![vp_core::schema::SongVerse {
+                id: "V1".to_string(),
+                lines: vec![String::new()],
+                order: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let title = song.title.clone();
+        if vp_core::library::upsert_song(&self.db, &song).is_err() {
+            self.set_status(cx, "Could not save the new song.");
+            return;
+        }
+        self.songs.push(song);
+        let idx = self.songs.len() - 1;
+        self.songbook_filter = None;
+        let q = self.search_field.read(cx).text();
+        self.refresh_search(&q, cx);
+        self.select_song(cx, idx);
+        self.set_status(cx, format!("{title} created — type the lyrics, then project it."));
+        cx.notify();
+    }
+
     fn add_song_to_agenda(&mut self, cx: &mut Context<Self>) {
         if let Some(si) = self.sel_song {
             if let Some(song) = self.songs.get(si).cloned() {
@@ -2313,6 +2451,8 @@ impl Root {
                         self.sel_item = None;
                         self.live_item = None;
                         let _ = library::push_recent(&self.db, &path, now_secs());
+                        // Fresh agenda, nothing live: clear the room too.
+                        self.push_projection(cx);
                         self.set_status(cx, format!("Opened {path}"));
                     }
                     Err(e) => self.set_status(cx, format!("Invalid agenda: {e}")),
@@ -2330,6 +2470,8 @@ impl Root {
         self.live_slide = 0;
         self.blank = false;
         self.mode = Mode::Projector;
+        // Explicit show: project it now (WI-033).
+        self.push_projection(cx);
         cx.notify();
     }
 
@@ -2396,6 +2538,8 @@ impl Root {
                 }
             }
         }
+        // Explicit step: project it now (WI-033).
+        self.push_projection(cx);
         self.scroll_slide_into_view();
         cx.notify();
     }
@@ -2551,6 +2695,8 @@ impl Root {
         }
         self.live_slide = if to_end { n - 1 } else { 0 };
         self.blank = false;
+        // Explicit jump: project it now (WI-033).
+        self.push_projection(cx);
         cx.notify();
     }
 
@@ -2608,6 +2754,8 @@ impl Root {
             self.live_slide = idx;
             self.blank = false;
             self.text_hidden = false;
+            // Explicit click: project the slide now (WI-033).
+            self.push_projection(cx);
             cx.notify();
         }
     }
@@ -2653,6 +2801,8 @@ impl Root {
         // §3.1: when moving in a list, the row you land on is scrolled into
         // view. The live slide must never be off-screen in a long song.
         self.scroll_slide_into_view();
+        // Explicit click: project it now (WI-033).
+        self.push_projection(cx);
         cx.notify();
     }
 
@@ -2702,6 +2852,8 @@ impl Root {
         {
             self.live_slide = slide_idx;
             self.blank = false;
+            // Explicit jump: project it now (WI-033).
+            self.push_projection(cx);
             cx.notify();
         }
     }
@@ -2845,17 +2997,11 @@ impl Root {
         if !self.show_chords_proj {
             return None;
         }
-        let live_len = self.live_slides().len();
         let slides = self.projector_slides();
-        let header = slides
-            .get(self.projector_slide_index(live_len))?
-            .header
-            .clone();
-        let item_idx = match self.frozen_slide {
-            Some((Some(i), _)) => i,
-            _ => self.live_item?,
-        };
-        let item = self.agenda.items.get(item_idx)?;
+        let header = slides.get(self.projector_slide_index())?.header.clone();
+        // The song lookup follows the pushed projection, not the live
+        // library edit state (WI-033): chords shown match chords projected.
+        let item = self.agenda.items.get(self.projected_item?)?;
         let song_id = match &item.reference {
             ItemRef::Song { song_id } => song_id,
             _ => return None,
@@ -3034,22 +3180,44 @@ impl Root {
     /// formats the original's import assistant offers (OSIS, Zefania, and
     /// VideoPsalm's own per-book XML), through `vp_core::bible_import`.
     /// The path field sits in the Bibles pane next to the button.
-    fn import_bible_xml(&mut self, cx: &mut Context<Self>) {
+    /// Import a Bible translation: `.xml` (OSIS/Zefania/local) or a native
+    /// VideoPsalm `.vpc` Bible (WinZip-AES JSON, resolved through the canon
+    /// table). Routed by extension; replaces nothing — translations add
+    /// beside the installed ones and the new one becomes current.
+    fn import_bible_file(&mut self, cx: &mut Context<Self>) {
         let path = self.bible_xml_field.read(cx).text();
         let path = path.trim().to_string();
         if path.is_empty() {
-            self.set_status(cx, "Enter the path of the Bible XML file to import.");
+            self.set_status(cx, "Enter the path of the Bible file to import.");
             return;
         }
         let fallback = std::path::Path::new(&path)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Imported".to_string());
-        let result = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Cannot read file: {e}"))
-            .and_then(|xml| {
-                vp_core::bible_import::import_bible_xml(&xml, &fallback).map_err(|e| e.to_string())
-            });
+        let is_vpc = path.to_lowercase().ends_with(".vpc");
+        let result = if is_vpc {
+            std::fs::read(&path)
+                .map_err(|e| format!("Cannot read file: {e}"))
+                .and_then(|bytes| {
+                    vp_core::native_archive::read_vpac_entries(
+                        &bytes,
+                        vp_core::native_archive::VPC_PASSWORD,
+                    )
+                    .map_err(|e| format!("Cannot open .vpc: {e}"))
+                })
+                .and_then(|entries| {
+                    vp_core::bible_import::import_bible_vpc(&entries, &fallback)
+                        .map_err(|e| e.to_string())
+                })
+        } else {
+            std::fs::read_to_string(&path)
+                .map_err(|e| format!("Cannot read file: {e}"))
+                .and_then(|xml| {
+                    vp_core::bible_import::import_bible_xml(&xml, &fallback)
+                        .map_err(|e| e.to_string())
+                })
+        };
         match result {
             Ok(t) => {
                 let id = t.translation_id.clone();
@@ -3064,6 +3232,44 @@ impl Root {
         }
     }
 
+    /// Import one songbook file (plain `.json` or encrypted `.vpc`) into
+    /// the library. Songs merge by id — a second import never duplicates —
+    /// and the library database is updated, so the songs survive restarts.
+    /// The file itself is never modified (read-only import).
+    fn import_songbook_file(&mut self, cx: &mut Context<Root>) {
+        let Some(picked) = crate::file_picker::pick_file(
+            "Import songbook",
+            &[("Songbook", &["json", "vpc"])],
+        ) else {
+            self.set_status(cx, "Browse cancelled — no file chosen.");
+            return;
+        };
+        let path = picked.to_string_lossy().into_owned();
+        match vp_core::native_folder::read_songbook_file(&path) {
+            Ok(book) => {
+                let name = book.songbook.name.clone();
+                let (added, _) = merge_native_songs(&mut self.songs, book.songs);
+                let mut failed = 0;
+                for s in &self.songs {
+                    if vp_core::library::upsert_song(&self.db, s).is_err() {
+                        failed += 1;
+                    }
+                }
+                let mut msg = format!(
+                    "Imported songbook {name}: {} song(s) new ({} total).",
+                    added,
+                    self.songs.len()
+                );
+                if failed > 0 {
+                    msg.push_str(&format!(" {failed} library write(s) failed."));
+                }
+                self.set_status(cx, msg);
+            }
+            Err(e) => self.set_status(cx, format!("Songbook import failed: {e}")),
+        }
+        cx.notify();
+    }
+
     /// Open a native VideoPsalm document folder (`Documents/VideoPsalm`):
     /// songbooks (plain `.json` and encrypted `.vpc`), media galleries,
     /// and style backgrounds are discovered; songs merge into the library
@@ -3072,9 +3278,11 @@ impl Root {
     fn open_native_folder(&mut self, cx: &mut Context<Self>) {
         let typed = self.native_path_field.read(cx).text();
         let folder = if typed.trim().is_empty() {
-            match std::env::var("HOME") {
-                Ok(home) if !home.is_empty() => format!("{home}/Documents/VideoPsalm"),
-                _ => {
+            // Same search the picker starts in: explicit override, the
+            // vendor's public-documents home, then the operator's own.
+            match crate::file_picker::videopsalm_start_dir() {
+                Some(dir) => dir.to_string_lossy().into_owned(),
+                None => {
                     self.set_status(cx, "Enter the VideoPsalm folder path.");
                     return;
                 }
@@ -3165,6 +3373,8 @@ impl Root {
                 self.agenda_dirty = true;
                 self.sel_item = None;
                 self.live_item = None;
+                // New agenda, nothing live: clear the room too.
+                self.push_projection(cx);
                 let _ = vp_core::library::push_recent(&self.db, &path, now_secs());
                 let mut msg = format!(
                     "Imported {n} item(s) from {} ({added} song(s) new).",
@@ -3528,8 +3738,9 @@ fn section_scrolled(
     top: Vec<Div>,
     rows: Vec<Div>,
     handle: &ScrollHandle,
+    id: &'static str,
 ) -> Div {
-    section_scrolled_with_rail(ui, title, top, rows, handle, Vec::new())
+    section_scrolled_with_rail(ui, title, top, rows, handle, Vec::new(), id)
 }
 
 /// [`section_scrolled`] plus a right-hand button rail beside the list.
@@ -3540,23 +3751,12 @@ fn section_scrolled_with_rail(
     rows: Vec<Div>,
     handle: &ScrollHandle,
     rail: Vec<Div>,
+    id: &'static str,
 ) -> Div {
-    // The id must be **stable across renders**, not freshly minted each time:
-    // GPUI keys state by `ElementId`, so a new id every frame resets the
-    // scroll offset and makes `ScrollHandle::scroll_to_item` untargetable.
-    // One id per panel, derived from its title, gives every list its own
-    // scroll state that survives a re-render.
-    let id: &'static str = Box::leak(
-        [
-            "scroll:agenda",
-            "scroll:songs",
-            "scroll:books",
-            "scroll:slides",
-            "scroll:shortcuts",
-        ][rail_index_for(title)]
-        .to_string()
-        .into_boxed_str(),
-    );
+    // The id is fixed per panel (not derived from the translated title):
+    // GPUI keys state by `ElementId`, so sharing one id between two
+    // panels corrupts both scroll states, and a fresh id every frame
+    // would reset the offset on every render.
 
     // List and button rail share a row: list scrolls, rail is pinned.
     let list = div()
@@ -3612,25 +3812,10 @@ fn section_scrolled_with_rail(
     col.child(body)
 }
 
-/// Pick a stable scroll-id slot for a panel from its title.
-///
-/// The titles are translated, so they are matched by substring rather than
-/// used verbatim — a language switch must not hand a panel a different scroll
-/// state.
-fn rail_index_for(title: &str) -> usize {
-    let t = title.to_lowercase();
-    if t.contains("shortcut") {
-        4
-    } else if t.contains("slide") {
-        3
-    } else if t.contains("agenda") {
-        0
-    } else if t.contains("song") {
-        1
-    } else {
-        2
-    }
-}
+/// Scroll ids are fixed per panel (passed to `section_scrolled`), never
+/// derived from translated titles: "Chants"/"Livre"/"Diapos" all missed
+/// the old substring match and shared one id, corrupting every list's
+/// scroll state in French (and the agenda header matched nothing at all).
 
 pub(crate) fn row(kids: Vec<Div>) -> Div {
     let mut r = div().flex().flex_row().gap_1().items_center();
@@ -4596,6 +4781,7 @@ impl Root {
             rows,
             &self.scroll_agenda,
             rail,
+            "scroll:agenda",
         )
     }
 
@@ -4785,6 +4971,15 @@ impl Root {
             .child(btn(
                 ui,
                 cx,
+                "+ Songbook",
+                false,
+                |this, _, _, cx| {
+                    this.create_songbook(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
                 "all",
                 self.excluded_books.is_empty(),
                 |this, _, _, cx| {
@@ -4916,7 +5111,7 @@ impl Root {
             &self.t("songs"),
             vec![
                 label(ui, &hint, 12.),
-                row(vec![
+                row_wrap(vec![
                     btn(
                         ui,
                         cx,
@@ -4959,10 +5154,29 @@ impl Root {
                     btn(ui, cx, "+Agenda", false, |this, _, _, cx| {
                         this.add_song_to_agenda(cx);
                     }),
+                    btn(ui, cx, "＋ New song", false, |this, _, _, cx| {
+                        this.create_song(cx);
+                    }),
+                    btn(ui, cx, "Import songbook…", false, |this, _, _, cx| {
+                        this.import_songbook_file(cx);
+                    }),
+                    // Pager: wheel scrolls, but nothing on screen says so —
+                    // these always move the list (WI-031).
+                    btn(ui, cx, "▲", false, |this, _, _, cx| {
+                        let h = this.scroll_songs.clone();
+                        h.scroll_to_item(h.top_item().saturating_sub(8));
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "▼", false, |this, _, _, cx| {
+                        let h = this.scroll_songs.clone();
+                        h.scroll_to_item(h.top_item().saturating_add(8));
+                        cx.notify();
+                    }),
                 ]),
             ],
             rows,
             &self.scroll_songs,
+            "scroll:songs",
         )]
     }
 
@@ -5099,18 +5313,20 @@ impl Root {
         let import_row = vec![
             div().flex_1().child(self.bible_xml_field.clone()),
             btn(ui, cx, "Browse…", false, |this, _, _, cx| {
-                if let Some(p) =
-                    crate::file_picker::pick_file("Import Bible XML", &[("XML", &["xml"])])
-                {
+                if let Some(p) = crate::file_picker::pick_file(
+                    "Import Bible (XML or native .vpc)",
+                    &[("XML", &["xml"]), ("VideoPsalm Bible", &["vpc"])],
+                ) {
                     this.bible_xml_field
                         .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                    cx.notify();
+                    // Browse means do it: import straight away.
+                    this.import_bible_file(cx);
                 } else {
                     this.set_status(cx, "Browse cancelled — no file chosen.");
                 }
             }),
             btn(ui, cx, &self.t("import_bible"), false, |this, _, _, cx| {
-                this.import_bible_xml(cx);
+                this.import_bible_file(cx);
             }),
         ];
         let mut out = vec![
@@ -5151,9 +5367,22 @@ impl Root {
                 .child(section_scrolled(
                     ui,
                     &self.t("book"),
-                    Vec::new(),
+                    vec![row(vec![
+                        btn(ui, cx, "▲", false, |this, _, _, cx| {
+                            let h = this.scroll_books.clone();
+                            h.scroll_to_item(h.top_item().saturating_sub(8));
+                            cx.notify();
+                        }),
+                        btn(ui, cx, "▼", false, |this, _, _, cx| {
+                            let h = this.scroll_books.clone();
+                            h.scroll_to_item(h.top_item().saturating_add(8));
+                            cx.notify();
+                        }),
+                        label(ui, "66 books — ▲▼ always move the list", 11.),
+                    ])],
                     book_rows,
                     &self.scroll_books,
+                    "scroll:books",
                 ))
                 .child(
                     div()
@@ -5423,7 +5652,14 @@ impl Root {
             rows.push(label(ui, "— verse selection —", 12.));
             rows.extend(bible_rows);
         }
-        section_scrolled(ui, "⌨ shortcuts", Vec::new(), rows, &self.scroll_shortcuts)
+        section_scrolled(
+            ui,
+            "⌨ shortcuts",
+            Vec::new(),
+            rows,
+            &self.scroll_shortcuts,
+            "scroll:shortcuts",
+        )
     }
 
     /// Song verse blocks: `[☑] V1 <preview> [slides 1-2]`.
@@ -5674,6 +5910,7 @@ impl Root {
             Vec::new(),
             kids,
             &self.scroll_slides,
+            "scroll:slides",
         )]
     }
 
@@ -5687,7 +5924,7 @@ impl Root {
     fn preview_big_panel(&mut self, ui: &UI, cx: &mut Context<Root>, win_w: f32, win_h: f32) -> Div {
         let slides = self.projector_slides();
         let n = slides.len();
-        let cur = self.projector_slide_index(self.live_slides().len());
+        let cur = self.projector_slide_index();
         // Room mirror: the same background stack the projector renders, so
         // an assigned image shows here too (WI-023) — not just on a second
         // window the operator may not have.
@@ -5775,7 +6012,7 @@ impl Root {
                         .h(px(bh))
                         .overflow_hidden()
                         .child(projector_window::render_snapshot(
-                            ui, &snap, PREVIEW_W, bh, None,
+                            snap.danger, &snap, PREVIEW_W, bh, None,
                         )),
                 )
         };
@@ -6016,9 +6253,13 @@ impl Root {
     fn toggle_freeze(&mut self, cx: &mut Context<Self>) {
         if self.frozen_slide.is_some() {
             self.frozen_slide = None;
+            // Releasing the hold re-syncs to live (WI-033).
+            self.push_projection(cx);
             self.set_status(cx, "Projection live again.");
         } else {
-            self.frozen_slide = Some((self.live_item, self.live_slide));
+            // The hold freezes the *projected* snapshot, not the live
+            // selection (WI-033): mid-edit typing cannot leak onto it.
+            self.frozen_slide = Some((self.projected_item, self.projected_slide));
             self.set_status(
                 cx,
                 "Frozen — holding this slide while you browse the preview. Press ● Go live (top bar) to release.",
@@ -6045,6 +6286,9 @@ impl Root {
             self.blank = false;
             Some(left.join(", "))
         };
+        // Go live means the LIVE selection: re-project it (an edit made
+        // while frozen only lands when the operator says so — here).
+        self.push_projection(cx);
         self.open_projector(cx, false);
         // open_projector reports its own failures — only overwrite its
         // status line when we actually have a window to show.
@@ -6743,10 +6987,10 @@ impl Root {
         // is control-only — the sacred screen carries none of it.
         let snap = self.projector_snapshot(cx);
         let n = self.projector_slides().len();
-        let cur = self.projector_slide_index(self.live_slides().len());
+        let cur = self.projector_slide_index();
         let frozen = self.frozen_slide.is_some();
         let inner = projector_window::render_snapshot(
-            ui,
+            snap.danger,
             &snap,
             target_w,
             target_h,

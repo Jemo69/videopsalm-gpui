@@ -44,7 +44,7 @@ use vp_core::media::ProjectorFrame;
 use vp_core::schema::{Align, BackgroundKind, BgFit, ItemKind, ItemRef, VAlign};
 
 use crate::rich_view;
-use crate::{Root, UI};
+use crate::presentation::PresentationState;
 
 /// Owned render input for one projector frame. Built by
 /// `Root::projector_snapshot` (which alone can see the private control
@@ -83,6 +83,9 @@ pub struct ProjectorSnapshot {
     pub valign: VAlign,
     pub chord: Option<String>,
     pub accent: Rgba,
+    /// Alert-overlay background (WI-033): the only `UI` color the
+    /// projector needs, snapshotted so render never touches Root.
+    pub danger: Rgba,
     /// Standalone agenda media replacing the slide (§12.1), if the live item
     /// is an Image/Video file. `None` for songs, verses, audio, everything
     /// else — those render the lyric slide over the assigned background.
@@ -248,7 +251,7 @@ fn standalone_layer(m: &StandaloneMedia) -> Div {
 /// visibly move the picture instead of only flipping a chip (WI-026). Text
 /// sizes scale from the box height, exactly like the 1080p rule.
 pub(crate) fn render_snapshot(
-    ui: &UI,
+    danger: Rgba,
     snap: &ProjectorSnapshot,
     target_w: f32,
     target_h: f32,
@@ -397,7 +400,7 @@ pub(crate) fn render_snapshot(
             .child(div().flex_1().child(inner))
             .child(
                 div()
-                    .bg(ui.danger)
+                    .bg(danger)
                     .p(px(10.))
                     .text_size(px(26.0 * scale))
                     .text_color(rgb(0xFFFFFF))
@@ -432,29 +435,26 @@ pub(crate) fn render_snapshot(
 // Window glue (needs cx; NOT unit-tested — stated, not dodged)
 // ---------------------------------------------------------------------------
 
-/// Live projector view: holds the shared [`Root`](crate::Root) entity and
-/// repaints whenever the control window notifies it.
+/// Live projector view: holds the shared [`PresentationState`] and repaints
+/// whenever the control window publishes a new one. It never touches
+/// `Entity<Root>` — that was the re-entrant crash (WI-033).
 pub(crate) struct ProjectorWindow {
-    root: Entity<Root>,
+    presentation: Entity<PresentationState>,
     _observe: Option<Subscription>,
 }
 
 impl Render for ProjectorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let (ui, snap, ratio) = {
-            let r = self.root.read(cx);
-            (
-                r.ui(),
-                r.projector_snapshot(cx),
-                AspectRatio::from_label(&r.aspect_ratio),
-            )
+        let (snap, aspect) = {
+            let p = self.presentation.read(cx);
+            (p.snapshot.clone(), p.aspect)
         };
         let size = window.bounds().size;
         let (target_w, target_h): (f32, f32) = (size.width.into(), size.height.into());
         div()
             .size_full()
             .bg(rgb(0x000000))
-            .child(render_snapshot(&ui, &snap, target_w, target_h, ratio))
+            .child(render_snapshot(snap.danger, &snap, target_w, target_h, aspect))
     }
 }
 
@@ -466,7 +466,7 @@ impl Render for ProjectorWindow {
 /// `anyhow` directly, so gpui's `anyhow::Error` is mapped to text here.
 pub(crate) fn open_projector_window(
     cx: &mut App,
-    root: Entity<Root>,
+    presentation: Entity<PresentationState>,
     fullscreen: bool,
 ) -> Result<WindowHandle<ProjectorWindow>, String> {
     let restore = Bounds::centered(None, size(px(1920.), px(1080.)), cx);
@@ -491,10 +491,10 @@ pub(crate) fn open_projector_window(
         move |_, cx| {
             cx.new(|cx| {
                 let mut w = ProjectorWindow {
-                    root: root.clone(),
+                    presentation: presentation.clone(),
                     _observe: None,
                 };
-                let sub = cx.observe(&root, |_, _, cx: &mut Context<ProjectorWindow>| {
+                let sub = cx.observe(&presentation, |_, _, cx: &mut Context<ProjectorWindow>| {
                     cx.notify();
                 });
                 w._observe = Some(sub);
