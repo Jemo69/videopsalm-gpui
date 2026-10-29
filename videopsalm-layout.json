@@ -1,7 +1,7 @@
 {
   "theme_id": "light",
   "lang": "en",
-  "ribbon": "text",
+  "ribbon": "background",
   "accent_override": null,
   "fg_override": null,
   "style_level": "Song",
