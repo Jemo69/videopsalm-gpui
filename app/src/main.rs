@@ -86,10 +86,12 @@ use projector_window::{ProjectorSnapshot, ProjectorWindow};
 use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
     BibleSearch, LayoutPrefs, PresKey, RibbonTab, SaveTarget, TOOL_STRIP_PENCIL_INDEX,
-    apply_verse_grid_click, bible_hit_rows, chapter_count, default_verse_count, digit_slide_index,
-    filmstrip_label, font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
-    presentation_start_index, route_pres_key, save_target, section_name, shortcut_help,
-    slide_verse_id, style_levels, tool_strip, transitions, verse_shortcut_target,
+    agenda_rail_buttons, apply_verse_grid_click, bible_hit_rows, bible_slide_badge,
+    bible_slide_verses, chapter_count, default_verse_count, digit_slide_index, filmstrip_label,
+    font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
+    presentation_start_index, rail_menu_items, route_pres_key, save_target, section_name,
+    shortcut_help, slide_verse_id, style_dropdown_label, style_levels, style_override_dot,
+    style_preset_levels, tool_strip, transitions, valid_rename_title, verse_shortcut_target,
 };
 
 actions!(
@@ -347,6 +349,10 @@ pub(crate) struct Root {
     /// Lyric text color override; `None` = theme default ("Auto").
     fg_override: Option<String>,
     style_level: String,
+    /// Styles dropdown open flag (session-only, like `font_menu_open`): the
+    /// original shows the 8 style levels behind one `Song ▾` dropdown, not as
+    /// eight always-visible buttons.
+    style_menu_open: bool,
     pub(crate) bg_kind: BackgroundKind,
     /// Background image fit (WI-025): cover crops to fill, contain shows
     /// the whole image. Global like alignment; the vendor offers no such
@@ -405,6 +411,21 @@ pub(crate) struct Root {
     ribbon_collapsed: bool,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
+    /// Agenda file rows (path New/Open/Save + native folder/plan) hidden
+    /// behind a `File ▾` disclosure, collapsed by default. The 1.29 agenda
+    /// panel is the item list plus the right rail — file operations live in
+    /// menus, not in the panel body (fidelity loop R4). Session-only.
+    agenda_file_open: bool,
+    /// Which agenda rail `▾` popup menu is open (`"add"`, `"save"`,
+    /// `"delete"`, `"move up"`, `"move down"`). Session-only, like
+    /// `style_menu_open`: one menu at a time, Escape or any row/main-button
+    /// click dismisses it.
+    rail_menu: Option<String>,
+    /// Agenda row being renamed in place (double-click turns the title into
+    /// an editable field; Enter commits, Escape cancels). Session-only: a
+    /// rename is a gesture, not a saved layout.
+    renaming_item: Option<usize>,
+    rename_field: gpui::Entity<TextField>,
     /// The agenda has unsaved changes — the `*` in the panel header.
     ///
     /// UX-RESEARCH §3.1 / §10.9: `*Agenda` when unsaved, cleared on save. The
@@ -480,6 +501,15 @@ pub(crate) struct Root {
     book_field: gpui::Entity<TextField>,
     verse_field: gpui::Entity<TextField>,
     title_field: gpui::Entity<TextField>,
+    song_title_field: gpui::Entity<TextField>,
+    number_field: gpui::Entity<TextField>,
+    /// Song footer editors (LAYOUT.md centre column): References, Author,
+    /// Copyright, Composer. Live like Number/Title — typing marks the song
+    /// dirty, Save persists.
+    references_field: gpui::Entity<TextField>,
+    author_field: gpui::Entity<TextField>,
+    copyright_field: gpui::Entity<TextField>,
+    composer_field: gpui::Entity<TextField>,
     media_path_field: gpui::Entity<TextField>,
     media_range_field: gpui::Entity<TextField>,
     // B-32 gallery fields: import path + per-gallery search boxes.
@@ -617,12 +647,20 @@ impl Root {
 
         let agenda = Agenda::from_json(AGENDA_SAMPLE).unwrap_or_else(|_| Agenda::new("New agenda"));
 
-        let search_field = cx.new(|cx| TextField::new("Keywords or number to search", cx));
+        let search_field =
+            cx.new(|cx| TextField::new("Keywords (title and lyrics) or number to search", cx));
         let path_field = cx.new(|cx| TextField::new("agenda.json", cx));
         let alert_field = cx.new(|cx| TextField::new("Alert text...", cx));
         let book_field = cx.new(|cx| TextField::new("Book (e.g. John / Jean)...", cx));
         let verse_field = cx.new(|cx| TextField::new("16-18", cx));
         let title_field = cx.new(|cx| TextField::new("Item title...", cx));
+        let rename_field = cx.new(|cx| TextField::new("Rename item...", cx));
+        let song_title_field = cx.new(|cx| TextField::new("New song", cx));
+        let number_field = cx.new(|cx| TextField::new("0", cx));
+        let references_field = cx.new(|cx| TextField::new("References", cx));
+        let author_field = cx.new(|cx| TextField::new("Author", cx));
+        let copyright_field = cx.new(|cx| TextField::new("Copyright", cx));
+        let composer_field = cx.new(|cx| TextField::new("Composer", cx));
         let font_filter_field = cx.new(|cx| TextField::new("Search fonts...", cx));
         let media_path_field = cx.new(|cx| TextField::new("media file path...", cx));
         let media_range_field = cx.new(|cx| TextField::new("in-out ms, e.g. 1000-5000", cx));
@@ -687,6 +725,7 @@ impl Root {
             accent_override: None,
             fg_override: None,
             style_level: "Song".into(),
+            style_menu_open: false,
             bg_kind: BackgroundKind::Color,
             bg_fit: BgFit::Cover,
             show_abbrev: true,
@@ -717,6 +756,10 @@ impl Root {
             show_shortcuts: false,
             ribbon_collapsed: false,
             show_keytips: false,
+            agenda_file_open: false,
+            rail_menu: None,
+            renaming_item: None,
+            rename_field: rename_field.clone(),
             agenda_dirty: false,
             frame_sel: FrameId::Body,
             frame_drag: None,
@@ -757,6 +800,12 @@ impl Root {
             book_field: book_field.clone(),
             verse_field: verse_field.clone(),
             title_field: title_field.clone(),
+            song_title_field: song_title_field.clone(),
+            number_field: number_field.clone(),
+            references_field: references_field.clone(),
+            author_field: author_field.clone(),
+            copyright_field: copyright_field.clone(),
+            composer_field: composer_field.clone(),
             font_menu_open: false,
             font_filter: String::new(),
             font_filter_field: font_filter_field.clone(),
@@ -818,6 +867,80 @@ impl Root {
             },
         );
         this._lyrics_doc_subs.push(sub);
+        // Song metadata editors (Number/Title + footer): typing writes
+        // straight into the in-memory song and marks it dirty — Save
+        // persists. Setting the fields programmatically replays the same
+        // path with identical values, so there is no update loop.
+        let number_field_sub = number_field.clone();
+        let sub = cx.subscribe(
+            &number_field_sub,
+            |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.number_field {
+                    let v = ev.text.clone();
+                    this.touch_song_meta(cx, move |s| s.song_id = v.clone());
+                }
+            },
+        );
+        this._subs.push(sub);
+        let title_sub = song_title_field.clone();
+        let sub = cx.subscribe(
+            &title_sub,
+            |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.song_title_field {
+                    let v = ev.text.clone();
+                    this.touch_song_meta(cx, move |s| s.title = v.clone());
+                }
+            },
+        );
+        this._subs.push(sub);
+        let refs_sub = references_field.clone();
+        let sub = cx.subscribe(
+            &refs_sub,
+            |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.references_field {
+                    let v = ev.text.clone();
+                    this.touch_song_meta(cx, move |s| {
+                        s.references = split_meta_list(&v);
+                    });
+                }
+            },
+        );
+        this._subs.push(sub);
+        let author_sub = author_field.clone();
+        let sub = cx.subscribe(
+            &author_sub,
+            |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.author_field {
+                    let v = ev.text.clone();
+                    this.touch_song_meta(cx, move |s| {
+                        s.authors = split_meta_list(&v);
+                    });
+                }
+            },
+        );
+        this._subs.push(sub);
+        let copyright_sub = copyright_field.clone();
+        let sub = cx.subscribe(
+            &copyright_sub,
+            |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.copyright_field {
+                    let v = ev.text.clone();
+                    this.touch_song_meta(cx, move |s| s.copyright = v.clone());
+                }
+            },
+        );
+        this._subs.push(sub);
+        let composer_sub = composer_field.clone();
+        let sub = cx.subscribe(
+            &composer_sub,
+            |this: &mut Root, emitter, ev: &Changed, cx| {
+                if emitter == this.composer_field {
+                    let v = ev.text.clone();
+                    this.touch_song_meta(cx, move |s| s.composer = v.clone());
+                }
+            },
+        );
+        this._subs.push(sub);
         let sub = cx.subscribe(
             &clock_field,
             |this: &mut Root, emitter, ev: &Changed, cx| {
@@ -851,12 +974,14 @@ impl Root {
         {
             use crate::text_field::Changed;
             let f = this.font_filter_field.clone();
-            this._subs.push(cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
-                if emitter == this.font_filter_field {
-                    this.font_filter = ev.text.clone();
-                    cx.notify();
-                }
-            }));
+            this._subs.push(
+                cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
+                    if emitter == this.font_filter_field {
+                        this.font_filter = ev.text.clone();
+                        cx.notify();
+                    }
+                }),
+            );
         }
 
         // Preload the CENTER title edit + verse range fields from the boot
@@ -865,6 +990,14 @@ impl Root {
         if let Some(item) = this.agenda.items.first() {
             let title = item.title.clone();
             this.title_field.update(cx, |f, cx| f.set_text(&title, cx));
+        }
+        let first = this.songs.first().cloned();
+        if let Some(song) = first {
+            this.number_field
+                .update(cx, |f, cx| f.set_text(&song.song_id, cx));
+            this.song_title_field
+                .update(cx, |f, cx| f.set_text(&song.title, cx));
+            this.sync_song_meta_fields(cx);
         }
         // File-backed layout persistence (View ribbon → Save layout).
         if let Some(layout) = LayoutPrefs::load_file(LayoutPrefs::FILE) {
@@ -1279,6 +1412,41 @@ impl Root {
         map
     }
 
+    /// Slides for the panel's display rows: every verse renders, including
+    /// unchecked ones (an unchecked row must stay visible so the operator
+    /// can re-check it). The projector keeps using [`Root::item_slides`],
+    /// which honors the projection set.
+    fn display_item_slides(&self, idx: usize) -> Vec<Slide> {
+        let Some(item) = self.agenda.items.get(idx) else {
+            return Vec::new();
+        };
+        let songs = self.song_map();
+        let header_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.header.template.as_str())
+            .filter(|t| !t.is_empty());
+        let footer_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.footer.template.as_str())
+            .filter(|t| !t.is_empty());
+        compute_item_slides_templated(
+            item,
+            &songs,
+            &self.bibles,
+            &self.opts(),
+            true,
+            self.whole_ref_header,
+            header_tpl,
+            footer_tpl,
+        )
+    }
+
     /// Verses of the selected agenda item in display order:
     /// `(verse_key, plain_lines)`. Honors the item's verse-order override.
     fn ordered_item_verses(&self, idx: usize) -> Vec<(String, Vec<String>)> {
@@ -1431,6 +1599,13 @@ impl Root {
         if idx >= self.agenda.items.len() {
             return;
         }
+        // Clicking another row commits a pending in-place rename (clicking
+        // away accepts the edit); any open rail popup dismisses, so an
+        // outside click never leaves a menu stranded.
+        if self.renaming_item.is_some_and(|r| r != idx) {
+            self.commit_agenda_rename(cx);
+        }
+        self.rail_menu = None;
         if self.shield_blocks_browse() && self.live_item.is_some() && !punch_through {
             self.set_status(
                 cx,
@@ -1453,6 +1628,7 @@ impl Root {
                             self.sel_song = Some(si);
                             let doc = lyrics_doc::document_from_verses(&self.songs[si].verses);
                             self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
+                            self.sync_song_meta_fields(cx);
                         }
                     }
                 }
@@ -1479,6 +1655,186 @@ impl Root {
         } else {
             cx.notify();
         }
+    }
+
+    /// Begin an in-place rename of an agenda row: the title turns into an
+    /// editable field (UX-RESEARCH §3.1: items are renamable meaningful
+    /// names). Enter commits, Escape cancels, clicking another row commits.
+    fn begin_agenda_rename(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        idx: usize,
+    ) {
+        if let Some(item) = self.agenda.items.get(idx) {
+            let title = item.title.clone();
+            self.renaming_item = Some(idx);
+            self.rail_menu = None;
+            self.rename_field.update(cx, |f, cx| f.set_text(&title, cx));
+            let handle = self.rename_field.read(cx).focus_handle(cx);
+            window.focus(&handle);
+            cx.notify();
+        }
+    }
+
+    /// Commit the in-place agenda rename (`Enter` or the `✓` button).
+    fn commit_agenda_rename(&mut self, cx: &mut Context<Self>) {
+        if let Some(idx) = self.renaming_item.take() {
+            let raw = self.rename_field.read(cx).text();
+            match valid_rename_title(&raw) {
+                Some(title) => {
+                    if let Some(id) = self.agenda.items.get(idx).map(|x| x.id.clone()) {
+                        if agenda_ops::rename_item(&mut self.agenda, &id, &title) {
+                            self.agenda_dirty = true;
+                            self.sel_item = Some(idx);
+                            self.set_status(cx, "Renamed agenda item.");
+                        }
+                    }
+                }
+                None => self.set_status(cx, "Rename cancelled — titles cannot be blank."),
+            }
+            cx.notify();
+        }
+    }
+
+    /// Cancel the in-place agenda rename (`Escape` or the `✕` button).
+    fn cancel_agenda_rename(&mut self, cx: &mut Context<Self>) {
+        if self.renaming_item.take().is_some() {
+            self.set_status(cx, "Rename cancelled.");
+            cx.notify();
+        }
+    }
+
+    /// Dismiss every open popup menu (rail `▾`, Styles dropdown, font
+    /// dropdown, scope grid). Returns true when anything was open, so
+    /// `Escape` can stop there instead of ending the presentation.
+    fn dismiss_popups(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut open = self.rail_menu.is_some();
+        open |= self.style_menu_open;
+        open |= self.font_menu_open;
+        open |= self.show_scope_grid;
+        self.rail_menu = None;
+        self.style_menu_open = false;
+        self.font_menu_open = false;
+        self.show_scope_grid = false;
+        if open {
+            cx.notify();
+        }
+        open
+    }
+
+    /// Run one agenda rail popup-menu choice. Choices with a backend do the
+    /// work; choices without one are still visibly present and report status
+    /// text — no menu entry is ever dead.
+    fn run_rail_choice(&mut self, cx: &mut Context<Self>, choice: &str) {
+        self.rail_menu = None;
+        match choice {
+            "add-selected" => self.add_current_to_agenda(cx),
+            "add-image" => self.set_status(
+                cx,
+                "Add slideshow image… is not wired yet — drop the file onto the agenda.",
+            ),
+            "add-video" => self.set_status(
+                cx,
+                "Add standalone video… is not wired yet — drop the file onto the agenda.",
+            ),
+            "add-audio" => self.set_status(
+                cx,
+                "Add audio file… is not wired yet — drop the file onto the agenda.",
+            ),
+            "add-ppt" => self.set_status(
+                cx,
+                "Add PowerPoint… is not wired yet — drop the .pptx onto the agenda.",
+            ),
+            "add-doc" => self.set_status(
+                cx,
+                "Add document… is not wired yet — drop the Word/Excel/PDF onto the agenda.",
+            ),
+            "add-web" => self.set_status(
+                cx,
+                "Add web site / YouTube… is not wired yet — paste the link as an item title.",
+            ),
+            "save" => self.save_agenda(cx),
+            "save-as" => {
+                self.agenda_file_open = true;
+                self.set_status(cx, "Save as… — set the path under File ▸, then Save agenda.");
+                cx.notify();
+            }
+            "save-full" => self.set_status(
+                cx,
+                "Comprehensive save… is not wired yet — Save agenda writes the same JSON.",
+            ),
+            "delete-selected" => self.remove_selected_agenda_item(cx),
+            "delete-all" => {
+                if self.agenda.items.is_empty() {
+                    self.set_status(cx, "Agenda is already empty.");
+                } else {
+                    self.agenda.items.clear();
+                    self.sel_item = None;
+                    self.live_item = None;
+                    self.agenda_dirty = true;
+                    self.set_status(cx, "Deleted all agenda items.");
+                }
+                cx.notify();
+            }
+            "move-up" => self.nudge_selected_agenda(cx, -1, false),
+            "move-top" => self.nudge_selected_agenda(cx, -1, true),
+            "move-down" => self.nudge_selected_agenda(cx, 1, false),
+            "move-bottom" => self.nudge_selected_agenda(cx, 1, true),
+            _ => self.set_status(cx, format!("{choice} is not wired yet (reported, no-op).")),
+        }
+    }
+
+    /// Remove the selected agenda item (shared by the Delete rail button and
+    /// its popup menu, so both stay in sync).
+    fn remove_selected_agenda_item(&mut self, cx: &mut Context<Self>) {
+        if let Some(i) = self.sel_item {
+            if let Some(id) = self.agenda.items.get(i).map(|x| x.id.clone()) {
+                agenda_ops::remove_item(&mut self.agenda, &id);
+                self.agenda_dirty = true;
+                self.sel_item = None;
+                self.set_status(cx, "Deleted agenda item.");
+                cx.notify();
+            }
+        } else {
+            self.set_status(cx, "Nothing selected — click an agenda row first.");
+            cx.notify();
+        }
+    }
+
+    /// Move the selected agenda item one step (`to_edge` false) or all the
+    /// way to the top/bottom (`to_edge` true). Shared by the move rail
+    /// buttons and their popup menus.
+    fn nudge_selected_agenda(&mut self, cx: &mut Context<Self>, dir: i32, to_edge: bool) {
+        let Some(i) = self.sel_item else {
+            self.set_status(cx, "Nothing selected — click an agenda row first.");
+            cx.notify();
+            return;
+        };
+        if i >= self.agenda.items.len() {
+            return;
+        }
+        if to_edge {
+            let item = self.agenda.items.remove(i);
+            if dir < 0 {
+                self.agenda.items.insert(0, item);
+                self.sel_item = Some(0);
+            } else {
+                self.agenda.items.push(item);
+                self.sel_item = Some(self.agenda.items.len().saturating_sub(1));
+            }
+        } else if let Some(id) = self.agenda.items.get(i).map(|x| x.id.clone()) {
+            if dir < 0 {
+                agenda_ops::move_up(&mut self.agenda, &id);
+                self.sel_item = Some(i.saturating_sub(1));
+            } else {
+                agenda_ops::move_down(&mut self.agenda, &id);
+                self.sel_item = Some((i + 1).min(self.agenda.items.len().saturating_sub(1)));
+            }
+        }
+        self.agenda_dirty = true;
+        self.set_status(cx, "Moved agenda item.");
+        cx.notify();
     }
 
     /// Duplicate the selected agenda item (LEFT agenda ▣ button).
@@ -1808,9 +2164,7 @@ impl Root {
             len,
             len,
         );
-        let slide = frame
-            .item
-            .and_then(|_| slides.get(frame.slide).cloned());
+        let slide = frame.item.and_then(|_| slides.get(frame.slide).cloned());
         let (header, lines, footer) = match slide {
             Some(s) => (s.header, s.lines, s.footer),
             None => (String::new(), Vec::new(), String::new()),
@@ -1882,15 +2236,26 @@ impl Root {
     /// on the main display; the handle is kept so the Message tab can flip
     /// it later and so a second press focuses instead of duplicating.
     fn open_projector(&mut self, cx: &mut Context<Self>, fullscreen: bool) {
+        // Drop dead handles: closing the projector window via OS chrome
+        // leaves Some(handle) behind, and every later Go Live would
+        // "focus" a dead window (looks invisible) instead of reopening.
         if let Some(handle) = self.projector_window {
-            let _ = handle.update(cx, |_, window, _| {
+            match handle.update(cx, |_, window, _| {
                 window.activate_window();
                 if fullscreen && !window.is_fullscreen() {
                     window.toggle_fullscreen();
                 }
-            });
-            self.set_status(cx, "Projector window already open — focused.");
-            return;
+            }) {
+                Ok(_) => {
+                    self.set_status(cx, "Projector window already open — focused.");
+                    return;
+                }
+                Err(_) => {
+                    self.projector_window = None;
+                    self.projector_on = false;
+                    // fall through and reopen
+                }
+            }
         }
         // One flight at a time: a second click (or Go-live) while the
         // deferred open below is still queued must not stack windows.
@@ -1905,10 +2270,7 @@ impl Root {
         let presentation = self.presentation.clone();
         // The operator's chosen display (Settings → projector monitor),
         // resolved now while we can still read our own fields.
-        let display = cx
-            .displays()
-            .get(self.projector_display)
-            .map(|d| d.id());
+        let display = cx.displays().get(self.projector_display).map(|d| d.id());
         // Deferred past the current update: opening a window builds and
         // first-paints its view synchronously, and that paint must never
         // touch Root (WI-033: the projector reads only the published
@@ -1987,28 +2349,28 @@ impl Root {
 
     // ------------------------------------------------------------- search
 
-/// Indices of `songs` shown for an empty query: the scoped songbook if one
-/// is picked, minus excluded books (WI-031: the old code listed every
-/// song regardless, so grouping by book silently did nothing).
-fn scope_song_indices(
-    songs: &[Song],
-    scope: Option<&str>,
-    excluded: &HashSet<String>,
-) -> Vec<usize> {
-    songs
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| {
-            if let Some(book) = scope {
-                if s.songbook_id != book {
-                    return false;
+    /// Indices of `songs` shown for an empty query: the scoped songbook if one
+    /// is picked, minus excluded books (WI-031: the old code listed every
+    /// song regardless, so grouping by book silently did nothing).
+    fn scope_song_indices(
+        songs: &[Song],
+        scope: Option<&str>,
+        excluded: &HashSet<String>,
+    ) -> Vec<usize> {
+        songs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                if let Some(book) = scope {
+                    if s.songbook_id != book {
+                        return false;
+                    }
                 }
-            }
-            !excluded.contains(&s.songbook_id)
-        })
-        .map(|(i, _)| i)
-        .collect()
-}
+                !excluded.contains(&s.songbook_id)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
 
     fn refresh_search(&mut self, query: &str, cx: &mut Context<Self>) {
         let scope = self.songbook_filter.clone().map(|s| vec![s]);
@@ -2081,6 +2443,7 @@ fn scope_song_indices(
         if let Some(song) = self.songs.get(idx).cloned() {
             let doc = lyrics_doc::document_from_verses(&song.verses);
             self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
+            self.sync_song_meta_fields(cx);
             // Keep the slides panel in step with the selected library song so
             // the editor and the slides panel never desync (Stage 04).
             if let Some(ag_idx) = self.agenda.items.iter().position(
@@ -2190,6 +2553,44 @@ fn scope_song_indices(
                 );
             }
             Err(e) => self.set_status(cx, format!("Could not save: {e}")),
+        }
+    }
+
+    /// Write through a metadata edit into the in-memory song and mark it
+    /// dirty. Save persists; the header `*` shows until then.
+    fn touch_song_meta(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Song)) {
+        if let Some(si) = self.sel_song {
+            if let Some(song) = self.songs.get_mut(si) {
+                f(song);
+                self.song_dirty = true;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Push the selected song's metadata into the editor fields (Number,
+    /// Title, References, Author, Copyright, Composer). Called whenever the
+    /// selection changes so the editor never shows a stale song's data.
+    fn sync_song_meta_fields(&mut self, cx: &mut Context<Self>) {
+        let song = self
+            .sel_song
+            .and_then(|si| self.songs.get(si))
+            .cloned();
+        if let Some(song) = song {
+            self.number_field
+                .update(cx, |f, cx| f.set_text(&song.song_id, cx));
+            self.song_title_field
+                .update(cx, |f, cx| f.set_text(&song.title, cx));
+            self.references_field.update(cx, |f, cx| {
+                f.set_text(&song.references.join(", "), cx);
+            });
+            self.author_field.update(cx, |f, cx| {
+                f.set_text(&song.authors.join(", "), cx);
+            });
+            self.copyright_field
+                .update(cx, |f, cx| f.set_text(&song.copyright, cx));
+            self.composer_field
+                .update(cx, |f, cx| f.set_text(&song.composer, cx));
         }
     }
 
@@ -2338,7 +2739,10 @@ fn scope_song_indices(
         let q = self.search_field.read(cx).text();
         self.refresh_search(&q, cx);
         self.persist_layout_quiet();
-        self.set_status(cx, format!("{name} created and selected — add songs to it."));
+        self.set_status(
+            cx,
+            format!("{name} created and selected — add songs to it."),
+        );
         cx.notify();
     }
 
@@ -2352,14 +2756,7 @@ fn scope_song_indices(
             .map(|d| d.as_millis())
             .unwrap_or(0);
         let book_id = match self.songbook_filter.clone() {
-            Some(id)
-                if self
-                    .songs
-                    .iter()
-                    .any(|s| s.songbook_id == id) =>
-            {
-                id
-            }
+            Some(id) if self.songs.iter().any(|s| s.songbook_id == id) => id,
             _ => {
                 // No usable scope: file under "My Songs", creating that
                 // book the first time it is needed.
@@ -2400,7 +2797,10 @@ fn scope_song_indices(
         let q = self.search_field.read(cx).text();
         self.refresh_search(&q, cx);
         self.select_song(cx, idx);
-        self.set_status(cx, format!("{title} created — type the lyrics, then project it."));
+        self.set_status(
+            cx,
+            format!("{title} created — type the lyrics, then project it."),
+        );
         cx.notify();
     }
 
@@ -2950,6 +3350,11 @@ fn scope_song_indices(
                 .focus_handle(cx)
                 .is_focused(window)
             || self
+                .rename_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
                 .media_path_field
                 .read(cx)
                 .focus_handle(cx)
@@ -3302,10 +3707,9 @@ fn scope_song_indices(
     /// and the library database is updated, so the songs survive restarts.
     /// The file itself is never modified (read-only import).
     fn import_songbook_file(&mut self, cx: &mut Context<Root>) {
-        let Some(picked) = crate::file_picker::pick_file(
-            "Import songbook",
-            &[("Songbook", &["json", "vpc"])],
-        ) else {
+        let Some(picked) =
+            crate::file_picker::pick_file("Import songbook", &[("Songbook", &["json", "vpc"])])
+        else {
             self.set_status(cx, "Browse cancelled — no file chosen.");
             return;
         };
@@ -3556,6 +3960,27 @@ fn scope_song_indices(
         if self.song_document_focused(window, cx) && is_slide_vocabulary_key(key) {
             return;
         }
+        // In-place agenda rename: Enter commits, Escape cancels. Checked
+        // before the typing gate, which would swallow both as slide
+        // vocabulary (`enter` → Next, `escape` → EndPres).
+        if self.renaming_item.is_some() {
+            if keystroke == "escape" {
+                self.cancel_agenda_rename(cx);
+                self.focus_root(window);
+                return;
+            }
+            if keystroke == "enter" || keystroke == "return" {
+                self.commit_agenda_rename(cx);
+                self.focus_root(window);
+                return;
+            }
+            return;
+        }
+        // An open popup menu yields Escape to dismiss. Also before the
+        // typing gate, so a stranded menu never traps the operator.
+        if keystroke == "escape" && self.dismiss_popups(cx) {
+            return;
+        }
         // While a text field has focus only the non-character shortcuts work,
         // so on-the-fly lyric edits are never interrupted.
         let typing = self.editing(window, cx);
@@ -3724,9 +4149,8 @@ pub(crate) fn btn_tip(
     let mut d = btn(ui, cx, label, active, f);
     // `tooltip` lives on `Interactivity`, not `Div`: reach in through the
     // trait (in scope via the prelude) rather than rebuilding as Stateful.
-    d.interactivity().tooltip(move |_: &mut Window, cx: &mut App| {
-        cx.new(|_| TooltipLabel(text.clone())).into()
-    });
+    d.interactivity()
+        .tooltip(move |_: &mut Window, cx: &mut App| cx.new(|_| TooltipLabel(text.clone())).into());
     d
 }
 
@@ -3819,13 +4243,26 @@ fn swatch(
         .on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
+fn metadata_box(value: &str) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(70.))
+        .px_1()
+        .py(px(2.))
+        .border_1()
+        .border_color(rgb(0x9CA3AF))
+        .bg(rgb(0xFFFFFF))
+        .text_color(rgb(0x18181B))
+        .child(value.to_string())
+}
+
 /// Every glyph drawn inline in the ribbon and panel labels, so the
 /// font-safety test covers the whole surface and not just the tool strip.
 /// `FONT_SAFE_GLYPHS` (in `ux`) is the allow-list this must stay inside.
 /// Only read by the font-safety test, which is the point: it fails if a glyph
 /// is added that the default Linux UI font cannot draw.
 #[cfg_attr(not(test), allow(dead_code))]
-const APP_GLYPHS: &str = "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●↑↓↕▾↗✖…•";
+const APP_GLYPHS: &str = "◈○◐◑◒◓▸⊕⊗⊖◌⌕≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●↑↓↕▾↗✖…•";
 
 /// Small grid cell (chapter numbers, slide buttons).
 fn mini(
@@ -3951,6 +4388,15 @@ fn section_scrolled_with_rail(
 /// the old substring match and shared one id, corrupting every list's
 /// scroll state in French (and the agenda header matched nothing at all).
 
+/// Split a comma-separated metadata line (`References`, `Author`) into its
+/// entries. Pure so the footer parsing is unit-testable without a window.
+fn split_meta_list(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 pub(crate) fn row(kids: Vec<Div>) -> Div {
     let mut r = div().flex().flex_row().gap_1().items_center();
     for k in kids {
@@ -3963,12 +4409,7 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 /// past a fixed-width panel (the 360px agenda column plus Browse buttons
 /// overflowed and clipped button labels — WI-024).
 pub(crate) fn row_wrap(kids: Vec<Div>) -> Div {
-    let mut r = div()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .gap_1()
-        .items_center();
+    let mut r = div().flex().flex_row().flex_wrap().gap_1().items_center();
     for k in kids {
         r = r.child(k);
     }
@@ -4010,9 +4451,11 @@ impl Render for Root {
             .text_color(ui.fg)
             .text_size(px(14.));
         if chrome {
-            root = root
-                .child(self.topbar(&ui, cx))
-                .child(self.ribbon_bar(&ui, cx));
+            // The original's title bar is OS chrome, not an in-document
+            // utility toolbar. Keep those actions reachable from Message (the
+            // stage/live workspace) instead of adding a non-original row above
+            // the ribbon.
+            root = root.child(self.ribbon_bar(&ui, cx));
         }
         // KeyTips overlay (bare Alt): control mode with chrome only, never
         // over the projector or stage screens — and never over a chromeless
@@ -4219,17 +4662,38 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                btn(ui, cx, title, active, move |this, ev, _, cx| {
-                    if ev.click_count >= 2 {
-                        // Double-click tab header toggles ribbon collapse (B-14).
-                        this.ribbon_collapsed = !this.ribbon_collapsed;
-                        cx.notify();
-                    } else {
-                        this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
-                        this.persist_layout_quiet();
-                        cx.notify();
-                    }
-                })
+                // The active tab is ORANGE in the original (UX-RESEARCH §4.1),
+                // not an accent outline: an outlined tab reads as a button,
+                // not as the selected ribbon page.
+                let (tab_bg, tab_ink) = if active {
+                    (self.ui().engaged, ink_on(self.ui().engaged))
+                } else {
+                    (self.ui().panel, self.ui().fg)
+                };
+                div()
+                    .px_2()
+                    .py(px(2.))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(self.ui().border)
+                    .bg(tab_bg)
+                    .text_color(tab_ink)
+                    .cursor_pointer()
+                    .child(title.to_string())
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
+                            if ev.click_count >= 2 {
+                                // Double-click tab header toggles ribbon collapse (B-14).
+                                this.ribbon_collapsed = !this.ribbon_collapsed;
+                                cx.notify();
+                            } else {
+                                this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
+                                this.persist_layout_quiet();
+                                cx.notify();
+                            }
+                        }),
+                    )
             })
             .collect();
         div()
@@ -4251,7 +4715,8 @@ impl Root {
             // in a floating panel under the preview — which is why the control
             // window is a clean three columns.
             .when(self.ribbon == RibbonTab::Message, |d| {
-                d.child(self.live_panel(ui, cx))
+                d.child(self.utility_ribbon(ui, cx))
+                    .child(self.live_panel(ui, cx))
             })
             // The `Background` tab carries the image + video galleries
             // (B-32): click-to-assign at the Images/Videos style level with
@@ -4266,6 +4731,80 @@ impl Root {
             })
     }
 
+    /// Utility actions formerly rendered in a custom top row. VideoPsalm keeps
+    /// the window title in the OS title bar; its task-specific controls belong
+    /// to a ribbon workspace, not a second title bar.
+    fn utility_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .items_center()
+            .child(label(ui, "Workspace", 12.))
+            .child(btn(
+                ui,
+                cx,
+                "Control",
+                self.mode == Mode::Control,
+                |this, _, _, cx| {
+                    this.ui_go(Mode::Control, cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Projector",
+                self.mode == Mode::Projector,
+                |this, _, _, cx| {
+                    this.ui_go(Mode::Projector, cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Stage",
+                self.mode == Mode::Stage,
+                |this, _, _, cx| {
+                    this.ui_go(Mode::Stage, cx);
+                },
+            ))
+            .child(div().flex_1())
+            .child(label(ui, "Theme", 12.))
+            .child(btn(
+                ui,
+                cx,
+                "Light",
+                self.theme_id == "light",
+                |this, _, _, cx| {
+                    this.theme_id = "light".into();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Dark",
+                self.theme_id == "dark",
+                |this, _, _, cx| {
+                    this.theme_id = "dark".into();
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ))
+            .child(btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
+                this.lang = "en".into();
+                cx.notify();
+            }))
+            .child(btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
+                this.lang = "fr".into();
+                cx.notify();
+            }))
+            .child(btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
+                this.toggle_viewer_mode(cx);
+            }))
+    }
+
     // ------------------------------------------------------------- format ribbon
     // VideoPsalm-style formatting row, always visible under the tab bar:
     // Styles (style-level cascade) | Font (family, B/I/U, alignment, chord
@@ -4273,17 +4812,117 @@ impl Root {
     // stored in the style). Text/unicode glyphs only (clean room).
 
     fn format_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        // Styles group: hierarchy levels + legacy per-kind levels.
+        // Song group: the only group of the Text tab's left edge
+        // (SCREENSHOT-1.29-LAYOUT.md §Ribbon). Song-document actions live
+        // here, not buried in the editor panel.
+        let song_kids: Vec<Div> = vec![
+            btn(ui, cx, "Save song", false, |this, _, _, cx| {
+                this.save_song_document(cx);
+            }),
+            btn(
+                ui,
+                cx,
+                "+ Agenda",
+                false,
+                |this, _, _, cx| {
+                    this.add_current_to_agenda(cx);
+                },
+            ),
+        ];
+        // Styles group: ONE style-level dropdown (`Verse ▾`), the 1.29 chrome
+        // around it, then the preset row (SCREENSHOT-1.29-LAYOUT.md §Ribbon:
+        // dropdown + green dot + `A✎` button + preset-button row + launcher,
+        // clean-room drawn). All 8 levels from `style_levels()` live behind
+        // the dropdown; picking one sets the level and closes the menu.
         let mut style_kids: Vec<Div> = Vec::new();
-        for level in style_levels() {
+        let dot_lit = style_override_dot(&self.style_level);
+        let dot = div()
+            .flex_none()
+            .w(px(14.))
+            .h(px(14.))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(11.))
+            .border_1()
+            .border_color(if dot_lit {
+                rgb(0x16A34A)
+            } else {
+                ui.border
+            })
+            .bg(if dot_lit {
+                rgb(0x22C55E)
+            } else {
+                ui.bg
+            })
+            .text_color(if dot_lit {
+                rgb(0xFFFFFF)
+            } else {
+                ui.border
+            })
+            .child("●".to_string());
+        style_kids.push(row(vec![
+            btn(
+                ui,
+                cx,
+                &style_dropdown_label(&self.style_level),
+                self.style_menu_open,
+                |this, _, _, cx| {
+                    this.style_menu_open = !this.style_menu_open;
+                    this.rail_menu = None;
+                    cx.notify();
+                },
+            ),
+            dot,
+            btn(
+                ui,
+                cx,
+                "A✎",
+                self.show_style_explorer,
+                |this, _, _, cx| {
+                    this.show_style_explorer = !this.show_style_explorer;
+                    this.set_status(cx, "Style preset editor (Style explorer).");
+                    this.persist_layout_quiet();
+                    cx.notify();
+                },
+            ),
+        ]));
+        if self.style_menu_open {
+            for level in style_levels() {
+                let active = self.style_level == level;
+                let text = format!("◈ {level}");
+                style_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
+                    this.style_level = level.into();
+                    this.style_menu_open = false;
+                    this.persist_layout_quiet();
+                    cx.notify();
+                }));
+            }
+        }
+        // Preset row: quick-pick cascade glyphs setting the same level as
+        // the dropdown (UX-RESEARCH §4.2: `Base / Songbooks / Song / Verse`),
+        // so the row can never disagree with it.
+        let mut presets: Vec<Div> = Vec::new();
+        for level in style_preset_levels() {
             let active = self.style_level == level;
-            let text = format!("◈ {level}");
-            style_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
+            let glyph = match level {
+                "Base" => "●",
+                "Songbooks" => "▤",
+                "Song" => "♪",
+                "Verse" => "◈",
+                _ => "▫",
+            };
+            let caption = format!("{glyph} {level}");
+            presets.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
                 this.style_level = level.into();
+                this.style_menu_open = false;
                 this.persist_layout_quiet();
+                this.set_status(cx, format!("Style level: {level}."));
                 cx.notify();
             }));
         }
+        style_kids.push(row(presets));
         // Style Explorer launcher, bottom-right of the Styles group (UX-RESEARCH
         // §5.3: "the little launcher button at the bottom-right of the Styles
         // ribbon group"). It is NOT a fifth ribbon tab and does not belong on
@@ -4332,10 +4971,7 @@ impl Root {
         if self.font_menu_open {
             font_kids.push(div().flex_1().child(self.font_filter_field.clone()));
             let q = self.font_filter.to_lowercase();
-            let all: Vec<String> = self
-                .system_fonts
-                .clone()
-                .unwrap_or_default();
+            let all: Vec<String> = self.system_fonts.clone().unwrap_or_default();
             const FONT_CAP: usize = 40;
             let mut shown = 0usize;
             let mut matched = 0usize;
@@ -4361,13 +4997,24 @@ impl Root {
             }
             font_kids.push(label(
                 ui,
-                &format!("{matched} font(s){}", if matched > shown { format!(" — showing {shown}, type to narrow") } else { String::new() }),
+                &format!(
+                    "{matched} font(s){}",
+                    if matched > shown {
+                        format!(" — showing {shown}, type to narrow")
+                    } else {
+                        String::new()
+                    }
+                ),
                 11.,
             ));
         }
         // Projector lyric size (WI-026): step the base size; everything
         // projected scales from it (preview proportionally).
-        font_kids.push(label(ui, &format!("A {}", self.font_size.round() as i32), 12.));
+        font_kids.push(label(
+            ui,
+            &format!("A {}", self.font_size.round() as i32),
+            12.,
+        ));
         font_kids.push(btn(ui, cx, "A-", false, |this, _, _, cx| {
             this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
@@ -4519,13 +5166,38 @@ impl Root {
                 this.set_transition(cx, t);
             }));
         }
+        // Slide layout group (SCREENSHOT-1.29-LAYOUT.md §Ribbon): the verse
+        // splitter's two knobs. They used to live as steppers under the slide
+        // list; the original puts them in the ribbon, beside Colors.
+        let layout_kids: Vec<Div> = vec![
+            label(ui, &format!("Max lines [{}]", self.max_lines), 12.),
+            btn(ui, cx, "L-", false, |this, _, _, cx| {
+                this.max_lines = this.max_lines.saturating_sub(1).max(1);
+                cx.notify();
+            }),
+            btn(ui, cx, "L+", false, |this, _, _, cx| {
+                this.max_lines = (this.max_lines + 1).min(8);
+                cx.notify();
+            }),
+            label(ui, &format!("Max chars [{}]", self.max_chars), 12.),
+            btn(ui, cx, "C-", false, |this, _, _, cx| {
+                this.max_chars = this.max_chars.saturating_sub(5).max(10);
+                cx.notify();
+            }),
+            btn(ui, cx, "C+", false, |this, _, _, cx| {
+                this.max_chars = (this.max_chars + 5).min(80);
+                cx.notify();
+            }),
+        ];
         div()
             .flex()
             .flex_row()
             .gap_2()
             .items_start()
+            .child(group(ui, "Song", song_kids))
             .child(group(ui, &self.t("styles"), style_kids))
             .child(group(ui, &self.t("font"), font_kids))
+            .child(group(ui, "Slide layout", layout_kids))
             .child(group(ui, &self.t("colors"), color_kids))
             .child(group(ui, &self.t("animation"), anim_kids))
     }
@@ -4596,7 +5268,14 @@ impl Root {
             .gap_1()
             .flex_1()
             .min_h_0()
-            .child(div().flex_1().min_h_0().child(self.slides_panel(ui, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.slides_panel(ui, cx)),
+            )
             .child(self.tool_strip_panel(ui, cx));
 
         let left = div()
@@ -4626,7 +5305,10 @@ impl Root {
                         .min_h_0()
                         .overflow_hidden()
                         .child(slides_and_commands)
-                        .child(self.preview_big_panel(ui, cx, vw, vh)),
+                        .child(self.preview_big_panel(ui, cx, vw, vh))
+                        // Contextual help (`F1`): on demand under the slide
+                        // side, never a permanent third of the slide panel.
+                        .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
                 );
         }
 
@@ -4635,15 +5317,20 @@ impl Root {
             .flex_row()
             .gap_2()
             .flex_1()
+            .min_h_0()
             .p(px(6.))
             .overflow_hidden()
             .child(left)
-            // Centre: the song editor, full height.
+            // Centre: the song editor, full height. min_w_0 is load-
+            // bearing: without it the flex default (min-width:auto) lets
+            // long slide/editor rows push the right column — and the
+            // command strip — off the window edge (fidelity loop R2).
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w_0()
                     .min_h_0()
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
@@ -4658,7 +5345,10 @@ impl Root {
                     .min_h_0()
                     .overflow_hidden()
                     .child(slides_and_commands)
-                    .child(self.preview_big_panel(ui, cx, vw, vh)),
+                    .child(self.preview_big_panel(ui, cx, vw, vh))
+                    // Contextual help (`F1`): on demand under the slide
+                    // side, never a permanent third of the slide panel.
+                    .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
             )
     }
 
@@ -4681,7 +5371,39 @@ impl Root {
             // currently projecting and is filled blue; the **selected** row is
             // the keyboard cursor and only gets a blue left edge. Collapsing
             // them loses the distinction that makes the list readable mid-service.
-            let title = format!("{} {} {}", idx + 1, kind_badge(item.kind), item.title);
+            // Row shape per agenda-panel.png / LAYOUT.md: kind glyph, songbook
+            // ABBREV, song NUMBER, title — then the status dot. `show_abbrev`
+            // / `show_number` (1.27b toggles) hide their column.
+            let row_title = match &item.reference {
+                ItemRef::Song { song_id } => {
+                    let song = self.songs.iter().find(|s| &s.id == song_id);
+                    let ab = if self.show_abbrev {
+                        song.map(|s| self.songbook_abbrev(&s.songbook_id))
+                            .filter(|a| !a.is_empty())
+                            .map(|a| format!(" {a}"))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let num = if self.show_number {
+                        song.map(|s| {
+                            if !s.song_id.is_empty() {
+                                s.song_id.clone()
+                            } else {
+                                s.ccli.clone()
+                            }
+                        })
+                        .filter(|n| !n.is_empty())
+                        .map(|n| format!(" {n}"))
+                        .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    format!("{}{} {}", kind_badge(item.kind), ab, format!("{num} {}", item.title).trim_start())
+                }
+                _ => format!("{} {}", kind_badge(item.kind), item.title),
+            };
+            let title = row_title;
             // A filled blue dot at the right edge of every row is the per-item
             // status indicator the original shows.
             let status_dot = div()
@@ -4690,6 +5412,25 @@ impl Root {
                 .h(px(8.))
                 .rounded_full()
                 .bg(ui.selection);
+            // The row being renamed renders its title as an editable field
+            // (double-click → rename in place); every other row is plain text.
+            let title_cell: Div = if self.renaming_item == Some(idx) {
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .flex_1()
+                    .child(div().flex_1().child(self.rename_field.clone()))
+                    .child(btn(ui, cx, "✓", false, move |this, _, _, cx| {
+                        this.commit_agenda_rename(cx);
+                    }))
+                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
+                        this.cancel_agenda_rename(cx);
+                    }))
+            } else {
+                div().flex_1().child(title)
+            };
             rows.push(
                 div()
                     .flex()
@@ -4701,25 +5442,28 @@ impl Root {
                     .bg(if live { ui.selection } else { ui.bg })
                     .text_color(if live { ui.selection_ink } else { ui.fg })
                     .cursor_pointer()
-                    .child(div().flex_1().child(title))
+                    .child(title_cell)
                     .child(status_dot)
                     // The selected-but-not-live row is marked by an edge, not a
                     // fill, so the two never read as one state.
                     .when(!live && selected, |d| {
                         d.border_l_2().border_color(ui.selection)
                     })
-                    // A single click respects the shield; a **double-click is the
-                    // documented escape hatch** and always goes through.
-                    // `weebly:the-slides`: while the shield is armed "the slide
-                    // list cannot be changed, *unless you double-click on a
-                    // song*". Without this the shield is a dead end — the status
-                    // text tells the operator to double-click and nothing
-                    // happens.
+                    // A single click respects the shield; a **double-click
+                    // renames the row in place** (UX-RESEARCH §3.1: items are
+                    // renamable meaningful names) and still punches through
+                    // the shield like any double-click — the escape hatch
+                    // never moves.
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
-                            this.select_agenda(cx, idx, ev.click_count >= 2);
-                            this.focus_root(window);
+                            if ev.click_count >= 2 {
+                                this.select_agenda(cx, idx, true);
+                                this.begin_agenda_rename(window, cx, idx);
+                            } else {
+                                this.select_agenda(cx, idx, false);
+                                this.focus_root(window);
+                            }
                         }),
                     ),
             );
@@ -4781,45 +5525,124 @@ impl Root {
             }
             b
         };
-        let rail = vec![
-            icon_btn(ui, cx, "+", "add", !empty, |this, cx| {
-                this.add_current_to_agenda(cx);
-            }),
-            icon_btn(ui, cx, "⛉", "save", !empty, |this, cx| {
-                this.save_agenda(cx);
-            }),
-            icon_btn(ui, cx, "✕", "delete", !empty, |this, cx| {
-                if let Some(i) = this.sel_item {
-                    if let Some(id) = this.agenda.items.get(i).map(|x| x.id.clone()) {
-                        agenda_ops::remove_item(&mut this.agenda, &id);
-                        this.agenda_dirty = true;
-                        this.sel_item = None;
-                        cx.notify();
+        // Per-button `▾` popup menus (SCREENSHOT-1.29-LAYOUT.md: every rail
+        // button carries its own `▾`; agenda-panel.png: Add/Save/Delete each
+        // have a dropdown arrow; UX-RESEARCH §3.1: Add offers sources, Save
+        // offers Save-as variants, Delete adds options). The `▾` toggles that
+        // button's true popup menu (`rail_menu_items`); every choice is
+        // clickable and either does the work or reports status text, and the
+        // menu dismisses on choice, outside click (any row/main-button click
+        // clears `rail_menu`), or Escape.
+        let menu_btn = |ui: &UI, cx: &mut Context<Root>, enabled: bool, action: &'static str| {
+            let open = self.rail_menu.as_deref() == Some(action);
+            let mut b = div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .w(px(18.))
+                .h(px(24.))
+                .rounded_sm()
+                .border_1()
+                .border_color(if enabled {
+                    if open {
+                        ui.engaged
+                    } else {
+                        ui.border
                     }
-                }
-            }),
-            icon_btn(ui, cx, "⬆", "move up", !empty, |this, cx| {
-                if let Some(i) = this.sel_item {
-                    if let Some(id) = this.agenda.items.get(i).map(|x| x.id.clone()) {
-                        agenda_ops::move_up(&mut this.agenda, &id);
-                        this.agenda_dirty = true;
-                        this.sel_item = Some(i.saturating_sub(1));
+                } else {
+                    ui.bg
+                })
+                .bg(if enabled { ui.panel } else { ui.bg })
+                .text_color(if enabled { ui.fg } else { ui.border })
+                .text_size(px(11.))
+                .child("▾".to_string());
+            if enabled {
+                b = b.cursor_pointer().on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _w, cx| {
+                        if this.rail_menu.as_deref() == Some(action) {
+                            this.rail_menu = None;
+                        } else {
+                            this.rail_menu = Some(action.to_string());
+                            this.style_menu_open = false;
+                            this.font_menu_open = false;
+                            this.show_scope_grid = false;
+                        }
                         cx.notify();
-                    }
-                }
-            }),
-            icon_btn(ui, cx, "⬇", "move down", !empty, |this, cx| {
-                if let Some(i) = this.sel_item {
-                    if let Some(id) = this.agenda.items.get(i).map(|x| x.id.clone()) {
-                        agenda_ops::move_down(&mut this.agenda, &id);
-                        this.agenda_dirty = true;
-                        this.sel_item =
-                            Some((i + 1).min(this.agenda.items.len().saturating_sub(1)));
-                        cx.notify();
-                    }
-                }
-            }),
+                    }),
+                );
+            }
+            if open {
+                b = b.border_2().border_color(ui.engaged);
+            }
+            b
+        };
+        fn rail_row(main: Div, menu: Div) -> Div {
+            div().flex().flex_row().gap(px(2.)).child(main).child(menu)
+        }
+        // Keep the documented order behind one source of truth.
+        debug_assert_eq!(agenda_rail_buttons().len(), 5);
+        let mut rail = vec![
+            rail_row(
+                icon_btn(ui, cx, "+", "add", !empty, |this, cx| {
+                    this.rail_menu = None;
+                    this.add_current_to_agenda(cx);
+                }),
+                menu_btn(ui, cx, true, "add"),
+            ),
+            rail_row(
+                icon_btn(ui, cx, "S", "save", !empty, |this, cx| {
+                    this.rail_menu = None;
+                    this.save_agenda(cx);
+                }),
+                menu_btn(ui, cx, true, "save"),
+            ),
+            rail_row(
+                icon_btn(ui, cx, "✕", "delete", !empty, |this, cx| {
+                    this.rail_menu = None;
+                    this.remove_selected_agenda_item(cx);
+                }),
+                menu_btn(ui, cx, true, "delete"),
+            ),
+            rail_row(
+                icon_btn(ui, cx, "⬆", "move up", !empty, |this, cx| {
+                    this.rail_menu = None;
+                    this.nudge_selected_agenda(cx, -1, false);
+                }),
+                menu_btn(ui, cx, true, "move up"),
+            ),
+            rail_row(
+                icon_btn(ui, cx, "⬇", "move down", !empty, |this, cx| {
+                    this.rail_menu = None;
+                    this.nudge_selected_agenda(cx, 1, false);
+                }),
+                menu_btn(ui, cx, true, "move down"),
+            ),
         ];
+        // The open popup menu renders as a full-width row under the panel so
+        // long 1.29 choice captions never clip (a rail-column child would be
+        // squeezed to the 50px rail width): clickable rows, one per real
+        // 1.29 choice.
+        let popup: Option<Div> = self.rail_menu.clone().map(|open| {
+            let mut choices: Vec<Div> = Vec::new();
+            for (id, caption) in rail_menu_items(&open) {
+                let id_owned = id.to_string();
+                choices.push(btn(ui, cx, caption, false, move |this, _, _, cx| {
+                    this.run_rail_choice(cx, &id_owned);
+                }));
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .p(px(4.))
+                .rounded_sm()
+                .border_1()
+                .border_color(ui.engaged)
+                .bg(ui.panel)
+                .children(choices)
+        });
         // Duplicate stays available as an explicit button: the original does
         // it with Ctrl+drag (B-18, not built yet), so without drag support
         // removing the button would lose the only way to duplicate an item.
@@ -4837,17 +5660,21 @@ impl Root {
                     this.duplicate_item(cx);
                 },
             )]);
-        section_scrolled_with_rail(
+        let file_disclosure = btn(
             ui,
-            // Header per `agenda-panel.png`: a circle-chevron, a dropdown, then
-            // the agenda name. The old `✎` prefix was the *mode* pencil being
-            // reused as decoration, which is why the header never matched.
-            &format!(
-                "⊙ ∨ {}{}",
-                // The `*` marks unsaved changes (UX-RESEARCH §3.1, §10.9).
-                if self.agenda_dirty { "*" } else { "" },
-                self.agenda.title
-            ),
+            cx,
+            if self.agenda_file_open {
+                "File ▾"
+            } else {
+                "File ▸"
+            },
+            self.agenda_file_open,
+            |this, _, _, cx| {
+                this.agenda_file_open = !this.agenda_file_open;
+                cx.notify();
+            },
+        );
+        let file_controls = if self.agenda_file_open {
             vec![
                 row_wrap(vec![
                     div().flex_1().child(self.path_field.clone()),
@@ -4859,65 +5686,79 @@ impl Root {
                             this.path_field
                                 .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
                             cx.notify();
-                        } else {
-                            this.set_status(cx, "Browse cancelled — no file chosen.");
                         }
                     }),
                     btn(ui, cx, &self.t("new"), false, |this, _, _, cx| {
                         this.agenda = Agenda::new("New agenda");
                         this.sel_item = None;
                         this.live_item = None;
-                        this.set_status(cx, "New agenda.");
+                        cx.notify();
                     }),
                     btn(ui, cx, &self.t("open"), false, |this, _, _, cx| {
-                        this.open_agenda(cx);
+                        this.open_agenda(cx)
                     }),
                     controls,
                 ]),
-                // Native VideoPsalm interop (E-005..E-008): folder scan and
-                // `.vpagd` plan import/export through the typed path field.
                 row_wrap(vec![
                     div().flex_1().child(self.native_path_field.clone()),
                     btn(ui, cx, "Browse folder…", false, |this, _, _, cx| {
-                        if let Some(p) = crate::file_picker::pick_folder("VideoPsalm folder") {
-                            this.native_path_field
-                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                            // Browse means do it: scan the folder straight away.
-                            this.open_native_folder(cx);
-                        } else {
-                            this.set_status(cx, "Browse cancelled — no folder chosen.");
-                        }
+                        this.open_native_folder(cx)
                     }),
                     btn(ui, cx, "Browse plan…", false, |this, _, _, cx| {
-                        if let Some(p) = crate::file_picker::pick_file(
-                            "Open .vpagd plan",
-                            &[("VideoPsalm plan", &["vpagd"])],
-                        ) {
-                            this.native_path_field
-                                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                            // Browse means do it: import the plan straight away.
-                            this.import_native_plan(cx);
-                        } else {
-                            this.set_status(cx, "Browse cancelled — no file chosen.");
-                        }
+                        this.import_native_plan(cx)
                     }),
                     btn(ui, cx, "Open folder", false, |this, _, _, cx| {
-                        this.open_native_folder(cx);
+                        this.open_native_folder(cx)
                     }),
                     btn(ui, cx, "Open plan", false, |this, _, _, cx| {
-                        this.import_native_plan(cx);
+                        this.import_native_plan(cx)
                     }),
                     btn(ui, cx, "Save plan", false, |this, _, _, cx| {
-                        this.export_native_plan(cx);
+                        this.export_native_plan(cx)
                     }),
                 ]),
-                label(ui, &format!("Recent: {recents}"), 12.),
-            ],
+            ]
+        } else {
+            Vec::new()
+        };
+        let mut agenda_header = vec![file_disclosure];
+        agenda_header.extend(file_controls);
+        agenda_header.push(label(ui, &format!("Recent: {recents}"), 12.));
+        let section = section_scrolled_with_rail(
+            ui,
+            // Header per `agenda-panel.png`: a circle-chevron, a dropdown, then
+            // the agenda name. The old `✎` prefix was the *mode* pencil being
+            // reused as decoration, which is why the header never matched.
+            &format!(
+                "⊙ ∨ {}{}",
+                // The `*` marks unsaved changes (UX-RESEARCH §3.1, §10.9).
+                if self.agenda_dirty { "*" } else { "" },
+                self.agenda.title
+            ),
+            agenda_header,
             rows,
             &self.scroll_agenda,
             rail,
             "scroll:agenda",
-        )
+        );
+        match popup {
+            Some(menu) => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .child(section),
+                )
+                .child(menu),
+            None => section,
+        }
     }
 
     /// LEFT-bottom browser: Songbooks|Bibles tabs with an Add button, a
@@ -4968,17 +5809,17 @@ impl Root {
 
         if songs_active {
             kids.push(row(vec![
+                label(ui, "⌕", 14.),
                 div().flex_1().child(self.search_field.clone()),
-                btn(
-                    ui,
-                    cx,
-                    &format!("▾ {}", self.search_scope.label()),
-                    self.show_scope_grid,
-                    |this, _, _, cx| {
-                        this.show_scope_grid = !this.show_scope_grid;
-                        cx.notify();
-                    },
-                ),
+                btn(ui, cx, "×", false, |this, _, _, cx| {
+                    this.search_field
+                        .update(cx, |field, cx| field.set_text("", cx));
+                    this.refresh_search("", cx);
+                }),
+                btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
+                    this.show_scope_grid = !this.show_scope_grid;
+                    cx.notify();
+                }),
             ]));
             if self.show_scope_grid {
                 kids.push(self.search_scope_panel(ui, cx));
@@ -4988,41 +5829,38 @@ impl Root {
             // panel and squeeze the songs list to zero height — now the
             // groups scroll in ~5 rows and the songs always keep space.
             kids.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .min_h_0()
-                            .id("scroll:songbooks")
-                            .max_h(px(150.))
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll_songbooks)
-                            .children(self.songbook_rows(ui, cx)),
-                    ),
+                div().flex().flex_col().flex_none().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .min_h_0()
+                        .id("scroll:songbooks")
+                        .max_h(px(150.))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll_songbooks)
+                        .children(self.songbook_rows(ui, cx)),
+                ),
             );
             kids.extend(self.songs_browser(ui, cx));
         } else {
             kids.push(row(vec![
-                div().flex_1().child(self.search_field.clone()),
                 btn(
                     ui,
                     cx,
-                    match self.bible_search {
-                        BibleSearch::Reference => "🔍 ref",
-                        BibleSearch::Keyword => "🔍 words",
-                    },
-                    false,
+                    "⌕",
+                    self.bible_search == BibleSearch::Keyword,
                     |this, _, _, cx| {
-                        this.left_tab = LeftTab::Bibles;
                         let next = this.bible_search.toggled();
                         this.set_bible_search(next, cx);
                     },
                 ),
+                div().flex_1().child(self.search_field.clone()),
+                btn(ui, cx, "×", false, |this, _, _, cx| {
+                    this.search_field
+                        .update(cx, |field, cx| field.set_text("", cx));
+                    this.apply_bible_search("", cx);
+                }),
             ]));
             kids.extend(self.bible_browser(ui, cx));
         }
@@ -5183,7 +6021,24 @@ impl Root {
                 .iter()
                 .filter(|s| s.songbook_id == book.id)
                 .count();
-            let name = format!("{} {} ({} chants)", book.abbrev, book.name, count);
+            // Tree row per songbooks-grouped.png / LAYOUT.md: an expander, a
+            // folder, `Name (N songs)` — and a leading `*` while the book has
+            // unsaved edits (UX-RESEARCH §3.1: the dirty flag).
+            let unit = if self.lang == "fr" { "chants" } else { "songs" };
+            let book_dirty = self.song_dirty
+                && self
+                    .sel_song
+                    .and_then(|si| self.songs.get(si))
+                    .is_some_and(|s| s.songbook_id == book.id);
+            let name = format!(
+                "{} {} {}{} ({} {})",
+                if scoped { "▾" } else { "▸" },
+                "▤",
+                if book_dirty { "*" } else { "" },
+                book.name,
+                count,
+                unit
+            );
             let id_toggle = book.id.clone();
             let id_scope = book.id.clone();
             let id_hide = book.id.clone();
@@ -5310,27 +6165,62 @@ impl Root {
                             cx.notify();
                         },
                     ),
-                    btn_tip(ui, cx, "+Agenda", "Add the selected song to the agenda", false, |this, _, _, cx| {
-                        this.add_song_to_agenda(cx);
-                    }),
-                    btn_tip(ui, cx, "＋ New", "Create a new song in the selected songbook", false, |this, _, _, cx| {
-                        this.create_song(cx);
-                    }),
-                    btn_tip(ui, cx, "＋ Book", "Import a songbook file (.json or .vpc) into the library", false, |this, _, _, cx| {
-                        this.import_songbook_file(cx);
-                    }),
+                    btn_tip(
+                        ui,
+                        cx,
+                        "+Agenda",
+                        "Add the selected song to the agenda",
+                        false,
+                        |this, _, _, cx| {
+                            this.add_song_to_agenda(cx);
+                        },
+                    ),
+                    btn_tip(
+                        ui,
+                        cx,
+                        "＋ New",
+                        "Create a new song in the selected songbook",
+                        false,
+                        |this, _, _, cx| {
+                            this.create_song(cx);
+                        },
+                    ),
+                    btn_tip(
+                        ui,
+                        cx,
+                        "＋ Book",
+                        "Import a songbook file (.json or .vpc) into the library",
+                        false,
+                        |this, _, _, cx| {
+                            this.import_songbook_file(cx);
+                        },
+                    ),
                     // Pager: wheel scrolls, but nothing on screen says so —
                     // these always move the list (WI-031).
-                    btn_tip(ui, cx, "▲", "Scroll the song list up", false, |this, _, _, cx| {
-                        let h = this.scroll_songs.clone();
-                        h.scroll_to_item(h.top_item().saturating_sub(8));
-                        cx.notify();
-                    }),
-                    btn_tip(ui, cx, "▼", "Scroll the song list down", false, |this, _, _, cx| {
-                        let h = this.scroll_songs.clone();
-                        h.scroll_to_item(h.top_item().saturating_add(8));
-                        cx.notify();
-                    }),
+                    btn_tip(
+                        ui,
+                        cx,
+                        "▲",
+                        "Scroll the song list up",
+                        false,
+                        |this, _, _, cx| {
+                            let h = this.scroll_songs.clone();
+                            h.scroll_to_item(h.top_item().saturating_sub(8));
+                            cx.notify();
+                        },
+                    ),
+                    btn_tip(
+                        ui,
+                        cx,
+                        "▼",
+                        "Scroll the song list down",
+                        false,
+                        |this, _, _, cx| {
+                            let h = this.scroll_songs.clone();
+                            h.scroll_to_item(h.top_item().saturating_add(8));
+                            cx.notify();
+                        },
+                    ),
                 ]),
             ],
             rows,
@@ -5705,82 +6595,56 @@ impl Root {
                 vec![label(ui, "(pick an agenda item)", 13.)],
             );
         };
+        // Header per slides-panel.png / LAYOUT.md: `♪ Title (Songbook)` — the
+        // song icon, the item title, then the book in parentheses. No title
+        // edit field, no Rename, no splitter knobs: those live in the editor
+        // and the Slide layout ribbon group respectively.
         let title = self
             .agenda
             .items
             .get(item_idx)
-            .map(|it| format!("{} — {}", self.t("slides"), it.title))
+            .map(|it| {
+                let book = match &it.reference {
+                    ItemRef::Song { song_id } => self
+                        .songs
+                        .iter()
+                        .find(|s| &s.id == song_id)
+                        .map(|s| {
+                            library::list_songbooks(&self.db)
+                                .unwrap_or_default()
+                                .iter()
+                                .find(|b| b.id == s.songbook_id)
+                                .map(|b| b.name.clone())
+                                .unwrap_or_default()
+                        })
+                        .filter(|n| !n.is_empty())
+                        .map(|n| format!(" ({n})"))
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                format!("♪ {}{}", it.title, book)
+            })
             .unwrap_or_else(|| self.t("slides"));
-        let mut kids: Vec<Div> = vec![row(vec![
-            div().flex_1().child(self.title_field.clone()),
-            btn(ui, cx, &self.t("rename"), false, |this, _, _, cx| {
-                if let Some(i) = this.sel_item {
-                    if let Some(id) = this.agenda.items.get(i).map(|x| x.id.clone()) {
-                        let title = this.title_field.read(cx).text();
-                        agenda_ops::rename_item(&mut this.agenda, &id, title.trim());
-                        cx.notify();
-                    }
-                }
-            }),
-        ])];
-        kids.push(label(ui, &self.t("edit_slide"), 12.));
         let kind = self.agenda.items.get(item_idx).map(|it| it.kind);
         match kind {
             Some(ItemKind::Song) | Some(ItemKind::SongPowerPoint) => {
-                kids.extend(self.song_blocks(ui, cx));
+                let rows = self.song_blocks(ui, cx);
+                section_scrolled(ui, &title, Vec::new(), rows, &self.scroll_slides, "scroll:slides")
             }
             Some(ItemKind::Bible) | Some(ItemKind::BibleVerses) => {
-                kids.extend(self.bible_rows(ui, cx));
+                let rows = self.bible_rows(ui, cx);
+                section_scrolled(ui, &title, Vec::new(), rows, &self.scroll_slides, "scroll:slides")
             }
             _ => {
-                kids.extend(self.generic_slide_buttons(ui, cx));
+                let kids = self.generic_slide_buttons(ui, cx);
+                section(ui, &title, kids)
             }
         }
-        kids.push(row(vec![
-            label(
-                ui,
-                &format!(
-                    "{}: {} / {}: {}",
-                    self.t("max_lines"),
-                    self.max_lines,
-                    self.t("max_chars"),
-                    self.max_chars
-                ),
-                12.,
-            ),
-            btn(ui, cx, "L-", false, |this, _, _, cx| {
-                this.max_lines = this.max_lines.saturating_sub(1).max(1);
-                cx.notify();
-            }),
-            btn(ui, cx, "L+", false, |this, _, _, cx| {
-                this.max_lines = (this.max_lines + 1).min(8);
-                cx.notify();
-            }),
-            btn(ui, cx, "C-", false, |this, _, _, cx| {
-                this.max_chars = this.max_chars.saturating_sub(5).max(10);
-                cx.notify();
-            }),
-            btn(ui, cx, "C+", false, |this, _, _, cx| {
-                this.max_chars = (this.max_chars + 5).min(80);
-                cx.notify();
-            }),
-        ]));
-        // The slide panel is the slide rows. UX-RESEARCH §10.2: it is a list
-        // of text rows, nothing else — and `viewer-mode.png` shows it taking
-        // the whole panel above the preview. A permanently-mounted keyboard
-        // reference was eating a third of that space.
-        //
-        // The original exposes the same help through contextual help on `F1`,
-        // so the panel is on demand and off by default rather than removed.
-        if self.show_shortcuts {
-            kids.push(self.shortcut_panel(ui));
-        }
-        section(ui, &title, kids)
     }
 
-    /// The presentation keymap, always visible under the slide list. The
-    /// operator should never have to guess what the keys do mid-service.
-    fn shortcut_panel(&mut self, ui: &UI) -> Div {
+    /// The presentation keymap, on demand under the slide list (`F1`).
+    /// The operator should never have to guess what the keys do mid-service.
+    fn shortcut_panel(&self, ui: &UI) -> Div {
         // The original splits its help: general shortcuts on the slide panel, and
         // the verse-range keys under the Bible browser. Mirror that.
         let mut general: Vec<Div> = Vec::new();
@@ -5821,7 +6685,12 @@ impl Root {
         )
     }
 
-    /// Song verse blocks: `[☑] V1 <preview> [slides 1-2]`.
+    /// Song slides: one row per projected slide — `[☑] badge <full text>`.
+    ///
+    /// UX-RESEARCH §3.2: *"one row = one projected slide"*. A verse that
+    /// wraps past `max_lines` yields two slides and therefore two rows with
+    /// the same badge (`slides-panel.png` shows `S2` twice for exactly this
+    /// reason) — a per-verse row would under-count the show.
     fn song_blocks(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let target = self.sel_item.or(self.live_item);
         let Some(item_idx) = target else {
@@ -5831,48 +6700,47 @@ impl Root {
             Some(it) => it.id.clone(),
             None => return Vec::new(),
         };
-        let verses = self.ordered_item_verses(item_idx);
-        if verses.is_empty() {
+        // Tags for the badges: the tag line the operator typed in the lyrics
+        // document (see `lyrics_doc::verses_from_document`).
+        let tags: HashMap<String, String> = self
+            .ordered_item_verses(item_idx)
+            .into_iter()
+            .map(|(vid, lines)| {
+                let tag = lines
+                    .first()
+                    .map(|l| l.trim())
+                    .filter(|l| {
+                        !l.is_empty() && l.lines().count() == 1 && lyrics_doc::is_tag_line(l)
+                    })
+                    .unwrap_or_default()
+                    .to_string();
+                (vid, tag)
+            })
+            .collect();
+        // Display slides, not verses: unchecked verses still render so the
+        // operator can re-check them; the projector uses the filtered set.
+        let slides = self.display_item_slides(item_idx);
+        if slides.is_empty() {
             return vec![label(ui, "(no verses)", 13.)];
         }
-        let slides = self.item_slides(item_idx);
         let live_here = self.live_item == Some(item_idx);
         let mut out: Vec<Div> = Vec::new();
-        for (vid, lines) in &verses {
-            let hidden = self.is_hidden(&item_id, vid);
-            // The letter badge comes from the tag line the operator typed in
-            // the lyrics document. The stored verse's first line is the tag
-            // when one was typed (see `lyrics_doc::verses_from_document`).
-            let tag = lines
-                .first()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && l.lines().count() == 1 && lyrics_doc::is_tag_line(l))
-                .unwrap_or_default()
-                .to_string();
-            let positions: Vec<usize> = slides
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| slide_verse_id(&s.header).as_deref() == Some(vid.as_str()))
-                .map(|(i, _)| i)
-                .collect();
-            let range = match (positions.first(), positions.last()) {
-                (Some(a), Some(b)) if a != b => format!("slides {}-{}", a + 1, b + 1),
-                (Some(a), _) => format!("slide {}", a + 1),
-                _ => "—".to_string(),
+        for (i, slide) in slides.iter().enumerate() {
+            let Some(vid) = slide_verse_id(&slide.header) else {
+                continue;
             };
-            let preview: String = lines.join(" / ").chars().take(72).collect();
+            let hidden = self.is_hidden(&item_id, &vid);
+            // R-6 / LAYOUT.md: the slide text is NEVER truncated — the row
+            // wraps over 2–3 lines exactly like slides-panel.png. No
+            // slide-index column either: the original row is only
+            // checkbox + badge + text.
+            let preview: String = slide.lines.join(" / ");
             // Two different rows, two different meanings (UX-RESEARCH 3.2 / 10.3):
             // the **live** row is the one on screen right now -- blue, and
             // always visible. The **selected** row is where the keyboard
             // cursor is. Collapsing them into one flag loses the distinction
             // that makes the panel readable mid-service.
-            let live_now = live_here
-                && self
-                    .live_slides()
-                    .get(self.live_slide)
-                    .and_then(|s| slide_verse_id(&s.header))
-                    .as_deref()
-                    == Some(vid.as_str());
+            let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
             // The row currently projecting is highlighted **blue**, always
             // (UX-RESEARCH 10.3 — "the displayed slide is now highlighted in
@@ -5889,8 +6757,11 @@ impl Root {
                 row_bg
             };
             let check = if hidden { "☐" } else { "☑" };
+            let tag = tags.get(&vid).cloned().unwrap_or_default();
+            let badge = lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone());
             let vid2 = vid.clone();
             let id2 = item_id.clone();
+            let vid3 = vid.clone();
             out.push(
                 div()
                     .flex()
@@ -5909,36 +6780,36 @@ impl Root {
                         this.sel_block = Some(vid2.clone());
                         cx.notify();
                     }))
-                    // The badge is the **letter tag** the operator typed — `S1`, `R`, `R.` —
+                    // The badge is the **letter tag** the operator typed — `S1`, `R` —
                     // not the raw verse id. `slides-panel.png` shows letters;
-                    // printing `V1` was reading the storage model back at the
-                    // operator. Falls back to the id when no tag was typed.
+                    // it falls back to the id when no tag was typed.
                     .child(
                         div()
                             .text_size(px(13.))
                             .text_color(if live_now { row_ink } else { ui.accent })
-                            .child(lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone())),
+                            .child(badge),
                     )
                     // The slide text, wrapped over 2–3 lines as in the
-                    // screenshot — not truncated to one line.
+                    // screenshot — never truncated (R-6). min_w_0 is
+                    // load-bearing: without it the flex default keeps the
+                    // long line at full width and it clips past the panel
+                    // instead of wrapping.
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .text_size(px(13.))
                             .whitespace_normal()
                             .child(preview),
                     )
-                    .child(div().text_size(px(12.)).text_color(row_ink).child(range))
                     // Single click projects (UX-RESEARCH 3.2).
                     .cursor_pointer()
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener({
-                            let vid = vid.clone();
-                            move |this, _, window, cx| {
-                                this.goto_song_verse(cx, item_idx, &vid);
-                                this.focus_root(window);
-                            }
+                        cx.listener(move |this, _, window, cx| {
+                            this.goto_item_slide(cx, item_idx, i);
+                            this.sel_block = Some(vid3.clone());
+                            this.focus_root(window);
                         }),
                     ),
             );
@@ -5946,7 +6817,14 @@ impl Root {
         out
     }
 
-    /// Bible verses as a numbered selectable list with checkboxes.
+    /// Bible verses grouped into slide rows, like songs: one row per
+    /// projected slide — `[☑] badge <wrapped text>`, live row blue.
+    ///
+    /// Previously per-verse, which under-counted the show when a passage
+    /// wraps past `max_lines`/`max_chars` into several slides. The badge is
+    /// the first verse number in the slide (`16`, or `16–18` when packed);
+    /// the checkbox toggles every verse inside the slide so the existing
+    /// per-verse projection filter keeps working.
     fn bible_rows(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let target = self.sel_item.or(self.live_item);
         let Some(item_idx) = target else {
@@ -5956,23 +6834,30 @@ impl Root {
             Some(it) => it.id.clone(),
             None => return Vec::new(),
         };
-        let verses = self.ordered_item_verses(item_idx);
-        if verses.is_empty() {
+        // Display slides (unfiltered so unchecked rows stay visible); the
+        // projector uses the filtered set.
+        let slides = self.display_item_slides(item_idx);
+        if slides.is_empty() {
             return vec![label(ui, "(no verses)", 13.)];
         }
-        let slides = self.item_slides(item_idx);
         let live_here = self.live_item == Some(item_idx);
         let mut out: Vec<Div> = Vec::new();
-        for (num, lines) in verses.iter() {
-            let text = lines.join(" ");
-            let hidden = self.is_hidden(&item_id, num);
-            let at = self
-                .slide_for_bible_text(&slides, &text)
-                .map(|i| format!("▸{}", i + 1))
-                .unwrap_or_else(|| "—".to_string());
-            let live_now =
-                live_here && self.slide_for_bible_text(&slides, &text) == Some(self.live_slide);
-            let selected = self.sel_block.as_deref() == Some(num.as_str());
+        for (i, slide) in slides.iter().enumerate() {
+            let verses_in_slide = bible_slide_verses(&slide.lines);
+            let badge = bible_slide_badge(&slide.lines);
+            let badge = if badge.is_empty() {
+                format!("S{}", i + 1)
+            } else {
+                badge
+            };
+            // Hidden when every verse in the slide is hidden (empty slides
+            // follow the first verse so they can never strand).
+            let hidden = !verses_in_slide.is_empty()
+                && verses_in_slide
+                    .iter()
+                    .all(|v| self.is_hidden(&item_id, &v.to_string()));
+            let live_now = live_here && self.live_slide == i;
+            let selected = self.sel_block.as_deref() == Some(badge.as_str());
             let row_bg = if live_now { ui.selection } else { ui.bg };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
             let border_c = if selected {
@@ -5983,10 +6868,11 @@ impl Root {
                 row_bg
             };
             let check = if hidden { "☐" } else { "☑" };
-            let num2 = num.clone();
-            let text2 = text.clone();
+            let preview: String = slide.lines.join(" / ");
+            let badge2 = badge.clone();
+            let preview2 = preview.clone();
             let id2 = item_id.clone();
-            let short: String = text.chars().take(80).collect();
+            let verses2 = verses_in_slide.clone();
             out.push(
                 div()
                     .flex()
@@ -6000,33 +6886,42 @@ impl Root {
                     .border_2()
                     .border_color(border_c)
                     .child(btn(ui, cx, check, false, move |this, _, _, cx| {
-                        let hide = !this.is_hidden(&id2, &num2);
-                        this.set_hidden(&id2, &num2, hide);
-                        this.sel_block = Some(num2.clone());
+                        // Toggle the whole slide: hide when any verse shows,
+                        // show when all are hidden.
+                        let any_visible = verses2
+                            .iter()
+                            .any(|v| !this.is_hidden(&id2, &v.to_string()));
+                        for v in &verses2 {
+                            this.set_hidden(&id2, &v.to_string(), any_visible);
+                        }
+                        this.sel_block = Some(badge2.clone());
                         cx.notify();
                     }))
                     .child(
                         div()
                             .text_size(px(13.))
                             .text_color(if live_now { row_ink } else { ui.accent })
-                            .child(num.clone()),
+                            .child(badge.clone()),
                     )
-                    .child(div().flex_1().text_size(px(13.)).child(short))
+                    // Full slide text, wrapped — never truncated (R-6). No
+                    // slide-index column: checkbox + badge + text only.
+                    // min_w_0 lets the long line wrap instead of clipping.
                     .child(
                         div()
-                            .text_size(px(12.))
-                            .text_color(if live_now { row_ink } else { ui.fg })
-                            .child(at),
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .whitespace_normal()
+                            .child(preview.clone()),
                     )
                     .cursor_pointer()
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener({
-                            let num = num.clone();
-                            move |this, _, window, cx| {
-                                this.goto_bible_verse(cx, item_idx, &num, &text2);
-                                this.focus_root(window);
-                            }
+                        cx.listener(move |this, _, window, cx| {
+                            this.goto_item_slide(cx, item_idx, i);
+                            this.sel_block = Some(badge.clone());
+                            this.focus_root(window);
+                            let _ = preview2.clone();
                         }),
                     ),
             );
@@ -6080,7 +6975,13 @@ impl Root {
     /// like the projector does (WI-022 — clicking new slides must not reach
     /// any projected surface). The stage mini keeps following live: that is
     /// the operator's private monitor for what comes next.
-    fn preview_big_panel(&mut self, ui: &UI, cx: &mut Context<Root>, win_w: f32, win_h: f32) -> Div {
+    fn preview_big_panel(
+        &mut self,
+        ui: &UI,
+        cx: &mut Context<Root>,
+        win_w: f32,
+        win_h: f32,
+    ) -> Div {
         let slides = self.projector_slides();
         let n = slides.len();
         let cur = self.projector_slide_index();
@@ -6093,16 +6994,23 @@ impl Root {
         // lyrics, the hidden-text note and the nothing-live note alike —
         // with or without text, the image/video shows. Only the base
         // screen (blank) is black.
-        let mut bgcol = div().flex().flex_col().flex_1().relative().child(
-            div().absolute().size_full().child(
-                projector_window::background_layer(
-                    bg,
-                    snap.bg_kind,
-                    snap.bg_file.as_ref(),
-                    snap.bg_fit,
-                ),
-            ),
-        );
+        let mut bgcol =
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .relative()
+                .child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .child(projector_window::background_layer(
+                            bg,
+                            snap.bg_kind,
+                            snap.bg_file.as_ref(),
+                            snap.bg_fit,
+                        )),
+                );
         if matches!(snap.bg_kind, BackgroundKind::Image) && snap.luminosity != 0.0 {
             let (lighten, alpha) = vp_core::media::luminosity_overlay(snap.luminosity);
             let shade = if lighten { 1.0 } else { 0.0 };
@@ -6165,21 +7073,24 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .bg(rgb(0x000000))
-                .child(
-                    div()
-                        .w(px(PREVIEW_W))
-                        .h(px(bh))
-                        .overflow_hidden()
-                        .child(projector_window::render_snapshot(
-                            snap.danger, &snap, PREVIEW_W, bh, None,
-                        )),
-                )
+                .child(div().w(px(PREVIEW_W)).h(px(bh)).overflow_hidden().child(
+                    projector_window::render_snapshot(snap.danger, &snap, PREVIEW_W, bh, None),
+                ))
         };
         let count = if n == 0 {
             "0/0".to_string()
         } else {
             format!("{}/{}", cur + 1, n)
         };
+        // Header per preview-area.png: the panel is the picture plus its
+        // caption — no style-level badge, no frame tabs. The caption (song /
+        // reference line) is rendered by the snapshot itself; the header only
+        // names the panel and the slide position.
+        let head = slides
+            .get(cur)
+            .map(|s| s.header.clone())
+            .unwrap_or_default();
+        let head_short: String = head.chars().take(48).collect();
 
         div()
             .flex()
@@ -6198,9 +7109,9 @@ impl Root {
                     .gap_2()
                     .text_size(px(13.))
                     .child(format!(
-                        "{} ◈ {} {count}",
+                        "{} — {} {count}",
                         self.t("preview"),
-                        self.style_level
+                        head_short
                     ))
                     .children(self.state_chips(ui))
                     .when(self.aspect_ratio != "current", |d| {
@@ -6354,8 +7265,16 @@ impl Root {
     /// The shield goes **red** when armed — that colour is how the operator
     /// knows hunting for the next song cannot disturb the live slide.
     fn tool_strip_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        let mut kids: Vec<Div> = Vec::new();
+        // The 1.29 strip is a column of **round** coloured buttons, ~36px,
+        // not bordered squares. The six presentation commands come first,
+        // then a visual gap, then the pencil (Edit ↔ Viewer mode) — the gap
+        // matters because the pencil switches MODE, not projection. Each of
+        // the first five carries a `▾` affordance; project and pencil do not.
+        let mut col: Vec<Div> = Vec::new();
         for (i, (icon, action)) in tool_strip().into_iter().enumerate() {
+            if i == TOOL_STRIP_PENCIL_INDEX {
+                col.push(div().h(px(10.)).w(px(28.)));
+            }
             let active = match action {
                 "base" => self.blank,
                 "text" => self.text_hidden,
@@ -6377,13 +7296,23 @@ impl Root {
                 selection_ink: ui.selection_ink,
                 engaged: ui.engaged,
             };
-            kids.push(Self::round_command(
-                ui, &strip, cx, icon, active, armed, action, i,
-            ));
+            let button = Self::round_command(ui, &strip, cx, icon, active, armed, action, i);
+            // Dropdown affordance under the commands that have one.
+            let has_menu = !matches!(action, "project" | "mode");
+            col.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(button)
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(if has_menu { ui.fg } else { ui.bg })
+                            .child(if has_menu { "▾" } else { " " }),
+                    ),
+            );
         }
-        // The 1.29 strip is a column of **round** coloured buttons, ~36px,
-        // not bordered squares. Each carries its own `▾` except the last two
-        // (project, pencil).
         div()
             .flex()
             .flex_col()
@@ -6391,20 +7320,7 @@ impl Root {
             .w(px(40.))
             .flex_none()
             .items_center()
-            // The gap before the pencil: it changes the MODE, not the
-            // projection, and the original spaces it for that reason.
-            .children(
-                kids.into_iter()
-                    .enumerate()
-                    .map(|(i, k)| -> Div {
-                        if i == TOOL_STRIP_PENCIL_INDEX {
-                            div().h(px(10.)).w(px(28.))
-                        } else {
-                            k
-                        }
-                    })
-                    .collect::<Vec<Div>>(),
-            )
+            .children(col)
     }
 
     /// `❄ freeze` — hold the projected slide so the congregation keeps seeing
@@ -6449,15 +7365,14 @@ impl Root {
         // while frozen only lands when the operator says so — here).
         self.push_projection(cx);
         self.open_projector(cx, true);
-        // open_projector reports its own failures — only overwrite its
-        // status line when we actually have a window to show.
-        if self.projector_window.is_some() {
-            let msg = match cleared {
-                Some(what) => format!("Left {what} — projection live in the projector window."),
-                None => "Live — projector window open.".to_string(),
-            };
-            self.set_status(cx, msg);
-        }
+        // open_projector defers the real open past this update, so the
+        // handle is legitimately still None here on first press. Report
+        // live either way — the deferred callback overwrites on failure.
+        let msg = match cleared {
+            Some(what) => format!("Left {what} — projection live in the projector window."),
+            None => "Live — projector window opening…".to_string(),
+        };
+        self.set_status(cx, msg);
         cx.notify();
     }
 
@@ -6512,14 +7427,6 @@ impl Root {
         let Some(song) = self.songs.get(si).cloned() else {
             return section(ui, &self.t("lyrics"), vec![label(ui, "(no song)", 13.)]);
         };
-        let doc = lyrics_doc::document_from_verses(&song.verses);
-        let blocks = lyrics_doc::split_verses(&doc);
-        let chords: Vec<String> = song
-            .chords
-            .overlays
-            .iter()
-            .map(|o| o.chord.clone())
-            .collect();
         // The document itself: one scrolling white area, `Paroles` tab selected.
         // A vertical scrollbar on the right, uniform line height, no gridlines,
         // no per-row chrome — `edit-mode.png`.
@@ -6581,121 +7488,133 @@ impl Root {
             // Save. `Ctrl+S` since 1.27 — `Alt+S` is Songbooks, NOT save. The
             // original gives the agenda save the same icon and warns they must
             // not be confused, so this one is worded explicitly.
+            // Save lives in the Song ribbon group and on Ctrl+S; transpose and
+            // notation live in the Chords tab and the Font group — the 1.29
+            // editor keeps this row for Number/Title only.
+            // Canonical 1.29 metadata row: editable Number and Title fields.
             .child(row(vec![
-                btn(ui, cx, "Save song", false, |this, _, _, cx| {
-                    this.save_song_document(cx);
-                }),
-                // Notation and transposition. The vendor is explicit that the
-                // *typed* chords are left unchanged and only projected chords
-                // transpose.
-                btn(ui, cx, "T−1", false, |this, _, _, cx| {
-                    this.apply_transpose(cx, -1, None);
-                }),
-                btn(ui, cx, "T+1", false, |this, _, _, cx| {
-                    this.apply_transpose(cx, 1, None);
-                }),
-                btn(
-                    ui,
-                    cx,
-                    "ABC",
-                    self.notation == ChordNotation::Abc,
-                    |this, _, _, cx| {
-                        this.apply_transpose(cx, 0, Some(ChordNotation::Abc));
-                    },
-                ),
-                btn(
-                    ui,
-                    cx,
-                    "Do Ré Mi",
-                    self.notation == ChordNotation::DoReMi,
-                    |this, _, _, cx| {
-                        this.apply_transpose(cx, 0, Some(ChordNotation::DoReMi));
-                    },
-                ),
-            ]))
-            // Numéro / Titre above the document. `Numéro` is the song's number
-            // within its songbook; footers render `Title (Abbrev No)`.
-            .child(row(vec![
-                label(ui, &format!("{}: {}", self.t("song_no"), song.song_id), 12.),
-                label(
-                    ui,
-                    &format!("{}: {}", self.t("song_title"), song.title),
-                    12.,
-                ),
+                label(ui, "Number:", 12.),
+                div().w(px(90.)).child(self.number_field.clone()),
+                label(ui, "Title:", 12.),
+                div().flex_1().child(self.song_title_field.clone()),
             ]))
             .child(document)
-            // Four fields below, in a 2×2 grid. NOT five: the "Texte de …"
-            // convention is a *value* typed into Auteur.
-            .child(row(vec![label(
-                ui,
-                &format!(
-                    "{}: {}    {}: {}",
-                    self.t("reference"),
-                    song.references.join(", "),
-                    self.t("copyright"),
-                    song.copyright
-                ),
-                12.,
-            )]))
-            .child(row(vec![label(
-                ui,
-                &format!(
-                    "{}: {}    {}: {}",
-                    self.t("authors"),
-                    song.authors.join(", "),
-                    self.t("composer"),
-                    song.composer
-                ),
-                12.,
-            )]))
-            // How the document maps to slides: one verse = one slide.
-            .child(label(
-                ui,
-                &format!(
-                    "{}: {}   ({} = 1 {}){}",
-                    self.t("slides"),
-                    blocks.len(),
-                    self.t("verse"),
-                    self.t("slide"),
-                    // A single-space line is the documented way to make a
-                    // genuinely blank slide; say so rather than leaving the
-                    // operator staring at an empty row.
-                    if lyrics_doc::has_empty_slide(&doc) {
-                        "  ·  (a blank line in the document is a blank slide)"
-                    } else {
-                        ""
-                    }
-                ),
-                12.,
-            ))
+            // English 1.29 uses five editable footer fields: References and
+            // Author/Composer on the left; Verse order and Copyright on the
+            // right. Verse order is LIVE: the agenda item's override when one
+            // exists, otherwise the song's own verse sequence. `×` clears a
+            // custom order back to the song default; `⌃`/`⌄` rotate it.
+            .child({
+                let song_id = song.id.clone();
+                let default_order: Vec<String> = {
+                    let mut vs: Vec<&vp_core::schema::SongVerse> =
+                        song.verses.iter().collect();
+                    vs.sort_by_key(|v| v.order);
+                    vs.into_iter().map(|v| v.id.clone()).collect()
+                };
+                let owner = self.agenda.items.iter().find_map(|it| match &it.reference {
+                    ItemRef::Song { song_id: sid } if sid == &song_id => Some(it.id.clone()),
+                    _ => None,
+                });
+                let current: Vec<String> = owner
+                    .as_ref()
+                    .and_then(|id| {
+                        self.agenda
+                            .items
+                            .iter()
+                            .find(|it| &it.id == id)
+                            .and_then(|it| it.overrides.verse_order.clone())
+                    })
+                    .unwrap_or_else(|| default_order.clone());
+                let order_text = current.join(", ");
+                let owner_clear = owner.clone();
+                let owner_up = owner.clone();
+                let owner_down = owner.clone();
+                let default_up = default_order.clone();
+                let default_down = default_order.clone();
+                row(vec![
+                    label(ui, "References:", 12.),
+                    div().flex_1().child(self.references_field.clone()),
+                    label(ui, "Verse order:", 12.),
+                    metadata_box(&order_text),
+                    btn(ui, cx, "×", false, move |this, _, _, cx| {
+                        if let Some(id) = owner_clear.clone() {
+                            if let Some(it) =
+                                this.agenda.items.iter_mut().find(|it| it.id == id)
+                            {
+                                it.overrides.verse_order = None;
+                                this.agenda_dirty = true;
+                                cx.notify();
+                            }
+                        }
+                    }),
+                    btn(ui, cx, "⌃", false, move |this, _, _, cx| {
+                        if let Some(id) = owner_up.clone() {
+                            if let Some(it) =
+                                this.agenda.items.iter_mut().find(|it| it.id == id)
+                            {
+                                let mut o = it
+                                    .overrides
+                                    .verse_order
+                                    .clone()
+                                    .unwrap_or_else(|| default_up.clone());
+                                if !o.is_empty() {
+                                    let f = o.remove(0);
+                                    o.push(f);
+                                }
+                                it.overrides.verse_order = Some(o);
+                                this.agenda_dirty = true;
+                                cx.notify();
+                            }
+                        }
+                    }),
+                    btn(ui, cx, "⌄", false, move |this, _, _, cx| {
+                        if let Some(id) = owner_down.clone() {
+                            if let Some(it) =
+                                this.agenda.items.iter_mut().find(|it| it.id == id)
+                            {
+                                let mut o = it
+                                    .overrides
+                                    .verse_order
+                                    .clone()
+                                    .unwrap_or_else(|| default_down.clone());
+                                if !o.is_empty() {
+                                    if let Some(l) = o.pop() {
+                                        o.insert(0, l);
+                                    }
+                                }
+                                it.overrides.verse_order = Some(o);
+                                this.agenda_dirty = true;
+                                cx.notify();
+                            }
+                        }
+                    }),
+                ])
+            })
             .child(row(vec![
-                label(
-                    ui,
-                    &format!("{}: {}", self.t("chords"), chords.join(" ")),
-                    12.,
-                ),
-                btn(ui, cx, "T-1", false, |this, _, _, cx| {
-                    this.apply_transpose(cx, -1, None);
-                }),
-                btn(ui, cx, "T+1", false, |this, _, _, cx| {
-                    this.apply_transpose(cx, 1, None);
-                }),
+                label(ui, "Author:", 12.),
+                div().flex_1().child(self.author_field.clone()),
+                label(ui, "Copyright:", 12.),
+                div().flex_1().child(self.copyright_field.clone()),
+            ]))
+            .child(row(vec![
+                label(ui, "Composer:", 12.),
+                div().flex_1().child(self.composer_field.clone()),
+                // Explicit affordance: footer fields persist via song Save.
+                // The Song ribbon group owns the canonical Save; this footer
+                // copy is the same action, so `*` in the header can never
+                // read as mysterious.
                 btn(
                     ui,
                     cx,
-                    "ABC",
-                    self.notation == ChordNotation::Abc,
-                    |this, _, _, cx| {
-                        this.apply_transpose(cx, 0, Some(ChordNotation::Abc));
+                    if self.song_dirty {
+                        "Save song *"
+                    } else {
+                        "Save song"
                     },
-                ),
-                btn(
-                    ui,
-                    cx,
-                    "DoReMi",
-                    self.notation == ChordNotation::DoReMi,
+                    self.song_dirty,
                     |this, _, _, cx| {
-                        this.apply_transpose(cx, 0, Some(ChordNotation::DoReMi));
+                        this.save_song_document(cx);
                     },
                 ),
             ]))
@@ -6821,9 +7740,15 @@ impl Root {
                     btn(ui, cx, "↗ fullscreen toggle", false, |this, _, _, cx| {
                         this.toggle_projector_fullscreen(cx);
                     }),
-                    btn(ui, cx, "✖ Close projector", self.projector_window.is_none(), |this, _, _, cx| {
-                        this.close_projector(cx);
-                    }),
+                    btn(
+                        ui,
+                        cx,
+                        "✖ Close projector",
+                        self.projector_window.is_none(),
+                        |this, _, _, cx| {
+                            this.close_projector(cx);
+                        },
+                    ),
                 ]),
                 // B-12: Single-click monitor switcher
                 row(vec![
@@ -7132,7 +8057,13 @@ impl Root {
         }
     }
 
-    fn projector_view(&mut self, ui: &UI, cx: &mut Context<Root>, target_w: f32, target_h: f32) -> Div {
+    fn projector_view(
+        &mut self,
+        ui: &UI,
+        cx: &mut Context<Root>,
+        target_w: f32,
+        target_h: f32,
+    ) -> Div {
         // B-12 single-window fallback: this renders the exact same snapshot
         // as the real second window (`projector_window::render_snapshot`),
         // so the view switcher can never disagree with the projector about
@@ -7377,9 +8308,22 @@ fn main() {
             cx.on_action(|_: &QuitApp, cx| cx.quit());
 
             let bounds = Bounds::centered(None, size(px(1500.), px(950.)), cx);
+            // OS chrome carries the agenda name, like the original's
+            // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
+            // Same sample Root::build opens, so the two can never disagree.
+            let boot_title: String = serde_json::from_str::<serde_json::Value>(AGENDA_SAMPLE)
+                .ok()
+                .and_then(|v| v.get("title")?.as_str().map(str::to_string))
+                .unwrap_or_else(|| "New agenda".to_string());
+            let window_title: gpui::SharedString =
+                format!("{boot_title} - VideoPsalm").into();
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some(window_title),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
                 |_, cx| cx.new(Root::build),
@@ -7411,15 +8355,27 @@ mod tests {
             test_song("b1", "book-b"),
         ];
         let none = HashSet::new();
-        assert_eq!(Root::scope_song_indices(&songs, Some("book-a"), &none), vec![0, 1]);
-        assert_eq!(Root::scope_song_indices(&songs, Some("book-b"), &none), vec![2]);
+        assert_eq!(
+            Root::scope_song_indices(&songs, Some("book-a"), &none),
+            vec![0, 1]
+        );
+        assert_eq!(
+            Root::scope_song_indices(&songs, Some("book-b"), &none),
+            vec![2]
+        );
         // No scope: everything (the old show-everything default).
         assert_eq!(Root::scope_song_indices(&songs, None, &none), vec![0, 1, 2]);
         // Excluded books stay out even with no query and no scope.
         let excluded: HashSet<String> = ["book-b".to_string()].into_iter().collect();
-        assert_eq!(Root::scope_song_indices(&songs, None, &excluded), vec![0, 1]);
+        assert_eq!(
+            Root::scope_song_indices(&songs, None, &excluded),
+            vec![0, 1]
+        );
         // Scope + exclusion combine by intersection.
-        assert_eq!(Root::scope_song_indices(&songs, Some("book-b"), &excluded), Vec::<usize>::new());
+        assert_eq!(
+            Root::scope_song_indices(&songs, Some("book-b"), &excluded),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]
@@ -7477,5 +8433,16 @@ mod tests {
         // The Message tab hosts alert/clock/media transport via live_panel.
         let ids: Vec<&str> = RibbonTab::all().iter().map(|t| t.id()).collect();
         assert_eq!(ids, vec!["text", "background", "message", "edit"]);
+    }
+
+    #[test]
+    fn footer_metadata_splits_on_commas() {
+        // The References/Author footer editors are single-line comma lists.
+        assert_eq!(split_meta_list(""), Vec::<String>::new());
+        assert_eq!(split_meta_list("John 3:16"), vec!["John 3:16"]);
+        assert_eq!(
+            split_meta_list(" a , ,b ,, c "),
+            vec!["a", "b", "c"]
+        );
     }
 }

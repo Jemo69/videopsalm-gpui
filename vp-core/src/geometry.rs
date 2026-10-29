@@ -651,12 +651,14 @@ mod tests {
     #[test]
     fn letterbox_into_centers_bars_and_passes_matching_ratios_through() {
         // 16:9 output asked for 4:3 → pillarbox (side bars).
-        let (bw, bh, ox, oy) = crate::geometry::letterbox_into(1600.0, 900.0, crate::geometry::AspectRatio::W4H3);
+        let (bw, bh, ox, oy) =
+            crate::geometry::letterbox_into(1600.0, 900.0, crate::geometry::AspectRatio::W4H3);
         assert!((bw - 1200.0).abs() < 0.01, "{bw}");
         assert_eq!((bh, oy), (900.0, 0.0));
         assert!((ox - 200.0).abs() < 0.01, "{ox}");
         // 4:3 output asked for 16:9 → letterbox (top/bottom bars).
-        let (bw, bh, ox, oy) = crate::geometry::letterbox_into(1024.0, 768.0, crate::geometry::AspectRatio::W16H9);
+        let (bw, bh, ox, oy) =
+            crate::geometry::letterbox_into(1024.0, 768.0, crate::geometry::AspectRatio::W16H9);
         assert!((bh - 576.0).abs() < 0.01, "{bh}");
         assert_eq!((bw, ox), (1024.0, 0.0));
         assert!((oy - 96.0).abs() < 0.01, "{oy}");

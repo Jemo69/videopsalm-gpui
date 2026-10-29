@@ -194,12 +194,14 @@ pub fn is_tag_line(line: &str) -> bool {
     let lower = t.to_lowercase();
     // Strip a trailing ordinal: `Strophe 1`, `Refrain 2`, `Chorus 3`.
     let base = lower.trim_end_matches(|c: char| c.is_ascii_digit()).trim();
-    const LONG: [&str; 7] = [
+    const LONG: [&str; 9] = [
         "strophe",
         "refrain",
         "couplet",
         "pont",
         "bridge",
+        "chorus",
+        "verse",
         "prechorus",
         "pre-chorus",
     ];
@@ -386,13 +388,29 @@ mod tests {
     }
 
     #[test]
+    fn verse_and_chorus_long_tags_highlight_like_the_original() {
+        // SCREENSHOT-1.29-LAYOUT.md centre column: `Verse 1` renders with a
+        // coloured highlight box. The badge then shows the letter form.
+        assert!(is_tag_line("Verse 1"));
+        assert!(is_tag_line("Verse 2"));
+        assert!(is_tag_line("Chorus"));
+        assert_eq!(split_verses("Verse 1\nline")[0].tag, "Verse 1");
+        assert_eq!(tag_badge("Verse 1").as_deref(), Some("V1"));
+        assert_eq!(tag_badge("Chorus").as_deref(), Some("C"));
+    }
+
+    #[test]
     fn a_one_word_lyric_line_is_never_mistaken_for_a_tag() {
-        let v = split_verses("Chorus");
+        // `Hallelujah` is a lyric line, not a tag: it must survive as content.
+        // (Bare tag words like `Chorus`/`Verse 1` ARE tags — see the test
+        // above — so they are deliberately not used here.)
+        let v = split_verses("Hallelujah");
         assert_eq!(
             v[0].lines,
-            vec!["Chorus"],
-            "a bare tag with no content is kept"
+            vec!["Hallelujah"],
+            "a one-word lyric line must stay content"
         );
+        assert_eq!(v[0].tag, "");
     }
 
     #[test]

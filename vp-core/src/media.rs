@@ -384,22 +384,25 @@ pub fn luminosity_overlay(value: f32) -> (bool, f32) {
     (value > 0.0, alpha)
 }
 
-/// Shrink factor so a verse fits its frame, mirroring the Electron
-/// projector's auto-fit (`MIN_SCALE = 0.45`): the authored size is scaled by
-/// the output height (1080p reference), then shrunk until the estimated
-/// text block fits the frame. GPUI 0.2.2 cannot measure laid-out text during
-/// render, so the block height is estimated from the line count —
-/// conservative on purpose (slightly small beats clipped). Width is not
-/// estimated: verses are short lines and the frame clips width only on
-/// pathological input. Pure and tested; the renderer applies it to every
-/// projected text size.
+/// Shrink-or-grow factor so a verse fills its frame without clipping,
+/// mirroring the Electron projector's auto-fit (`MIN_SCALE = 0.45`): the
+/// authored size is scaled by the output height (1080p reference), then
+/// adjusted until the estimated text block fits the frame. GPUI 0.2.2
+/// cannot measure laid-out text during render, so the block height is
+/// estimated from the line count — conservative on purpose (slightly
+/// small beats clipped). Growing is capped at 2x: different families
+/// render the same nominal size at visibly different heights, and the
+/// user asked to be able to make the font as big as possible — the frame
+/// decides, not the font's metrics. Width is not estimated: verses are
+/// short lines and the frame clips width only on pathological input.
+/// Pure and tested; the renderer applies it to every projected text size.
 pub fn fit_text_factor(line_count: usize, base_px: f32, avail_h_px: f32) -> f32 {
     if line_count == 0 || base_px <= 0.0 || avail_h_px <= 0.0 {
         return 1.0;
     }
     // 1.3 ≈ line-height plus the flex gap between lines.
     let est_h = line_count as f32 * base_px * 1.3;
-    (avail_h_px / est_h).clamp(0.45, 1.0)
+    (avail_h_px / est_h).clamp(0.45, 2.0)
 }
 
 /// Names of the engaged projection holds, most-visible first (pure, tested).
@@ -620,13 +623,15 @@ mod tests {
 
     #[test]
     fn fit_factor_fits_short_verses_and_floors_long_ones() {
-        // 4 lines at 44px ≈ 229px est; 500px available → no shrink.
-        assert_eq!(fit_text_factor(4, 44.0, 500.0), 1.0);
+        // 4 lines at 44px ≈ 229px est; 500px available → grow, capped.
+        assert_eq!(fit_text_factor(4, 44.0, 500.0), 2.0);
         // 8 lines at 44px ≈ 458px est; 300px available → shrink, no floor.
         let f = fit_text_factor(8, 44.0, 300.0);
         assert!(f > 0.45 && f < 1.0, "{f}");
         // A wall of text floors at the Electron MIN_SCALE.
         assert_eq!(fit_text_factor(40, 44.0, 300.0), 0.45);
+        // A lone line in a tall frame grows, but never past 2x base.
+        assert_eq!(fit_text_factor(1, 44.0, 10000.0), 2.0);
         // Degenerate inputs never shrink or explode.
         assert_eq!(fit_text_factor(0, 44.0, 300.0), 1.0);
         assert_eq!(fit_text_factor(4, 44.0, 0.0), 1.0);

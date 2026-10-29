@@ -1151,8 +1151,8 @@ mod tests {
     /// new field was missing from its own model.
     #[test]
     fn geometry_constants_agree_with_cross_port_fixture() {
-        use crate::geometry::{AspectRatio, FitMode, TEXT_SIZE_SPACE, Viewport, resolve_percent};
         use crate::geometry::{resolve, text_size};
+        use crate::geometry::{resolve_percent, AspectRatio, FitMode, Viewport, TEXT_SIZE_SPACE};
 
         let f = fixture();
         let g = &f["geometry"];

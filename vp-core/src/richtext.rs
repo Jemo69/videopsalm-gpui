@@ -312,8 +312,10 @@ pub fn parse_rich_line(line: &str) -> RichLine {
     let (block, body) = split_block(line);
     // Mirror `render_rich_line`'s empty-body bail-out: the whole line —
     // prefix included — stays literal text.
-    if matches!(block, RichBlock::H1 | RichBlock::H2 | RichBlock::H3 | RichBlock::Bullet)
-        && body.is_empty()
+    if matches!(
+        block,
+        RichBlock::H1 | RichBlock::H2 | RichBlock::H3 | RichBlock::Bullet
+    ) && body.is_empty()
     {
         return RichLine {
             block: RichBlock::Plain,

@@ -37,15 +37,15 @@ use std::path::PathBuf;
 use gpui::prelude::*;
 use gpui::{
     App, Bounds, Context, DefiniteLength, Div, Entity, ObjectFit, Render, Rgba, StyledImage,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, img,
-    px, rgb, size,
+    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, img, px,
+    rgb, size,
 };
 use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
 use vp_core::schema::{Align, BackgroundKind, BgFit, ItemKind, ItemRef, VAlign};
 
-use crate::rich_view;
 use crate::presentation::PresentationState;
+use crate::rich_view;
 
 /// Owned render input for one projector frame. Built by
 /// `Root::projector_snapshot` (which alone can see the private control
@@ -273,11 +273,8 @@ pub(crate) fn render_snapshot(
         background_layer(bg, snap.bg_kind, snap.bg_file.as_ref(), snap.bg_fit)
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
-        let fit = vp_core::media::fit_text_factor(
-            snap.lines.len(),
-            snap.font_size * scale,
-            fh * bh,
-        );
+        let fit =
+            vp_core::media::fit_text_factor(snap.lines.len(), snap.font_size * scale, fh * bh);
         let size = snap.font_size * scale * fit;
         let mut lines: Vec<Div> = snap
             .lines
@@ -332,10 +329,12 @@ pub(crate) fn render_snapshot(
             .w(frac(fw))
             .h(frac(fh))
             .child(body);
-        let mut col =
-            div()
-                .size_full()
-                .child(background_layer(bg, snap.bg_kind, snap.bg_file.as_ref(), snap.bg_fit));
+        let mut col = div().size_full().child(background_layer(
+            bg,
+            snap.bg_kind,
+            snap.bg_file.as_ref(),
+            snap.bg_fit,
+        ));
         // Luminosity over image pixels: gpui::img exposes no brightness
         // filter, so grade honestly by compositing — a translucent overlay
         // above the image, below the text. Color backgrounds are already
@@ -452,10 +451,13 @@ impl Render for ProjectorWindow {
         };
         let size = window.bounds().size;
         let (target_w, target_h): (f32, f32) = (size.width.into(), size.height.into());
-        div()
-            .size_full()
-            .bg(rgb(0x000000))
-            .child(render_snapshot(snap.danger, &snap, target_w, target_h, aspect))
+        div().size_full().bg(rgb(0x000000)).child(render_snapshot(
+            snap.danger,
+            &snap,
+            target_w,
+            target_h,
+            aspect,
+        ))
     }
 }
 
@@ -494,11 +496,7 @@ pub(crate) fn open_projector_window(
         // it crashed there), and the user maximizes or flips fullscreen
         // once it is up. Fullscreen keeps the native 1080p request.
         (
-            WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1280.), px(720.)),
-                cx,
-            )),
+            WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(720.)), cx)),
             None,
         )
     };
@@ -509,22 +507,19 @@ pub(crate) fn open_projector_window(
     if titlebar.is_some() {
         opts.titlebar = titlebar;
     }
-    cx.open_window(
-        opts,
-        move |_, cx| {
-            cx.new(|cx| {
-                let mut w = ProjectorWindow {
-                    presentation: presentation.clone(),
-                    _observe: None,
-                };
-                let sub = cx.observe(&presentation, |_, _, cx: &mut Context<ProjectorWindow>| {
-                    cx.notify();
-                });
-                w._observe = Some(sub);
-                w
-            })
-        },
-    )
+    cx.open_window(opts, move |_, cx| {
+        cx.new(|cx| {
+            let mut w = ProjectorWindow {
+                presentation: presentation.clone(),
+                _observe: None,
+            };
+            let sub = cx.observe(&presentation, |_, _, cx: &mut Context<ProjectorWindow>| {
+                cx.notify();
+            });
+            w._observe = Some(sub);
+            w
+        })
+    })
     .map_err(|e| format!("open projector window: {e}"))
 }
 

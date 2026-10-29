@@ -48,7 +48,9 @@ pub fn videopsalm_start_dir() -> Option<PathBuf> {
     if let Ok(public) = std::env::var("PUBLIC") {
         if !public.trim().is_empty() {
             candidates.push(
-                PathBuf::from(public.trim()).join("Documents").join("VideoPsalm"),
+                PathBuf::from(public.trim())
+                    .join("Documents")
+                    .join("VideoPsalm"),
             );
         }
     }
