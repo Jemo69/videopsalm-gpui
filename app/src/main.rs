@@ -2133,6 +2133,11 @@ impl Root {
     /// hold is engaged (unfreezing re-syncs explicitly). Publishing to the
     /// shared [`PresentationState`](crate::presentation::PresentationState)
     /// is part of the same step: it is what repaints the second window.
+    /// Display flags (blank / text-hidden) use [`Self::republish`] instead:
+    /// the wall must obey them even under a freeze hold.
+    fn republish(&mut self, cx: &mut Context<Self>) {
+        crate::presentation::publish(self, cx);
+    }
     fn push_projection(&mut self, cx: &mut Context<Self>) {
         if self.frozen_slide.is_some() {
             return;
@@ -3108,9 +3113,11 @@ impl Root {
     }
 
     /// `.` / `,`: the home screen (usually black) and the current slide
-    /// toggle each other.
+    /// toggle each other. Re-publishes even while frozen: blank is a display
+    /// flag, not a slide change, so the wall must obey under a hold.
     fn toggle_base(&mut self, cx: &mut Context<Self>) {
         self.blank = !self.blank;
+        self.republish(cx);
         cx.notify();
     }
 
@@ -3146,6 +3153,7 @@ impl Root {
         self.mode = Mode::Control;
         self.live_slide = 0;
         self.set_status(cx, "Presentation ended.");
+        self.republish(cx);
         cx.notify();
     }
 
@@ -3185,9 +3193,11 @@ impl Root {
 
     /// `Ctrl+T`: hide/show the text. The background keeps playing, which is
     /// the whole point — a photo or video loop stays up with the words off.
+    /// Re-publishes even while frozen (display flag, not a slide change).
     fn toggle_text(&mut self, cx: &mut Context<Self>) {
         self.text_hidden = !self.text_hidden;
         self.persist_layout_quiet();
+        self.republish(cx);
         cx.notify();
     }
 
@@ -7693,8 +7703,7 @@ impl Root {
                         this.next_slide(cx);
                     }),
                     btn(ui, cx, &self.t("blank"), self.blank, |this, _, _, cx| {
-                        this.blank = !this.blank;
-                        cx.notify();
+                        this.toggle_base(cx);
                     }),
                     btn(ui, cx, &self.t("hide"), false, |this, _, _, cx| {
                         this.live_item = None;
