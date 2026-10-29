@@ -72,7 +72,7 @@ use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
 use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, projector_frame};
 use vp_core::schema::{
-    Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
+    Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemOverrides, ItemRef, Song,
 };
 use vp_core::schema::{Align, BgFit, VAlign, Versification};
 use vp_core::slides::{Slide, compute_item_slides_templated};
@@ -1206,6 +1206,22 @@ impl Root {
         self.persist_layout_quiet();
     }
 
+    /// Vendor 3-state magnifier cycle (RESEARCH-org.md §1.5, 1.13):
+    /// reference -> keyword -> reference-with-context -> plain reference.
+    /// Pure step in `ux::next_bible_search`; this applies it, retargets the
+    /// placeholder, and re-runs the box so the context toggle takes effect
+    /// on the current text.
+    fn cycle_bible_search(&mut self, cx: &mut Context<Self>) {
+        let (mode, ctx) = ux::next_bible_search(self.bible_search, self.bible_context);
+        self.set_bible_search(mode, cx);
+        self.bible_context = ctx;
+        if mode == BibleSearch::Reference {
+            let q = self.search_field.read(cx).text();
+            self.apply_bible_search(&q, cx);
+        }
+        cx.notify();
+    }
+
     /// Run the Bible search box in the current mode: reference entry or a
     /// keyword/phrase hunt over the selected translation.
     fn apply_bible_search(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -1811,15 +1827,86 @@ impl Root {
         }
     }
 
+    /// Re-resolve index pointers by item id after the agenda changed shape.
+    /// Pure so tests can pin the stale-handle class without a GPUI context:
+    /// positions shift on delete/reorder/duplicate, so an index captured
+    /// before the edit silently points at the WRONG item afterwards. A
+    /// pointer whose id is gone comes back `None` — cleared, never stale.
+    /// (Dogfood-lens class: dead projector handle, unpersisted bg picks —
+    /// state that quietly stops meaning what the UI claims.)
+    fn reresolve_indices(
+        items: &[AgendaItem],
+        live_id: Option<&str>,
+        proj_id: Option<&str>,
+        frozen: Option<(Option<&str>, usize)>,
+    ) -> (Option<usize>, Option<usize>, Option<(Option<usize>, usize)>) {
+        let find = |id: Option<&str>| {
+            id.and_then(|wanted| items.iter().position(|it| it.id == wanted))
+        };
+        let frozen_out = frozen.map(|(item_id, slide)| (find(item_id), slide));
+        // A frozen hold on a deleted item is dead — drop the whole hold.
+        let frozen_out = match (frozen.as_ref(), &frozen_out) {
+            (Some((Some(_), _)), Some((None, _))) => None,
+            _ => frozen_out,
+        };
+        (find(live_id), find(proj_id), frozen_out)
+    }
+
+    /// ID-snapshot of everything the room is showing, for re-resolution
+    /// after an agenda edit (see `reresolve_indices`).
+    fn live_ids(&self) -> (Option<String>, Option<String>, Option<(Option<String>, usize)>) {
+        let id_of =
+            |i: Option<usize>| i.and_then(|x| self.agenda.items.get(x)).map(|it| it.id.clone());
+        let frozen = self.frozen_slide.map(|(item, slide)| (id_of(item), slide));
+        (id_of(self.live_item), id_of(self.projected_item), frozen)
+    }
+
+    /// Re-resolve an ID-snapshot taken with [`Self::live_ids`] after the
+    /// agenda changed shape. A pointer whose item is gone is cleared and
+    /// reported honestly — the room never keeps showing a deleted item
+    /// while the UI claims something else is live.
+    fn restore_live_ids(
+        &mut self,
+        cx: &mut Context<Self>,
+        ids: (Option<String>, Option<String>, Option<(Option<String>, usize)>),
+    ) {
+        let (live_id, proj_id, frozen) = ids;
+        let live_gone = live_id
+            .as_deref()
+            .is_some_and(|wanted| !self.agenda.items.iter().any(|it| it.id == wanted));
+        let (live, proj, fz) = Self::reresolve_indices(
+            &self.agenda.items,
+            live_id.as_deref(),
+            proj_id.as_deref(),
+            frozen
+                .as_ref()
+                .map(|(item_id, slide)| (item_id.as_deref(), *slide)),
+        );
+        self.live_item = live;
+        self.projected_item = proj;
+        self.frozen_slide = fz;
+        if live_gone {
+            // The room was showing the deleted item: clear honestly.
+            self.projected_item = None;
+            self.projected_slides.clear();
+            self.push_projection(cx);
+            self.set_status(cx, "Deleted the live item — projection cleared.");
+        }
+    }
+
     /// Remove the selected agenda item (shared by the Delete rail button and
     /// its popup menu, so both stay in sync).
     fn remove_selected_agenda_item(&mut self, cx: &mut Context<Self>) {
         if let Some(i) = self.sel_item {
             if let Some(id) = self.agenda.items.get(i).map(|x| x.id.clone()) {
+                let ids = self.live_ids();
                 agenda_ops::remove_item(&mut self.agenda, &id);
                 self.agenda_dirty = true;
                 self.sel_item = None;
-                self.set_status(cx, "Deleted agenda item.");
+                self.restore_live_ids(cx, ids);
+                if self.live_item.is_some() || self.projected_item.is_some() {
+                    self.set_status(cx, "Deleted agenda item.");
+                }
                 cx.notify();
             }
         } else {
@@ -1840,6 +1927,9 @@ impl Root {
         if i >= self.agenda.items.len() {
             return;
         }
+        // Reorder shifts positions: snapshot the room's pointers by ID first
+        // (stale-handle class — see `reresolve_indices`).
+        let ids = self.live_ids();
         if to_edge {
             let item = self.agenda.items.remove(i);
             if dir < 0 {
@@ -1858,6 +1948,7 @@ impl Root {
                 self.sel_item = Some((i + 1).min(self.agenda.items.len().saturating_sub(1)));
             }
         }
+        self.restore_live_ids(cx, ids);
         self.agenda_dirty = true;
         self.set_status(cx, "Moved agenda item.");
         cx.notify();
@@ -1872,8 +1963,10 @@ impl Root {
         let mut copy = item.clone();
         copy.id = agenda_ops::new_id("item");
         copy.title = format!("{} (copy)", copy.title);
+        let ids = self.live_ids();
         self.agenda.items.insert(i + 1, copy);
         self.sel_item = Some(i + 1);
+        self.restore_live_ids(cx, ids);
         self.set_status(cx, "Duplicated agenda item.");
     }
 
@@ -3471,28 +3564,28 @@ impl Root {
     }
 
     fn song_row_title(&self, song: &Song) -> String {
-        let mut t = String::new();
-        if self.show_abbrev {
-            let ab = self.songbook_abbrev(&song.songbook_id);
-            if !ab.is_empty() {
-                t.push_str(&format!("[{ab}] "));
-            }
-        }
-        t.push_str(&song.title);
-        if self.show_number {
-            let num = if !song.song_id.is_empty() {
+        // Vendor order (songbooks-grouped.png, LAYOUT.md): bare abbrev,
+        // bare number, title — see `ux::format_song_row`.
+        let ab = if self.show_abbrev {
+            self.songbook_abbrev(&song.songbook_id)
+        } else {
+            String::new()
+        };
+        let num = if self.show_number {
+            if !song.song_id.is_empty() {
                 song.song_id.clone()
             } else {
                 song.ccli.clone()
-            };
-            if !num.is_empty() {
-                t.push_str(&format!(" (#{num})"));
             }
-        }
-        if !song.authors.is_empty() {
-            t.push_str(&format!(" — {}", song.authors.join(",")));
-        }
-        t
+        } else {
+            String::new()
+        };
+        let dirty = self.song_dirty
+            && self
+                .sel_song
+                .and_then(|si| self.songs.get(si))
+                .is_some_and(|s| s.id == song.id);
+        ux::format_song_row(dirty, &ab, &num, &song.title)
     }
 
     /// Chord symbols for the currently projected verse (musicians' aid).
@@ -5844,17 +5937,19 @@ impl Root {
         ])];
 
         if songs_active {
+            // LAYOUT.md / song-search-box.png: magnifier + scope `▾` at the
+            // LEFT inside the box, clear `✕` at the right.
             kids.push(row(vec![
                 label(ui, "⌕", 14.),
+                btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
+                    this.show_scope_grid = !this.show_scope_grid;
+                    cx.notify();
+                }),
                 div().flex_1().child(self.search_field.clone()),
                 btn(ui, cx, "×", false, |this, _, _, cx| {
                     this.search_field
                         .update(cx, |field, cx| field.set_text("", cx));
                     this.refresh_search("", cx);
-                }),
-                btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
-                    this.show_scope_grid = !this.show_scope_grid;
-                    cx.notify();
                 }),
             ]));
             if self.show_scope_grid {
@@ -5880,15 +5975,25 @@ impl Root {
             );
             kids.extend(self.songs_browser(ui, cx));
         } else {
+            // Vendor 3-state magnifier (bible-search-mode-toggle.png,
+            // bible-translation-tabs.png): reference -> keyword ->
+            // reference-with-context. Tooltips name the current mode.
+            let mode_tip = if self.bible_search == BibleSearch::Keyword {
+                "Search for verses containing given words or a phrase"
+            } else if self.bible_context {
+                "Reference with surrounding context — click for plain reference"
+            } else {
+                "Select verses by their reference"
+            };
             kids.push(row(vec![
-                btn(
+                btn_tip(
                     ui,
                     cx,
                     "⌕",
+                    mode_tip,
                     self.bible_search == BibleSearch::Keyword,
                     |this, _, _, cx| {
-                        let next = this.bible_search.toggled();
-                        this.set_bible_search(next, cx);
+                        this.cycle_bible_search(cx);
                     },
                 ),
                 div().flex_1().child(self.search_field.clone()),
@@ -6113,37 +6218,77 @@ impl Root {
         vec![div().flex().flex_col().gap(px(2.)).children(rows)]
     }
 
+    /// One clickable song row for the browser list.
+    fn song_row_div(&mut self, ui: &UI, cx: &mut Context<Root>, i: usize) -> Option<Div> {
+        let song = self.songs.get(i)?;
+        let selected = self.sel_song == Some(i);
+        let title = format!("♪ {}", self.song_row_title(song));
+        Some(
+            div()
+                .px_1()
+                .rounded_sm()
+                .bg(if selected { ui.selection } else { ui.bg })
+                .text_color(if selected { ui.selection_ink } else { ui.fg })
+                .cursor_pointer()
+                .child(title)
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.select_song(cx, i);
+                        this.focus_root(window);
+                    }),
+                ),
+        )
+    }
+
     /// Songbook list with instant find + abbreviation/number toggles.
     /// Long lists are capped (type to narrow — same pattern as v1).
+    /// With an empty box the songs group under their songbook headers, the
+    /// way the original's tree shows songs inline under each book
+    /// (`songbooks-grouped.png`); typing narrows to the flat hit list.
     fn songs_browser(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         let mut rows: Vec<Div> = Vec::new();
         // No cap: instant find narrows as you type, so the list is already
         // short, and every hit must be reachable.
-        for idx in self.results.iter() {
-            let n = 0usize;
-            let i = *idx;
-            let Some(song) = self.songs.get(i) else {
-                continue;
-            };
-            let selected = self.sel_song == Some(i);
-            let title = format!("♪ {}", self.song_row_title(song));
-            rows.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(if selected { ui.selection } else { ui.bg })
-                    .text_color(if selected { ui.selection_ink } else { ui.fg })
-                    .cursor_pointer()
-                    .child(title)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.select_song(cx, i);
-                            this.focus_root(window);
-                            let _ = n;
-                        }),
-                    ),
-            );
+        let query_empty = self.search_field.read(cx).text().trim().is_empty();
+        if query_empty && self.songbook_filter.is_none() {
+            for book in library::list_songbooks(&self.db).unwrap_or_default() {
+                if self.hidden_books.contains(&book.id) {
+                    continue;
+                }
+                let mine: Vec<usize> = self
+                    .results
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        self.songs
+                            .get(i)
+                            .is_some_and(|s| s.songbook_id == book.id)
+                    })
+                    .collect();
+                if mine.is_empty() {
+                    continue;
+                }
+                let unit = if self.lang == "fr" { "chants" } else { "songs" };
+                rows.push(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(ui.accent)
+                        .child(format!("▤ {} ({} {})", book.name, mine.len(), unit)),
+                );
+                for i in mine {
+                    if let Some(d) = self.song_row_div(ui, cx, i) {
+                        rows.push(div().pl(px(14.)).child(d));
+                    }
+                }
+            }
+        } else {
+            for idx in self.results.clone().iter() {
+                if let Some(d) = self.song_row_div(ui, cx, *idx) {
+                    rows.push(d);
+                }
+            }
         }
         if rows.is_empty() {
             rows.push(label(ui, &self.t("no_results"), 13.));
@@ -6553,7 +6698,17 @@ impl Root {
         // Keyword/phrase results, listed instantly as you type. Clicking one
         // adopts it as the current reference and returns to reference mode.
         // Every hit renders inside a bounded scroller (R-6): the old
-        // `.take(30)` silently dropped matches past 30.
+        // `.take(30)` silently dropped matches past 30. A real query with no
+        // hits says so (`bible-search-mode-toggle.png`).
+        if self.bible_search == BibleSearch::Keyword
+            && ux::keyword_empty_message(
+                self.search_field.read(cx).text().trim().is_empty(),
+                self.bible_hits.is_empty(),
+            )
+            .is_some()
+        {
+            out.push(label(ui, "No Bible verse found.", 12.));
+        }
         if self.bible_search == BibleSearch::Keyword && !self.bible_hits.is_empty() {
             out.push(label(
                 ui,
@@ -8468,6 +8623,45 @@ mod tests {
         // The Message tab hosts alert/clock/media transport via live_panel.
         let ids: Vec<&str> = RibbonTab::all().iter().map(|t| t.id()).collect();
         assert_eq!(ids, vec!["text", "background", "message", "edit"]);
+    }
+
+    #[test]
+    fn agenda_edits_repoint_live_indices_by_id() {
+        // The stale-handle class from the dogfood lenses: projecting item 2
+        // of [a, b, c], then deleting `a`, must move the live pointer to 1
+        // (still `b`) — never silently show `c`, and deleting `b` itself
+        // must clear the pointer instead of pointing out of bounds.
+        fn item(id: &str) -> AgendaItem {
+            AgendaItem {
+                id: id.to_string(),
+                kind: ItemKind::Song,
+                title: id.to_string(),
+                reference: ItemRef::Song {
+                    song_id: id.to_string(),
+                },
+                flow_type: FlowType::default(),
+                auto_advance_ms: None,
+                overrides: ItemOverrides::default(),
+            }
+        }
+        let full = vec![item("a"), item("b"), item("c")];
+        // Live on `b` (index 1), projector on `b`, freeze holding `b`.
+        let (live, proj, fz) =
+            Root::reresolve_indices(&full, Some("b"), Some("b"), Some((Some("b"), 0)));
+        assert_eq!((live, proj, fz), (Some(1), Some(1), Some((Some(1), 0))));
+        // Delete `a`: everything shifts left, ids still resolve.
+        let minus_a = vec![item("b"), item("c")];
+        let (live, proj, fz) =
+            Root::reresolve_indices(&minus_a, Some("b"), Some("b"), Some((Some("b"), 0)));
+        assert_eq!((live, proj, fz), (Some(0), Some(0), Some((Some(0), 0))));
+        // Delete `b` itself: pointers clear instead of going stale.
+        let minus_b = vec![item("a"), item("c")];
+        let (live, proj, fz) =
+            Root::reresolve_indices(&minus_b, Some("b"), Some("b"), Some((Some("b"), 0)));
+        assert_eq!((live, proj, fz), (None, None, None));
+        // No live item: stays None (fresh agenda, nothing claimed).
+        let (live, proj, fz) = Root::reresolve_indices(&full, None, None, None);
+        assert_eq!((live, proj, fz), (None, None, None));
     }
 
     #[test]
