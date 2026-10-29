@@ -463,8 +463,8 @@ pub(crate) struct Root {
 
     // B-32/B-12 media state (galleries, cascade, assigned background file,
     // cut scope, open projector window). Rendered by the media_gallery and
-    // projector_window modules; bg_file is session-only (layout prefs in
-    // ux.rs are outside this worktree slice, so it is not persisted).
+    // projector_window modules; bg_file + gallery library persist via
+    // LayoutPrefs (ghost paths skipped on load, WI-024).
     pub(crate) galleries: GalleryState,
     pub(crate) cascade: Cascade,
     pub(crate) bg_file: Option<PathBuf>,
