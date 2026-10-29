@@ -110,7 +110,7 @@
   "duplicate": "Duplicate",
   "delete": "Delete",
   "rename": "Rename",
-  "search_songs": "Keywords or number to search",
+  "search_songs": "Keywords (title and lyrics) or number to search",
   "search_bible": "Reference to select, e.g.: Romans 3:23-25, 30",
   "slides": "Slides",
   "project": "Project",

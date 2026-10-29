@@ -6,14 +6,16 @@
 //! plus [`TextField::text`] / [`set_text`] helpers.
 
 use std::ops::Range;
+use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
+    App, AsyncApp, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window, actions, div, fill, hsla,
-    point, prelude::*, px, relative, rgb, rgba, size, white,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window, actions, div,
+    fill, hsla, point, prelude::*, px, relative, rgb, rgba, size, white,
 };
+use super::ux::CaretBlink;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::doc_field::{next_word_end, prev_word_start};
@@ -81,6 +83,10 @@ pub struct TextField {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// Caret blink phase; `caret_visible` is refreshed every render and
+    /// read by the paint element, so the I-beam blinks instead of staring.
+    blink: CaretBlink,
+    caret_visible: bool,
 }
 
 impl EventEmitter<Changed> for TextField {}
@@ -97,6 +103,8 @@ impl TextField {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            blink: CaretBlink::new(),
+            caret_visible: true,
         }
     }
 
@@ -610,18 +618,11 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
         let cursor_pos = line.x_for_index(cursor);
-        let (selection, cursor) = if selected_range.is_empty() {
-            (
-                None,
-                Some(fill(
-                    Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
-                    ),
-                    gpui::blue(),
-                )),
-            )
-        } else {
+        let caret_visible = input.caret_visible;
+        // Collapsed + blink-on: solid I-beam. Collapsed + blink-off: nothing
+        // (an empty selection quad would be a no-op anyway, but say it).
+        // Ranged: the selection wash, no caret.
+        let (selection, cursor) = if !selected_range.is_empty() {
             (
                 Some(fill(
                     Bounds::from_corners(
@@ -638,6 +639,19 @@ impl Element for TextElement {
                 )),
                 None,
             )
+        } else if caret_visible {
+            (
+                None,
+                Some(fill(
+                    Bounds::new(
+                        point(bounds.left() + cursor_pos, bounds.top()),
+                        size(px(2.), bounds.bottom() - bounds.top()),
+                    ),
+                    gpui::blue(),
+                )),
+            )
+        } else {
+            (None, None)
         };
         PrepaintState {
             line: Some(line),
@@ -681,7 +695,28 @@ impl Element for TextElement {
 }
 
 impl Render for TextField {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Caret blink: solid right after focus/click/typing, toggling after
+        // that. The repaint timer keeps the loop alive only while focused
+        // with a collapsed selection; blur/selection ends it by itself.
+        let focused = self.focus_handle.is_focused(window);
+        let (visible, repaint_in) = self.blink.poll(
+            Instant::now(),
+            focused,
+            self.selected_range.is_empty(),
+            self.cursor_offset(),
+        );
+        self.caret_visible = visible;
+        if let Some(delay) = repaint_in {
+            cx.spawn(move |weak: WeakEntity<Self>, async_cx: &mut AsyncApp| {
+                let mut async_cx = async_cx.clone();
+                async move {
+                    async_cx.background_executor().timer(delay).await;
+                let _ = weak.update(&mut async_cx, |_, cx| cx.notify());
+                }
+            })
+            .detach();
+        }
         div()
             .flex()
             .key_context("TextField")

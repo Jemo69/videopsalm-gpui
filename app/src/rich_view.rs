@@ -93,6 +93,13 @@ pub struct RichLineStyle<'a> {
     pub shadow: bool,
 }
 
+/// Empty lyric lines project as empty space, never placeholder text.
+/// Pure gate behind [`rich_line`]'s empty branch — regression cover for the
+/// wall showing a literal debug string on blank slide-break lines.
+pub fn is_empty_lyric_line(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
 pub fn rich_line(text: &str, s: RichLineStyle) -> Div {
     let RichLineStyle {
         size_px,
@@ -104,10 +111,11 @@ pub fn rich_line(text: &str, s: RichLineStyle) -> Div {
         shadow,
     } = s;
     if text.trim().is_empty() {
-        return div()
-            .text_size(px(size_px))
-            .text_color(color)
-            .child("(blank)".to_string());
+        debug_assert!(is_empty_lyric_line(text));
+        // Empty lyric line: reserve the line's height but project NO text.
+        // A debug placeholder here would land on the congregation screen
+        // (projector renders every line through here, enlarged when alone).
+        return div().text_size(px(size_px)).child("".to_string());
     }
     let parsed = parse_rich_line(text);
     let (mult, block_bold, prefix) = block_adjust(parsed.block);
@@ -177,4 +185,19 @@ pub fn rich_line(text: &str, s: RichLineStyle) -> Div {
                 .child(halo.child(halo_content)),
         )
         .child(main)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_lines_carry_no_placeholder_text() {
+        assert!(is_empty_lyric_line(""));
+        assert!(is_empty_lyric_line("   "));
+        assert!(!is_empty_lyric_line("Amazing grace"));
+        // The projector path must never see a debug placeholder string.
+        let src = include_str!("rich_view.rs");
+        assert!(!src.contains("\"(blank)\""), "placeholder leaks to the wall");
+    }
 }

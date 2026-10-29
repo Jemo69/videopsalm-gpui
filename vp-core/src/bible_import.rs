@@ -31,7 +31,7 @@
 
 use crate::bible_data::{Translation, TranslationBook};
 use crate::bible_ref::{match_book, BOOKS};
-use crate::native_songbook::{VpJson, member_text, parse as parse_vpjson};
+use crate::native_songbook::{member_text, parse as parse_vpjson, VpJson};
 use std::collections::BTreeMap;
 
 /// Import failure; `Faithful` carries the original's operator-facing text.
@@ -442,8 +442,8 @@ pub fn import_bible_vpc(
         .ok_or_else(|| ImportError::Bad("empty .vpc archive".to_string()))?;
     let text = std::str::from_utf8(&entry.data)
         .map_err(|_| ImportError::Bad(format!("{} is not UTF-8 text", entry.name)))?;
-    let doc =
-        parse_vpjson(text).map_err(|e| ImportError::Bad(format!("cannot parse {}: {e}", entry.name)))?;
+    let doc = parse_vpjson(text)
+        .map_err(|e| ImportError::Bad(format!("cannot parse {}: {e}", entry.name)))?;
     let raw_id = member_text(&doc, "Abbreviation");
     let translation_id = if raw_id.trim().is_empty() {
         fallback_name.to_string()
@@ -513,7 +513,12 @@ pub fn import_bible_vpc(
         ));
     }
     // Keep the original's book order (canon), not the file's order.
-    books.sort_by_key(|b| BOOKS.iter().position(|b2| b2.name_en == b.name).unwrap_or(usize::MAX));
+    books.sort_by_key(|b| {
+        BOOKS
+            .iter()
+            .position(|b2| b2.name_en == b.name)
+            .unwrap_or(usize::MAX)
+    });
     Ok(Translation {
         translation_id,
         language,
@@ -1111,8 +1116,16 @@ mod tests {
         assert_eq!(t.books[0].chapters.len(), 1);
         assert_eq!(t.books[0].chapters[0].len(), 2);
         assert!(t.books[0].chapters[0][0].starts_with("In the beginning"));
-        let r = crate::bible_ref::parse_reference("Genesis 1:2", "KJT", crate::schema::Versification::En).unwrap();
-        assert_eq!(t.resolve(&r), vec!["2 And the earth was without form.".to_string()]);
+        let r = crate::bible_ref::parse_reference(
+            "Genesis 1:2",
+            "KJT",
+            crate::schema::Versification::En,
+        )
+        .unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec!["2 And the earth was without form.".to_string()]
+        );
     }
 
     #[test]

@@ -171,7 +171,7 @@ fn song_slides(
             "Song".to_string(),
         )];
     };
-    let mut verses: Vec<&crate::schema::SongVerse> = song.verses.iter().collect();
+    let mut verses: Vec<&crate::schema::SongVerse> = song.ordered_verses();
     // Verse-order override (verse order editor) wins over stored order.
     if let Some(order) = &item.overrides.verse_order {
         let pos: HashMap<&str, usize> = order
@@ -185,8 +185,6 @@ fn song_slides(
                 v.order,
             )
         });
-    } else {
-        verses.sort_by_key(|v| v.order);
     }
     let default_footer = song.authors.join(", ");
     let total_verses = verses.len();
@@ -262,13 +260,16 @@ fn bible_slides(
         )];
     };
     let mut lines = primary.resolve(&bref);
-    // Bilingual second translation (SPEC 2.3).
+    // Bilingual second translation (SPEC 2.3). The merged lines stay in
+    // verse pairs (EN, FR) so one verse still projects as one slide.
     let mut footer = primary.translation_id.clone();
+    let mut bilingual = false;
     if let Some(second_id) = &item.overrides.second_translation_id {
         if let Some(second) = bibles.translations().get(second_id) {
             let other = second.resolve(&bref);
             lines = merge_bilingual(&lines, &other, bilingual_suppress_empty);
             footer = format!("{} + {}", primary.translation_id, second.translation_id);
+            bilingual = true;
         }
     }
     let full_ref = format_header(&bref);
@@ -297,7 +298,21 @@ fn bible_slides(
         _ => default_sub,
     };
 
-    split_verse(&lines, opts)
+    // One verse = one slide. The resolved lines are already one entry per
+    // verse (two in bilingual mode: the translation pair belongs on the same
+    // slide), so grouping — not `split_verse` — is the whole layout, unless
+    // the operator explicitly asked for Bible splitting (opt-in). Splitting
+    // by max-lines/max-chars used to cut a verse mid-sentence and leave the
+    // continuation without its number, which is not a slide the operator
+    // ever wants to project.
+    let chunks: Vec<Vec<String>> = if opts.split_bible_verses {
+        split_verse(&lines, opts)
+    } else if bilingual {
+        lines.chunks(2).map(|c| c.to_vec()).collect()
+    } else {
+        lines.iter().map(|l| vec![l.clone()]).collect()
+    };
+    chunks
         .into_iter()
         .map(|chunk| Slide::text(header.clone(), chunk, sub.clone()))
         .collect()
@@ -375,6 +390,7 @@ mod tests {
         SplitOptions {
             max_lines: 4,
             max_chars: 40,
+            split_bible_verses: false,
         }
     }
 
@@ -451,7 +467,10 @@ mod tests {
         .unwrap();
         let item = &agenda.items[2];
         let slides = compute_item_slides(item, &songs(), &bibles(), &opts(), true, true);
-        assert!(!slides.is_empty());
+        // One verse = one slide: 3 verses in, 3 slides out, each carrying
+        // its bilingual EN+FR pair (FR v18 is missing from the sample, so
+        // the last slide's second line is the gap placeholder).
+        assert_eq!(slides.len(), 3);
         assert_eq!(slides[0].header, "John 3:16-18");
         // Bilingual: EN line followed by FR line.
         assert!(slides[0].lines.len() >= 2);

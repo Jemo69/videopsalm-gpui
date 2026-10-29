@@ -15,13 +15,16 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use std::time::Instant;
+
 use gpui::{
-    AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, GlobalElementId,
-    HighlightStyle, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, SharedString, StyledText, UTF16Selection, Window, actions, div,
-    hsla, prelude::*, px, rgb, rgba,
+    AnyElement, App, AsyncApp, Bounds, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight,
+    GlobalElementId, HighlightStyle, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText, UTF16Selection,
+    WeakEntity, Window, actions, div, hsla, prelude::*, px, rgb, rgba,
 };
+use super::ux::CaretBlink;
 
 actions!(
     doc_field,
@@ -103,6 +106,8 @@ pub struct DocField {
     /// True between left-button down and up: mouse moves extend the
     /// selection (drag-select), cleared on release *anywhere*.
     is_selecting: bool,
+    /// Caret blink phase for the `|` marker below.
+    blink: CaretBlink,
 }
 
 impl EventEmitter<DocChanged> for DocField {}
@@ -117,6 +122,7 @@ impl DocField {
             selection_reversed: false,
             last_bounds: None,
             is_selecting: false,
+            blink: CaretBlink::new(),
         }
     }
 
@@ -802,6 +808,25 @@ impl Render for DocField {
         let focused = self.focus_handle.is_focused(window);
         let empty = content.is_empty();
         let placeholder = self.placeholder.clone();
+        // Caret blink: solid right after focus/click/typing, toggling after
+        // that. The repaint timer keeps the loop alive only while focused
+        // with a collapsed selection; blur/selection ends it by itself.
+        let (caret_visible, repaint_in) = self.blink.poll(
+            Instant::now(),
+            focused,
+            sel.is_empty(),
+            cursor,
+        );
+        if let Some(delay) = repaint_in {
+            cx.spawn(move |weak: WeakEntity<Self>, async_cx: &mut AsyncApp| {
+                let mut async_cx = async_cx.clone();
+                async move {
+                    async_cx.background_executor().timer(delay).await;
+                let _ = weak.update(&mut async_cx, |_, cx| cx.notify());
+                }
+            })
+            .detach();
+        }
 
         let surface = div()
             .flex()
@@ -860,11 +885,26 @@ impl Render for DocField {
             // blank line — that gap *is* the slide boundary, so collapsing it
             // would hide the structure from the operator.
             .children(if empty {
-                vec![div().text_color(hsla(0., 0., 0., 0.4)).child(if focused {
-                    format!("| {placeholder}")
+                // Blink the placeholder pipe transparent rather than
+                // removing it, so the hint text never shifts.
+                let hint: AnyElement = if focused && caret_visible {
+                    format!("| {placeholder}").into_any_element()
+                } else if focused {
+                    StyledText::new(format!("| {placeholder}"))
+                        .with_highlights([(
+                            0..1,
+                            HighlightStyle {
+                                color: Some(hsla(0., 0., 0., 0.)),
+                                ..Default::default()
+                            },
+                        )])
+                        .into_any_element()
                 } else {
-                    placeholder.to_string()
-                })]
+                    placeholder.to_string().into_any_element()
+                };
+                vec![div()
+                    .text_color(hsla(0., 0., 0., 0.4))
+                    .child(hint)]
             } else {
                 content
                     .split('\n')
@@ -897,19 +937,26 @@ impl Render for DocField {
                         } else {
                             None
                         };
-                        let display_line = if cursor_on_line {
-                            let local = (cursor - start).min(line.len());
-                            let safe = line
-                                .char_indices()
-                                .map(|(b, _)| b)
-                                .find(|&b| b >= local)
-                                .unwrap_or(line.len());
-                            format!("{}|{}", &line[..safe], &line[safe..])
-                        } else if line.is_empty() {
-                            " ".to_string()
-                        } else {
-                            line.to_string()
-                        };
+                        // The caret is a real `|` glyph (not an overlay quad)
+                        // so it flows with the text it sits in. While the
+                        // blink phase is off the pipe stays in place with
+                        // transparent ink — same width, so the line never
+                        // shifts as it blinks.
+                        let pipe: Option<(String, std::ops::Range<usize>)> =
+                            if cursor_on_line {
+                                let local = (cursor - start).min(line.len());
+                                let safe = line
+                                    .char_indices()
+                                    .map(|(b, _)| b)
+                                    .find(|&b| b >= local)
+                                    .unwrap_or(line.len());
+                                let text = format!("{}|{}", &line[..safe], &line[safe..]);
+                                // `|` is one ASCII byte, so the glyph occupies
+                                // exactly `safe..safe + 1`.
+                                Some((text, safe..safe + 1))
+                            } else {
+                                None
+                            };
                         let content: AnyElement = match sel_run {
                             Some(range) => StyledText::new(line.to_string())
                                 .with_highlights([(
@@ -920,7 +967,22 @@ impl Render for DocField {
                                     },
                                 )])
                                 .into_any_element(),
-                            None => display_line.into_any_element(),
+                            None => match pipe {
+                                Some((text, range)) if !caret_visible => {
+                                    StyledText::new(text)
+                                        .with_highlights([(
+                                            range,
+                                            HighlightStyle {
+                                                color: Some(hsla(0., 0., 0., 0.)),
+                                                ..Default::default()
+                                            },
+                                        )])
+                                        .into_any_element()
+                                }
+                                Some((text, _)) => text.into_any_element(),
+                                None if line.is_empty() => " ".to_string().into_any_element(),
+                                None => line.to_string().into_any_element(),
+                            },
                         };
                         let d = if is_tag {
                             div()

@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{Context, Div, MouseButton, ObjectFit, div, img, px};
+use gpui::{Context, Div, MouseButton, ObjectFit, ScrollHandle, div, img, px};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
 use vp_core::schema::{BackgroundKind, BgFit};
@@ -54,7 +54,7 @@ use crate::{Root, UI, btn, btn_disabled, label, row, section};
 pub const BLACK_SENTINEL_ID: &str = "black";
 
 /// Gallery UI state, owned by [`Root`](crate::Root).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GalleryState {
     pub library: MediaLibrary,
     pub image_filter: String,
@@ -73,6 +73,27 @@ pub struct GalleryState {
     /// the vendor's documented `…/VideoPsalm/Images|Videos` layout *as a
     /// label only* — v1 never creates directories there.
     pub folder: Option<String>,
+    /// Per-gallery scroll handles (WI-034): each thumbnail grid scrolls
+    /// inside its own bounded box instead of clipping.
+    pub scroll_images: ScrollHandle,
+    pub scroll_videos: ScrollHandle,
+}
+
+impl Default for GalleryState {
+    fn default() -> Self {
+        Self {
+            library: MediaLibrary::default(),
+            image_filter: String::new(),
+            video_filter: String::new(),
+            selected_image: None,
+            selected_video: None,
+            open: None,
+            keep_open: false,
+            folder: None,
+            scroll_images: ScrollHandle::new(),
+            scroll_videos: ScrollHandle::new(),
+        }
+    }
 }
 
 impl GalleryState {
@@ -203,42 +224,53 @@ pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Di
     // bars. Never stretched, like the original.
     kids.push(row(vec![
         label(ui, "Background image fit:", 12.),
-        btn(ui, cx, "Cover (crop to fill)", root.bg_fit == BgFit::Cover, |this, _, _, cx| {
-            this.bg_fit = BgFit::Cover;
-            this.persist_layout_quiet();
-            cx.notify();
-        }),
-        btn(ui, cx, "Contain (whole image)", root.bg_fit == BgFit::Contain, |this, _, _, cx| {
-            this.bg_fit = BgFit::Contain;
-            this.persist_layout_quiet();
-            cx.notify();
-        }),
+        btn(
+            ui,
+            cx,
+            "Cover (crop to fill)",
+            root.bg_fit == BgFit::Cover,
+            |this, _, _, cx| {
+                this.bg_fit = BgFit::Cover;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ),
+        btn(
+            ui,
+            cx,
+            "Contain (whole image)",
+            root.bg_fit == BgFit::Contain,
+            |this, _, _, cx| {
+                this.bg_fit = BgFit::Contain;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ),
     ]));
     if let Some(kind) = open {
         kids.push(gallery_panel(root, ui, cx, kind));
-        kids.push(import_row(root, ui, cx));
         kids.push(row(vec![
-            btn(ui, cx, "Browse & assign background…", false, |this, _, _, cx| {
-                browse_assign_background(this, cx);
-            }),
+            btn(
+                ui,
+                cx,
+                "Browse & assign background…",
+                false,
+                |this, _, _, cx| {
+                    browse_assign_background(this, cx);
+                },
+            ),
             label(
                 ui,
                 "Pick any image/video file; it is imported and assigned in one step.",
                 12.,
             ),
         ]));
-        kids.push(row(vec![btn(
-            ui,
-            cx,
-            "✖ Close gallery",
-            false,
-            |this, _, _, cx| {
-                this.galleries.open = None;
-                cx.notify();
-            },
-        )]));
     }
-    section(ui, "Background — image + video galleries (user files only)", kids)
+    section(
+        ui,
+        "Background — image + video galleries (user files only)",
+        kids,
+    )
 }
 
 /// One gallery: caption grid + the documented control stack (RESEARCH §3).
@@ -264,6 +296,10 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         label(ui, "Search:", 12.),
         div_field(root, ui, cx, &filter_text, kind),
     ]));
+
+    // Import row first, per the vendor control stack (RESEARCH §3 row 1:
+    // `+ Import videos`, file dialog, bottom-anchored in the original).
+    kids.push(import_row(root, ui, cx, kind));
 
     // Thumbnail grid (vendor: 5 columns; v1 caps at 60 cells so a big
     // folder stays fast — the count line says how many match, Search
@@ -306,12 +342,23 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     const GRID_CAP: usize = 60;
     let total = entries.len();
     for (id, caption, assigned, path) in entries.into_iter().take(GRID_CAP) {
-        thumbs.push(thumb_btn(ui, cx, kind, &id, &caption, assigned, path.as_deref()));
+        thumbs.push(thumb_btn(
+            ui,
+            cx,
+            kind,
+            &id,
+            &caption,
+            assigned,
+            path.as_deref(),
+        ));
     }
     if total > GRID_CAP {
         thumbs.push(label(
             ui,
-            &format!("+{} more — refine Search to narrow the grid.", total - GRID_CAP),
+            &format!(
+                "+{} more — refine Search to narrow the grid.",
+                total - GRID_CAP
+            ),
             11.,
         ));
     }
@@ -321,19 +368,28 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             .child(label(ui, &format!("{count} shown"), 11.)),
     );
 
-    // Control stack (§3): Delete · Explore · Rebuild · Luminosité · Keep-open.
-    // Delete is greyed with nothing selected (the original greys the row);
-    // Explore is greyed until a gallery folder exists (imports by path need
-    // none, so the button must not pretend otherwise).
+    // Control stack (§3): Import is first (above); Delete · Explore ·
+    // Rebuild · Luminosité · Keep-open · Close follow the vendor order.
+    // Delete is greyed with nothing selected (the original greys the row).
+    let delete_label = match kind {
+        MediaFileKind::Image => "Delete selected image",
+        MediaFileKind::Video => "Delete selected video",
+    };
     let selected = root.galleries.selection(kind).map(str::to_string);
     let has_sel = selected.is_some();
     kids.push(row(vec![
         if has_sel {
-            btn(ui, cx, "Delete selected video/image", false, move |this, _, _, cx| {
-                delete_selected(this, cx, kind);
-            })
+            btn(
+                ui,
+                cx,
+                delete_label,
+                false,
+                move |this, _, _, cx| {
+                    delete_selected(this, cx, kind);
+                },
+            )
         } else {
-            btn_disabled(ui, "Delete selected video/image")
+            btn_disabled(ui, delete_label)
         },
         label(
             ui,
@@ -348,9 +404,15 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     let has_folder = root.galleries.folder.is_some();
     kids.push(row(vec![
         if has_folder {
-            btn(ui, cx, "Explore media folder", false, move |this, _, _, cx| {
-                explore_folder(this, cx, kind);
-            })
+            btn(
+                ui,
+                cx,
+                "Explore media folder",
+                false,
+                move |this, _, _, cx| {
+                    explore_folder(this, cx, kind);
+                },
+            )
         } else {
             btn_disabled(ui, "Explore media folder")
         },
@@ -390,6 +452,17 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             cx.notify();
         },
     )]));
+    // Close collapses the dropdown (vendor stack row 7, `Fermer`).
+    kids.push(row(vec![btn(
+        ui,
+        cx,
+        "✖ Close",
+        false,
+        |this, _, _, cx| {
+            this.galleries.open = None;
+            cx.notify();
+        },
+    )]));
 
     section(ui, title, kids)
 }
@@ -407,41 +480,39 @@ fn thumb_btn(
     // Images with a reachable file render a real thumbnail (vendor parity);
     // everything else (videos, sentinel, missing files) stays a captioned
     // tile — gpui 0.2.2 has no video decoder for poster frames.
-    if kind == MediaFileKind::Image && let Some(p) = thumb && p.exists() {
+    if kind == MediaFileKind::Image
+        && let Some(p) = thumb
+        && p.exists()
+    {
         let file = p.to_path_buf();
-                let mut cell = div()
-                    .p(px(4.))
-                    .rounded_sm()
-                    .bg(ui.panel)
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer();
-                cell = if assigned {
-                    cell.border_2().border_color(ui.engaged)
-                } else {
-                    cell.border_1().border_color(ui.border)
-                };
-                return cell
-                    .child(
-                        img(file)
-                            .object_fit(ObjectFit::Cover)
-                            .w(px(96.))
-                            .h(px(54.)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(ui.fg)
-                            .child(caption.to_string()),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            assign_pick(this, cx, kind, &id_owned);
-                        }),
-                    );
+        let mut cell = div()
+            .p(px(4.))
+            .rounded_sm()
+            .bg(ui.panel)
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .cursor_pointer();
+        cell = if assigned {
+            cell.border_2().border_color(ui.engaged)
+        } else {
+            cell.border_1().border_color(ui.border)
+        };
+        return cell
+            .child(img(file).object_fit(ObjectFit::Cover).w(px(96.)).h(px(54.)))
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(ui.fg)
+                    .child(caption.to_string()),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    assign_pick(this, cx, kind, &id_owned);
+                }),
+            );
     }
     let prefix = match kind {
         MediaFileKind::Image => "▦",
@@ -479,11 +550,15 @@ fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileK
     ])
 }
 
-/// Shared import row: a path field plus per-kind Import buttons. The path
-/// can be typed, pasted, or filled from the OS file picker (Browse); imports
-/// stay path-based (no folder watching — there is no live gallery folder in
-/// this port).
-fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
+/// Shared import row: a path field plus Browse and the per-kind Import
+/// button (vendor stack row 1). The path can be typed, pasted, or filled
+/// from the OS file picker (Browse); imports stay path-based (no folder
+/// watching — there is no live gallery folder in this port).
+fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
+    let import_label = match kind {
+        MediaFileKind::Image => "+ Import images",
+        MediaFileKind::Video => "+ Import videos",
+    };
     row(vec![
         label(ui, "Import file path:", 12.),
         div().flex_1().child(root.gallery_import_field.clone()),
@@ -502,11 +577,8 @@ fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
                 this.set_status(cx, "Browse cancelled — no file chosen.");
             }
         }),
-        btn(ui, cx, "+ Import image", false, |this, _, _, cx| {
-            import_path(this, cx, MediaFileKind::Image);
-        }),
-        btn(ui, cx, "+ Import video", false, |this, _, _, cx| {
-            import_path(this, cx, MediaFileKind::Video);
+        btn(ui, cx, import_label, false, move |this, _, _, cx| {
+            import_path(this, cx, kind);
         }),
     ])
 }
@@ -567,6 +639,35 @@ pub(crate) fn wire_gallery_fields(root: &mut Root, cx: &mut Context<Root>) {
 /// points at a directory), the file is copied into its Images/Videos
 /// library first, so the background survives as managed media; otherwise
 /// the picked path is listed directly, like a typed import.
+/// Persistent media dir next to the layout file: picks are COPIED here so
+/// backgrounds survive restart and USB-stick removal (lens 2/3). The native
+/// doc-folder path above wins when set; otherwise the file lands in
+/// `./media/Images|Videos` beside `videopsalm-layout.json`.
+fn persistent_media_copy(src: &Path, kind: &str) -> Result<PathBuf, String> {
+    let sub = match kind {
+        "video" => "Videos",
+        _ => "Images",
+    };
+    let base = std::path::Path::new(crate::ux::LayoutPrefs::FILE)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    // Empty parent (bare filename) means cwd.
+    let dir = if base.as_os_str().is_empty() {
+        Path::new(".").join("media").join(sub)
+    } else {
+        base.join("media").join(sub)
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dest = dir.join(vp_core::native_folder::free_media_name(&dir, &name));
+    std::fs::copy(src, &dest).map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
+    Ok(dest)
+}
+
 pub(crate) fn browse_assign_background(root: &mut Root, cx: &mut Context<Root>) {
     let Some(picked) = crate::file_picker::pick_file(
         "Pick background image or video",
@@ -605,7 +706,19 @@ pub(crate) fn browse_assign_background(root: &mut Root, cx: &mut Context<Root>) 
             }
         }
     } else {
-        picked.clone()
+        // No doc folder: copy into persistent ./media so the pick
+        // survives restart (lens 2/3) instead of referencing a temp path.
+        let sub = if kind == MediaFileKind::Video { "video" } else { "image" };
+        match persistent_media_copy(&picked, sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(
+                    cx,
+                    format!("Copy failed ({e}) — listing the picked file instead."),
+                );
+                picked.clone()
+            }
+        }
     };
     root.gallery_import_field
         .update(cx, |f, cx| f.set_text(&listed.to_string_lossy(), cx));

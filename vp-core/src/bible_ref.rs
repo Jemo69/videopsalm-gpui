@@ -861,6 +861,18 @@ mod tests {
     }
 
     #[test]
+    fn john_1_1_parses_to_chapter_1_verse_1() {
+        // Operator report: "I can't type John 1:1. I can only type John 11."
+        // `1 John 2:1` already proves a leading ordinal is a book, not a
+        // chapter — this proves the plain `John 1:1` shape resolves too.
+        let r = parse("John 1:1");
+        assert_eq!(
+            (r.book.as_str(), r.chapter, r.verses.as_slice()),
+            ("John", 1, &[1][..])
+        );
+    }
+
+    #[test]
     fn parse_single_verse_and_lists() {
         assert_eq!(parse("John 3:16").verses, vec![16]);
         assert_eq!(parse("1 Jn 1:1,3").verses, vec![1, 3]);

@@ -52,6 +52,14 @@ pub fn log_line(msg: &str) {
     }
 }
 
+/// What the operator should do after a crash. Shown next to the log path so
+/// a Sunday operator knows the next step instead of staring at a silent exit:
+/// connect a second monitor for projection, or install the missing font.
+/// Lens 9: a crash must TELL the user, never stay silent.
+pub fn crash_help() -> &'static str {
+    "If the projector window just closed: connect the second monitor, then press Go Live again. If text mentions a font: install that font and reopen. Details are in videopsalm-debug.log next to the app (or your temp folder)."
+}
+
 /// Install a panic hook that keeps the default stderr report AND appends the
 /// payload to the debug log, so a GUI crash leaves a trace the operator can
 /// send back instead of a silent exit.
@@ -60,5 +68,18 @@ pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
         default(info);
         log_line(&format!("PANIC: {info}"));
+        log_line(crash_help());
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crash_help_tells_the_operator_what_to_do() {
+        let h = crash_help();
+        assert!(h.contains("Go Live"), "must name the recovery button");
+        assert!(h.contains("videopsalm-debug.log"), "must name the log");
+    }
 }

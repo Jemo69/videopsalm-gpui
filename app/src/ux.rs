@@ -142,6 +142,10 @@ pub fn kind_badge(kind: ItemKind) -> &'static str {
 /// cascade; the kind levels (`Bible` | `Media` | `Alert` | `Clock`) keep the
 /// v1 per-kind badges working. All values are plain strings so old layout
 /// files keep loading.
+///
+/// The original shows these in a **style-level dropdown**
+/// (`assets/SCREENSHOT-1.29-LAYOUT.md`: `Song ▾`), not as eight always-visible
+/// buttons — the dropdown preserves all 8 levels behind one control.
 pub fn style_levels() -> [&'static str; 8] {
     [
         "Base",
@@ -153,6 +157,149 @@ pub fn style_levels() -> [&'static str; 8] {
         "Alert",
         "Clock",
     ]
+}
+
+/// Caption for the Styles dropdown: the current level plus its `▾` menu mark.
+///
+/// Pure so the dropdown contract is unit-testable without a window: every
+/// level in [`style_levels`] must round-trip through this caption.
+pub fn style_dropdown_label(level: &str) -> String {
+    format!("{level} ▾")
+}
+
+/// Cascade levels a ribbon edit writes to, from the Styles dropdown value.
+///
+/// This is the write target only — reading always resolves the whole chain,
+/// so a value set at `Songbooks` flows down to every song and verse. `Media`
+/// writes both media rungs; `Alert`/`Clock` have no chain levels and stay
+/// agenda-global (flat style), as do unknown values. Pure and unit-tested.
+pub fn style_write_targets(level: &str) -> Vec<vp_core::cascade::Level> {
+    use vp_core::cascade::Level::*;
+    match level {
+        "Base" => vec![Base],
+        "Songbooks" => vec![Songbooks],
+        "Song" => vec![Song],
+        "Verse" => vec![SongVerse],
+        "Bible" => vec![Bible],
+        "Media" => vec![Images, Videos],
+        _ => Vec::new(),
+    }
+}
+
+/// Verse numbers leading each Bible slide line (`"16 text..."`).
+///
+/// Pure so per-slide Bible rows are unit-testable: the panel groups verses
+/// into projected slides (like songs), and the badge/checkbox derive from the
+/// verses inside the slide rather than from a per-verse row.
+pub fn bible_slide_verses(lines: &[String]) -> Vec<u32> {
+    lines
+        .iter()
+        .filter_map(|l| {
+            let head: String = l.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if head.is_empty() {
+                None
+            } else {
+                head.parse().ok()
+            }
+        })
+        .collect()
+}
+
+/// Badge for a Bible slide row: first verse number, or `first–last` when the
+/// slide packs several verses. Empty when no verse number leads the lines.
+pub fn bible_slide_badge(lines: &[String]) -> String {
+    let vs = bible_slide_verses(lines);
+    match (vs.first(), vs.last()) {
+        (Some(f), Some(l)) if f != l => format!("{f}–{l}"),
+        (Some(f), _) => f.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The agenda rail: one entry per button, each carrying its own `▾` menu mark
+/// (`assets/SCREENSHOT-1.29-LAYOUT.md`: the rail buttons each have their own
+/// `▾`). Order matches `agenda-panel.png`: add, save, delete, move up,
+/// move down.
+pub fn agenda_rail_buttons() -> [(&'static str, &'static str); 5] {
+    [
+        ("+", "add"),
+        ("S", "save"),
+        ("✕", "delete"),
+        ("⬆", "move up"),
+        ("⬇", "move down"),
+    ]
+}
+
+/// Popup-menu choices for one agenda rail button.
+///
+/// Each entry is `(choice id, caption)`. Every 1.29 rail button carries its
+/// own `▾` (`assets/SCREENSHOT-1.29-LAYOUT.md`, `agenda-panel.png`), and the
+/// menus hold the real 1.29 contents (UX-RESEARCH §3.1): Add offers sources,
+/// Save offers the save variants (`Save as` / comprehensive save), Delete
+/// offers scope, the move buttons offer distance. Pure so the menu contract
+/// is unit-testable without a window.
+pub fn rail_menu_items(action: &str) -> Vec<(&'static str, &'static str)> {
+    match action {
+        "add" => vec![
+            ("add-selected", "Add selected song / verses"),
+            ("add-image", "Add slideshow image…"),
+            ("add-video", "Add standalone video…"),
+            ("add-audio", "Add audio file…"),
+            ("add-ppt", "Add PowerPoint…"),
+            ("add-doc", "Add document (Word/Excel/PDF)…"),
+            ("add-web", "Add web site / YouTube…"),
+        ],
+        "save" => vec![
+            ("save", "Save agenda"),
+            ("save-as", "Save agenda as…"),
+            ("save-full", "Comprehensive save…"),
+        ],
+        "delete" => vec![
+            ("delete-selected", "Delete selected item"),
+            ("delete-all", "Delete all items"),
+        ],
+        "move up" => vec![
+            ("move-up", "Move up"),
+            ("move-top", "Move to top"),
+        ],
+        "move down" => vec![
+            ("move-down", "Move down"),
+            ("move-bottom", "Move to bottom"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Quick-pick style cascade levels for the Styles preset row.
+///
+/// The 1.29 Styles group shows a row of level-selector glyphs under the
+/// dropdown (UX-RESEARCH §4.2: `Base / Songbooks / Song / Verse`). The
+/// `Verse ▾` dropdown stays the level selector; these set the same level,
+/// so the row can never disagree with it. Every entry must be a
+/// [`style_levels`] level.
+pub fn style_preset_levels() -> [&'static str; 4] {
+    ["Base", "Songbooks", "Song", "Verse"]
+}
+
+/// Green-dot override indicator for the Styles group.
+///
+/// The 1.29 Styles group carries a green dot beside the level dropdown
+/// (`assets/SCREENSHOT-1.29-LAYOUT.md` §Ribbon): lit while a non-base level
+/// is active (its attributes override the Base reference), hollow on Base.
+pub fn style_override_dot(level: &str) -> bool {
+    level != "Base"
+}
+
+/// Validate a committed agenda-item rename: blank titles are rejected so a
+/// double-click + Enter on an empty field cannot blank a row. Pure so the
+/// rename contract is unit-testable without a window.
+pub fn valid_rename_title(raw: &str) -> Option<String> {
+    let title = raw.trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
 }
 
 /// Slide transitions for the Animation ribbon group. Stored in the style
@@ -595,14 +742,6 @@ pub enum BibleSearch {
 }
 
 impl BibleSearch {
-    /// The other mode — what the magnifier button switches to.
-    pub fn toggled(self) -> BibleSearch {
-        match self {
-            BibleSearch::Reference => BibleSearch::Keyword,
-            BibleSearch::Keyword => BibleSearch::Reference,
-        }
-    }
-
     pub fn id(self) -> &'static str {
         match self {
             BibleSearch::Reference => "reference",
@@ -621,6 +760,51 @@ impl BibleSearch {
     }
 }
 
+/// Vendor 3-state search-mode cycle for the magnifier button at the left of
+/// the Bible search box (`RESEARCH-org.md` §1.5, 1.13): reference entry →
+/// keyword hunt → reference *with surrounding context* → plain reference.
+/// Returns the next `(mode, context)` pair; pure so it is unit-testable.
+pub fn next_bible_search(mode: BibleSearch, context: bool) -> (BibleSearch, bool) {
+    match (mode, context) {
+        (BibleSearch::Reference, false) => (BibleSearch::Keyword, false),
+        (BibleSearch::Keyword, _) => (BibleSearch::Reference, true),
+        (BibleSearch::Reference, true) => (BibleSearch::Reference, false),
+    }
+}
+
+/// Browser song row, vendor order (`songbooks-grouped.png` inline rows,
+/// `SCREENSHOT-1.29-LAYOUT.md` tree rows): an optional `*` for unsaved
+/// changes, then the bare songbook abbreviation, the bare song number, then
+/// the title — space-separated, no brackets, no `#`, no author suffix.
+/// Empty abbreviation/number collapse away without leaving gaps.
+pub fn format_song_row(dirty: bool, abbrev: &str, number: &str, title: &str) -> String {
+    let mut t = String::new();
+    if dirty {
+        t.push('*');
+    }
+    if !abbrev.is_empty() {
+        t.push_str(abbrev);
+        t.push(' ');
+    }
+    if !number.is_empty() {
+        t.push_str(number);
+        t.push(' ');
+    }
+    t.push_str(title);
+    t
+}
+
+/// Empty-state line for a keyword hunt that matched nothing
+/// (`bible-search-mode-toggle.png`: `No Bible verse found.`). Shown only for
+/// a real (non-empty) query — an untouched box shows no scolding.
+pub fn keyword_empty_message(query_empty: bool, hits_empty: bool) -> Option<&'static str> {
+    if !hits_empty || query_empty {
+        None
+    } else {
+        Some("No Bible verse found.")
+    }
+}
+
 /// Glyphs the app may use for kind badges, tool-strip buttons and other
 /// icon-like labels.
 ///
@@ -631,7 +815,7 @@ impl BibleSearch {
 /// Read by the font-safety test; see the note on `APP_GLYPHS` in main.rs.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const FONT_SAFE_GLYPHS: &str =
-    "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕↑↓▾↗▦✖…•⬌▪▫✳❀";
+    "◈○◐◑◒◓▸⊕⊗⊖◌⌕≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕↑↓▾↗▦✖…•⬌▪▫✳❀";
 
 /// Chapter counts for the 66-book Protestant canon, indexed by
 /// 1-based book number (Genesis .. Revelation). Plain factual data backing
@@ -826,6 +1010,14 @@ pub struct LayoutPrefs {
     /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
     #[serde(default)]
     pub projector_display: usize,
+    /// Gallery library paths (persisted so backgrounds survive restart —
+    /// lens 2/3: an in-memory-only library meant every background vanished
+    /// on relaunch and USB-stick picks ghosted). Missing files are skipped
+    /// on load, never ghosted.
+    #[serde(default)]
+    pub gallery_images: Vec<String>,
+    #[serde(default)]
+    pub gallery_videos: Vec<String>,
 }
 
 fn d_bible_search() -> String {
@@ -877,6 +1069,8 @@ impl Default for LayoutPrefs {
             bible_search: d_bible_search(),
             aspect_ratio: d_aspect_ratio(),
             projector_display: 0,
+            gallery_images: Vec::new(),
+            gallery_videos: Vec::new(),
         }
     }
 }
@@ -901,6 +1095,65 @@ impl LayoutPrefs {
 
     pub fn save_file(&self, path: &str) -> std::io::Result<()> {
         std::fs::write(path, self.to_json_pretty())
+    }
+}
+
+/// Caret blink cadence shared by the single-line fields and the lyrics
+/// document: solid for the first interval after any cursor move or focus
+/// gain, then toggling on/off. Pure and unit-testable — each widget only adds
+/// the repaint timer (`poll` says *when*, the widget schedules it).
+pub const CARET_BLINK_MS: u128 = 530;
+
+/// Blink phase for one editor. `poll` resets the phase whenever the cursor
+/// moves or focus is (re)gained, so typing or clicking always shows a solid
+/// caret first instead of landing mid-blink.
+#[derive(Clone, Debug)]
+pub struct CaretBlink {
+    epoch: Option<std::time::Instant>,
+    last_cursor: usize,
+    last_focused: bool,
+}
+
+impl CaretBlink {
+    pub fn new() -> Self {
+        CaretBlink {
+            epoch: None,
+            last_cursor: usize::MAX,
+            last_focused: false,
+        }
+    }
+
+    /// Returns `(visible, repaint_in)`: whether the caret draws this frame,
+    /// and how long until the next phase flip (the widget should repaint
+    /// then). `None` repaint while unfocused or while a range is selected —
+    /// nothing blinks then, so no timer runs.
+    pub fn poll(
+        &mut self,
+        now: std::time::Instant,
+        focused: bool,
+        collapsed: bool,
+        cursor: usize,
+    ) -> (bool, Option<std::time::Duration>) {
+        if !focused || !collapsed {
+            self.epoch = None;
+            self.last_focused = focused;
+            self.last_cursor = cursor;
+            return (false, None);
+        }
+        if self.epoch.is_none() || !self.last_focused || cursor != self.last_cursor {
+            self.epoch = Some(now);
+        }
+        self.last_focused = true;
+        self.last_cursor = cursor;
+        let elapsed = now
+            .saturating_duration_since(self.epoch.unwrap_or(now))
+            .as_millis();
+        let visible = (elapsed / CARET_BLINK_MS) % 2 == 0;
+        let next_in = CARET_BLINK_MS - (elapsed % CARET_BLINK_MS) + 8;
+        (
+            visible,
+            Some(std::time::Duration::from_millis(next_in as u64)),
+        )
     }
 }
 
@@ -989,6 +1242,8 @@ mod tests {
         p.theme_id = "blue".to_string();
         p.accent_override = Some("#22C55E".to_string());
         p.max_lines = 6;
+        p.gallery_images = vec!["/tmp/a.png".to_string()];
+        p.gallery_videos = vec!["/tmp/b.mp4".to_string()];
         let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
         assert_eq!(back, p);
     }
@@ -1027,6 +1282,35 @@ mod tests {
     }
 
     #[test]
+    fn style_write_targets_hit_real_chain_levels() {
+        use vp_core::cascade::Level::*;
+        // Every dropdown value that has chain levels maps to exactly those.
+        assert_eq!(style_write_targets("Base"), vec![Base]);
+        assert_eq!(style_write_targets("Songbooks"), vec![Songbooks]);
+        assert_eq!(style_write_targets("Song"), vec![Song]);
+        assert_eq!(style_write_targets("Verse"), vec![SongVerse]);
+        assert_eq!(style_write_targets("Bible"), vec![Bible]);
+        assert_eq!(style_write_targets("Media"), vec![Images, Videos]);
+        // Alert/Clock/unknown stay flat (agenda-global): no chain levels.
+        assert!(style_write_targets("Alert").is_empty());
+        assert!(style_write_targets("Clock").is_empty());
+        assert!(style_write_targets("").is_empty());
+        // The mapped levels really participate in their chains.
+        for (dropdown, chain) in [
+            ("Song", vp_core::cascade::Chain::Songs),
+            ("Verse", vp_core::cascade::Chain::Songs),
+            ("Bible", vp_core::cascade::Chain::Bibles),
+        ] {
+            for level in style_write_targets(dropdown) {
+                assert!(
+                    chain.contains(level),
+                    "{dropdown} maps outside its chain"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn transitions_match_style_schema_values() {
         assert_eq!(transitions(), ["none", "fade", "slide", "zoom"]);
     }
@@ -1037,11 +1321,42 @@ mod tests {
         // No generic aliases: every entry names a family verified present
         // on the operator's machine (WI-026).
         for alias in ["Sans", "Serif", "Mono"] {
-            assert!(!fams.contains(&alias), "alias {alias} must not ship as a font");
+            assert!(
+                !fams.contains(&alias),
+                "alias {alias} must not ship as a font"
+            );
         }
         assert!(fams.contains(&"Verdana"));
         assert!(fams.contains(&"Arial"));
         assert!(fams.len() >= 6);
+    }
+
+    #[test]
+    fn caret_blink_starts_solid_then_toggles() {
+        use std::time::{Duration, Instant};
+        let mut b = CaretBlink::new();
+        let t0 = Instant::now();
+        // Focus gain: solid caret, with a repaint scheduled.
+        let (vis, rep) = b.poll(t0, true, true, 5);
+        assert!(vis);
+        assert!(rep.is_some());
+        // Same cursor shortly after: still solid.
+        let (vis, _) = b.poll(t0 + Duration::from_millis(100), true, true, 5);
+        assert!(vis);
+        // Past one interval: hidden, still scheduling.
+        let (vis, rep) = b.poll(t0 + Duration::from_millis(600), true, true, 5);
+        assert!(!vis);
+        assert!(rep.is_some());
+        // Cursor move resets to solid.
+        let (vis, _) = b.poll(t0 + Duration::from_millis(610), true, true, 6);
+        assert!(vis);
+        // Blur or selection: hidden, no timer.
+        let (vis, rep) = b.poll(t0, false, true, 6);
+        assert!(!vis);
+        assert!(rep.is_none());
+        let (vis, rep) = b.poll(t0, true, false, 6);
+        assert!(!vis);
+        assert!(rep.is_none());
     }
 
     #[test]
@@ -1172,12 +1487,6 @@ mod tests {
     #[test]
     fn bible_search_mode_toggles_and_labels() {
         assert_eq!(BibleSearch::default(), BibleSearch::Reference);
-        assert_eq!(BibleSearch::Reference.toggled(), BibleSearch::Keyword);
-        assert_eq!(BibleSearch::Keyword.toggled(), BibleSearch::Reference);
-        assert_eq!(
-            BibleSearch::Reference.toggled().toggled(),
-            BibleSearch::Reference
-        );
         assert_eq!(BibleSearch::Reference.id(), "reference");
         assert_eq!(BibleSearch::Keyword.id(), "keyword");
         // Placeholders tell the operator what the box expects, per language.
@@ -1191,6 +1500,50 @@ mod tests {
             BibleSearch::Reference
                 .placeholder("fr")
                 .contains("Référence")
+        );
+    }
+
+    #[test]
+    fn bible_search_button_cycles_three_states() {
+        use super::next_bible_search;
+        // Reference -> keyword -> reference-with-context -> plain reference.
+        assert_eq!(
+            next_bible_search(BibleSearch::Reference, false),
+            (BibleSearch::Keyword, false)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Keyword, false),
+            (BibleSearch::Reference, true)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Keyword, true),
+            (BibleSearch::Reference, true)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Reference, true),
+            (BibleSearch::Reference, false)
+        );
+    }
+
+    #[test]
+    fn song_rows_lead_with_number_not_brackets() {
+        use super::format_song_row;
+        assert_eq!(format_song_row(false, "M", "2762838", "Amazing Grace"), "M 2762838 Amazing Grace");
+        assert_eq!(format_song_row(true, "M", "2762838", "Amazing Grace"), "*M 2762838 Amazing Grace");
+        assert_eq!(format_song_row(false, "", "", "New song"), "New song");
+        assert_eq!(format_song_row(true, "", "", "New song"), "*New song");
+        assert_eq!(format_song_row(false, "", "1", "Can It Make It Like the Lord"), "1 Can It Make It Like the Lord");
+        assert_eq!(format_song_row(false, "M", "", "Amazing Grace"), "M Amazing Grace");
+    }
+
+    #[test]
+    fn keyword_empty_state_only_scolds_real_queries() {
+        use super::keyword_empty_message;
+        assert_eq!(keyword_empty_message(true, true), None);
+        assert_eq!(keyword_empty_message(false, false), None);
+        assert_eq!(
+            keyword_empty_message(false, true),
+            Some("No Bible verse found.")
         );
     }
 
@@ -1499,5 +1852,83 @@ mod tests {
         assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
         assert_eq!(default_verse_count(43, 3), 36); // John 3
         assert_eq!(default_verse_count(19, 23), 6); // Psalm 23
+    }
+
+    #[test]
+    fn styles_dropdown_preserves_all_eight_levels() {
+        // SCREENSHOT-1.29-LAYOUT.md: the Styles group is a `Song ▾`
+        // dropdown, not 8 buttons. Every level must survive behind it.
+        let levels = style_levels();
+        assert_eq!(levels.len(), 8);
+        for level in levels {
+            let caption = style_dropdown_label(level);
+            assert!(caption.starts_with(level), "caption {caption:?}");
+            assert!(caption.contains('▾'), "caption {caption:?} lacks its menu mark");
+        }
+        assert_eq!(style_dropdown_label("Song"), "Song ▾");
+    }
+
+    #[test]
+    fn agenda_rail_gives_every_button_its_own_menu_mark() {
+        // The rail's five buttons each carry a `▾` affordance in the render
+        // layer; the spec fixes the order (add, save, delete, up, down).
+        let buttons = agenda_rail_buttons();
+        assert_eq!(buttons.len(), 5);
+        let actions: Vec<&str> = buttons.iter().map(|(_, a)| *a).collect();
+        assert_eq!(
+            actions,
+            vec!["add", "save", "delete", "move up", "move down"]
+        );
+        // Every rail button opens a true popup menu with the real 1.29
+        // contents (UX-RESEARCH §3.1): Add offers sources, Save offers the
+        // save variants, Delete offers scope, moves offer distance.
+        for (_, action) in buttons {
+            let items = rail_menu_items(action);
+            assert!(!items.is_empty(), "{action} menu must not be empty");
+        }
+        let add: Vec<&str> = rail_menu_items("add").iter().map(|(id, _)| *id).collect();
+        assert!(add.contains(&"add-selected"));
+        assert!(add.iter().any(|id| id.starts_with("add-") && *id != "add-selected"));
+        let save: Vec<&str> = rail_menu_items("save").iter().map(|(id, _)| *id).collect();
+        assert!(save.contains(&"save"));
+        assert!(save.contains(&"save-as"));
+        assert!(save.contains(&"save-full"));
+        assert!(rail_menu_items("nope").is_empty());
+    }
+
+    #[test]
+    fn styles_preset_row_and_override_dot() {
+        // The Styles preset row glyphs are cascade levels (UX-RESEARCH
+        // §4.2), so picking one can never disagree with the dropdown.
+        let presets = style_preset_levels();
+        assert_eq!(presets, ["Base", "Songbooks", "Song", "Verse"]);
+        let levels = style_levels();
+        for preset in presets {
+            assert!(levels.contains(&preset), "{preset} not a style level");
+        }
+        // The green dot is lit on any override level, hollow on Base.
+        assert!(!style_override_dot("Base"));
+        assert!(style_override_dot("Song"));
+        assert!(style_override_dot("Verse"));
+    }
+
+    #[test]
+    fn agenda_rename_rejects_blank_titles() {
+        assert_eq!(valid_rename_title("  Opening loop  "), Some("Opening loop".into()));
+        assert_eq!(valid_rename_title("   "), None);
+        assert_eq!(valid_rename_title(""), None);
+    }
+
+    #[test]
+    fn bible_slides_group_verses_into_badged_rows() {
+        // Per-slide Bible rows: the badge derives from the verses packed
+        // into that slide's lines.
+        let lines = vec!["16 For God so loved".to_string(), "17 continued".to_string()];
+        assert_eq!(bible_slide_verses(&lines), vec![16, 17]);
+        assert_eq!(bible_slide_badge(&lines), "16–17");
+        let single = vec!["18 alone".to_string()];
+        assert_eq!(bible_slide_badge(&single), "18");
+        assert!(bible_slide_badge(&[]).is_empty());
+        assert!(bible_slide_verses(&["(no Bible translation installed)".to_string()]).is_empty());
     }
 }
