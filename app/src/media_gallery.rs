@@ -631,6 +631,35 @@ pub(crate) fn wire_gallery_fields(root: &mut Root, cx: &mut Context<Root>) {
 /// points at a directory), the file is copied into its Images/Videos
 /// library first, so the background survives as managed media; otherwise
 /// the picked path is listed directly, like a typed import.
+/// Persistent media dir next to the layout file: picks are COPIED here so
+/// backgrounds survive restart and USB-stick removal (lens 2/3). The native
+/// doc-folder path above wins when set; otherwise the file lands in
+/// `./media/Images|Videos` beside `videopsalm-layout.json`.
+fn persistent_media_copy(src: &Path, kind: &str) -> Result<PathBuf, String> {
+    let sub = match kind {
+        "video" => "Videos",
+        _ => "Images",
+    };
+    let base = std::path::Path::new(crate::ux::LayoutPrefs::FILE)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    // Empty parent (bare filename) means cwd.
+    let dir = if base.as_os_str().is_empty() {
+        Path::new(".").join("media").join(sub)
+    } else {
+        base.join("media").join(sub)
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dest = dir.join(vp_core::native_folder::free_media_name(&dir, &name));
+    std::fs::copy(src, &dest).map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
+    Ok(dest)
+}
+
 pub(crate) fn browse_assign_background(root: &mut Root, cx: &mut Context<Root>) {
     let Some(picked) = crate::file_picker::pick_file(
         "Pick background image or video",
@@ -669,7 +698,19 @@ pub(crate) fn browse_assign_background(root: &mut Root, cx: &mut Context<Root>) 
             }
         }
     } else {
-        picked.clone()
+        // No doc folder: copy into persistent ./media so the pick
+        // survives restart (lens 2/3) instead of referencing a temp path.
+        let sub = if kind == MediaFileKind::Video { "video" } else { "image" };
+        match persistent_media_copy(&picked, sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(
+                    cx,
+                    format!("Copy failed ({e}) — listing the picked file instead."),
+                );
+                picked.clone()
+            }
+        }
     };
     root.gallery_import_field
         .update(cx, |f, cx| f.set_text(&listed.to_string_lossy(), cx));

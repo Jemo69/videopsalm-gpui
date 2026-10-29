@@ -70,7 +70,7 @@ use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
 use vp_core::geometry::{AspectRatio, FitMode, Viewport, resolve_percent};
 use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
-use vp_core::media::{CutScope, ExternalPlayer, MediaKind, MediaPlayer, projector_frame};
+use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemRef, Song,
 };
@@ -1080,6 +1080,18 @@ impl Root {
                 BackgroundKind::Camera => "camera".to_string(),
             },
             bg_fit: self.bg_fit.literal().to_string(),
+            gallery_images: self
+                .galleries
+                .library
+                .images()
+                .map(|e| e.path.to_string_lossy().into_owned())
+                .collect(),
+            gallery_videos: self
+                .galleries
+                .library
+                .videos()
+                .map(|e| e.path.to_string_lossy().into_owned())
+                .collect(),
         }
     }
 
@@ -1126,6 +1138,20 @@ impl Root {
             _ => BackgroundKind::Color,
         };
         self.bg_fit = BgFit::from_literal(p.bg_fit.as_str()).unwrap_or_default();
+        // Restore the gallery library (lens 2/3): only files that still
+        // exist; ghosts are dropped so the projector never points at one.
+        for path in &p.gallery_images {
+            let pb = PathBuf::from(path);
+            if pb.is_file() {
+                self.galleries.library.add(pb, MediaFileKind::Image);
+            }
+        }
+        for path in &p.gallery_videos {
+            let pb = PathBuf::from(path);
+            if pb.is_file() {
+                self.galleries.library.add(pb, MediaFileKind::Video);
+            }
+        }
         if !p.font_family.trim().is_empty() {
             self.font_family = p.font_family.clone();
         }
@@ -5583,7 +5609,7 @@ impl Root {
         }
         // Keep the documented order behind one source of truth.
         debug_assert_eq!(agenda_rail_buttons().len(), 5);
-        let mut rail = vec![
+        let rail = vec![
             rail_row(
                 icon_btn(ui, cx, "+", "add", !empty, |this, cx| {
                     this.rail_menu = None;

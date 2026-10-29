@@ -954,6 +954,14 @@ pub struct LayoutPrefs {
     /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
     #[serde(default)]
     pub projector_display: usize,
+    /// Gallery library paths (persisted so backgrounds survive restart —
+    /// lens 2/3: an in-memory-only library meant every background vanished
+    /// on relaunch and USB-stick picks ghosted). Missing files are skipped
+    /// on load, never ghosted.
+    #[serde(default)]
+    pub gallery_images: Vec<String>,
+    #[serde(default)]
+    pub gallery_videos: Vec<String>,
 }
 
 fn d_bible_search() -> String {
@@ -1005,6 +1013,8 @@ impl Default for LayoutPrefs {
             bible_search: d_bible_search(),
             aspect_ratio: d_aspect_ratio(),
             projector_display: 0,
+            gallery_images: Vec::new(),
+            gallery_videos: Vec::new(),
         }
     }
 }
@@ -1117,6 +1127,8 @@ mod tests {
         p.theme_id = "blue".to_string();
         p.accent_override = Some("#22C55E".to_string());
         p.max_lines = 6;
+        p.gallery_images = vec!["/tmp/a.png".to_string()];
+        p.gallery_videos = vec!["/tmp/b.mp4".to_string()];
         let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
         assert_eq!(back, p);
     }
