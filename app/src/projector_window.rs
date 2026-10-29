@@ -36,9 +36,9 @@ use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{
-    App, Bounds, Context, DefiniteLength, Div, Entity, ObjectFit, Render, Rgba, StyledImage,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, div, img, px,
-    rgb, size,
+    App, Bounds, Context, DefiniteLength, Div, Entity, JustifyContent, ObjectFit, Render, Rgba,
+    StyledImage, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    div, img, px, rgb, size,
 };
 use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
@@ -150,6 +150,27 @@ pub fn body_fractions(pct: PercentRect) -> (f32, f32, f32, f32) {
 
 fn frac(v: f32) -> DefiniteLength {
     DefiniteLength::Fraction(v.clamp(0.0, 1.0))
+}
+
+/// The lyric body's placement inside its frame rect.
+///
+/// `fill_frame` is load-bearing: `justify_content` distributes *free* space,
+/// and a content-sized body has none, so top/center/bottom all collapsed to
+/// the top (WI-021). The body must fill the frame before it can move in it.
+pub(crate) struct BodyLayout {
+    pub justify: JustifyContent,
+    pub fill_frame: bool,
+}
+
+pub(crate) fn body_layout(valign: VAlign) -> BodyLayout {
+    BodyLayout {
+        justify: match valign {
+            VAlign::Top => JustifyContent::Start,
+            VAlign::Center => JustifyContent::Center,
+            VAlign::Bottom => JustifyContent::End,
+        },
+        fill_frame: true,
+    }
 }
 
 /// Background layer shared by the projector window, the in-window projector
@@ -308,11 +329,16 @@ pub(crate) fn render_snapshot(
                 },
             ));
         }
+        let layout = body_layout(snap.valign);
         let mut body = div().flex().flex_col().gap_2();
-        body = match snap.valign {
-            VAlign::Top => body.justify_start(),
-            VAlign::Center => body.justify_center(),
-            VAlign::Bottom => body.justify_end(),
+        if layout.fill_frame {
+            body = body.size_full();
+        }
+        body = match layout.justify {
+            JustifyContent::Start => body.justify_start(),
+            JustifyContent::Center => body.justify_center(),
+            JustifyContent::End => body.justify_end(),
+            _ => body,
         };
         body = match snap.align {
             Align::Left => body.items_start(),
@@ -575,6 +601,25 @@ mod tests {
         assert!(down.r < 1.0, "negative darkens white");
         // Alpha is preserved, never the color's own business.
         assert_eq!(up.a, 1.0);
+    }
+
+    #[test]
+    fn valign_fills_the_frame_so_top_center_bottom_actually_move() {
+        // WI-021 regression: `justify_content` only moves children when the
+        // body fills the lyric frame. A content-sized body has no free space,
+        // so every valign collapsed to the top and the setting did nothing.
+        let top = body_layout(VAlign::Top);
+        let mid = body_layout(VAlign::Center);
+        let bottom = body_layout(VAlign::Bottom);
+        assert!(
+            top.fill_frame && mid.fill_frame && bottom.fill_frame,
+            "body must fill its frame or justify_content cannot move it"
+        );
+        assert_eq!(top.justify, JustifyContent::Start);
+        assert_eq!(mid.justify, JustifyContent::Center);
+        assert_eq!(bottom.justify, JustifyContent::End);
+        assert_ne!(top.justify, mid.justify);
+        assert_ne!(mid.justify, bottom.justify);
     }
 
     #[test]
