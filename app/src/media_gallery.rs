@@ -249,7 +249,6 @@ pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Di
     ]));
     if let Some(kind) = open {
         kids.push(gallery_panel(root, ui, cx, kind));
-        kids.push(import_row(root, ui, cx));
         kids.push(row(vec![
             btn(
                 ui,
@@ -266,16 +265,6 @@ pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Di
                 12.,
             ),
         ]));
-        kids.push(row(vec![btn(
-            ui,
-            cx,
-            "✖ Close gallery",
-            false,
-            |this, _, _, cx| {
-                this.galleries.open = None;
-                cx.notify();
-            },
-        )]));
     }
     section(
         ui,
@@ -307,6 +296,10 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         label(ui, "Search:", 12.),
         div_field(root, ui, cx, &filter_text, kind),
     ]));
+
+    // Import row first, per the vendor control stack (RESEARCH §3 row 1:
+    // `+ Import videos`, file dialog, bottom-anchored in the original).
+    kids.push(import_row(root, ui, cx, kind));
 
     // Thumbnail grid (vendor: 5 columns; v1 caps at 60 cells so a big
     // folder stays fast — the count line says how many match, Search
@@ -375,10 +368,13 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             .child(label(ui, &format!("{count} shown"), 11.)),
     );
 
-    // Control stack (§3): Delete · Explore · Rebuild · Luminosité · Keep-open.
-    // Delete is greyed with nothing selected (the original greys the row);
-    // Explore is greyed until a gallery folder exists (imports by path need
-    // none, so the button must not pretend otherwise).
+    // Control stack (§3): Import is first (above); Delete · Explore ·
+    // Rebuild · Luminosité · Keep-open · Close follow the vendor order.
+    // Delete is greyed with nothing selected (the original greys the row).
+    let delete_label = match kind {
+        MediaFileKind::Image => "Delete selected image",
+        MediaFileKind::Video => "Delete selected video",
+    };
     let selected = root.galleries.selection(kind).map(str::to_string);
     let has_sel = selected.is_some();
     kids.push(row(vec![
@@ -386,14 +382,14 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             btn(
                 ui,
                 cx,
-                "Delete selected video/image",
+                delete_label,
                 false,
                 move |this, _, _, cx| {
                     delete_selected(this, cx, kind);
                 },
             )
         } else {
-            btn_disabled(ui, "Delete selected video/image")
+            btn_disabled(ui, delete_label)
         },
         label(
             ui,
@@ -453,6 +449,17 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         pin,
         |this, _, _, cx| {
             this.galleries.keep_open = !this.galleries.keep_open;
+            cx.notify();
+        },
+    )]));
+    // Close collapses the dropdown (vendor stack row 7, `Fermer`).
+    kids.push(row(vec![btn(
+        ui,
+        cx,
+        "✖ Close",
+        false,
+        |this, _, _, cx| {
+            this.galleries.open = None;
             cx.notify();
         },
     )]));
@@ -543,11 +550,15 @@ fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileK
     ])
 }
 
-/// Shared import row: a path field plus per-kind Import buttons. The path
-/// can be typed, pasted, or filled from the OS file picker (Browse); imports
-/// stay path-based (no folder watching — there is no live gallery folder in
-/// this port).
-fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
+/// Shared import row: a path field plus Browse and the per-kind Import
+/// button (vendor stack row 1). The path can be typed, pasted, or filled
+/// from the OS file picker (Browse); imports stay path-based (no folder
+/// watching — there is no live gallery folder in this port).
+fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
+    let import_label = match kind {
+        MediaFileKind::Image => "+ Import images",
+        MediaFileKind::Video => "+ Import videos",
+    };
     row(vec![
         label(ui, "Import file path:", 12.),
         div().flex_1().child(root.gallery_import_field.clone()),
@@ -566,11 +577,8 @@ fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
                 this.set_status(cx, "Browse cancelled — no file chosen.");
             }
         }),
-        btn(ui, cx, "+ Import image", false, |this, _, _, cx| {
-            import_path(this, cx, MediaFileKind::Image);
-        }),
-        btn(ui, cx, "+ Import video", false, |this, _, _, cx| {
-            import_path(this, cx, MediaFileKind::Video);
+        btn(ui, cx, import_label, false, move |this, _, _, cx| {
+            import_path(this, cx, kind);
         }),
     ])
 }

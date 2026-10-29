@@ -749,6 +749,51 @@ impl BibleSearch {
     }
 }
 
+/// Vendor 3-state search-mode cycle for the magnifier button at the left of
+/// the Bible search box (`RESEARCH-org.md` §1.5, 1.13): reference entry →
+/// keyword hunt → reference *with surrounding context* → plain reference.
+/// Returns the next `(mode, context)` pair; pure so it is unit-testable.
+pub fn next_bible_search(mode: BibleSearch, context: bool) -> (BibleSearch, bool) {
+    match (mode, context) {
+        (BibleSearch::Reference, false) => (BibleSearch::Keyword, false),
+        (BibleSearch::Keyword, _) => (BibleSearch::Reference, true),
+        (BibleSearch::Reference, true) => (BibleSearch::Reference, false),
+    }
+}
+
+/// Browser song row, vendor order (`songbooks-grouped.png` inline rows,
+/// `SCREENSHOT-1.29-LAYOUT.md` tree rows): an optional `*` for unsaved
+/// changes, then the bare songbook abbreviation, the bare song number, then
+/// the title — space-separated, no brackets, no `#`, no author suffix.
+/// Empty abbreviation/number collapse away without leaving gaps.
+pub fn format_song_row(dirty: bool, abbrev: &str, number: &str, title: &str) -> String {
+    let mut t = String::new();
+    if dirty {
+        t.push('*');
+    }
+    if !abbrev.is_empty() {
+        t.push_str(abbrev);
+        t.push(' ');
+    }
+    if !number.is_empty() {
+        t.push_str(number);
+        t.push(' ');
+    }
+    t.push_str(title);
+    t
+}
+
+/// Empty-state line for a keyword hunt that matched nothing
+/// (`bible-search-mode-toggle.png`: `No Bible verse found.`). Shown only for
+/// a real (non-empty) query — an untouched box shows no scolding.
+pub fn keyword_empty_message(query_empty: bool, hits_empty: bool) -> Option<&'static str> {
+    if !hits_empty || query_empty {
+        None
+    } else {
+        Some("No Bible verse found.")
+    }
+}
+
 /// Glyphs the app may use for kind badges, tool-strip buttons and other
 /// icon-like labels.
 ///
@@ -1334,6 +1379,50 @@ mod tests {
             BibleSearch::Reference
                 .placeholder("fr")
                 .contains("Référence")
+        );
+    }
+
+    #[test]
+    fn bible_search_button_cycles_three_states() {
+        use super::next_bible_search;
+        // Reference -> keyword -> reference-with-context -> plain reference.
+        assert_eq!(
+            next_bible_search(BibleSearch::Reference, false),
+            (BibleSearch::Keyword, false)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Keyword, false),
+            (BibleSearch::Reference, true)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Keyword, true),
+            (BibleSearch::Reference, true)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Reference, true),
+            (BibleSearch::Reference, false)
+        );
+    }
+
+    #[test]
+    fn song_rows_lead_with_number_not_brackets() {
+        use super::format_song_row;
+        assert_eq!(format_song_row(false, "M", "2762838", "Amazing Grace"), "M 2762838 Amazing Grace");
+        assert_eq!(format_song_row(true, "M", "2762838", "Amazing Grace"), "*M 2762838 Amazing Grace");
+        assert_eq!(format_song_row(false, "", "", "New song"), "New song");
+        assert_eq!(format_song_row(true, "", "", "New song"), "*New song");
+        assert_eq!(format_song_row(false, "", "1", "Can It Make It Like the Lord"), "1 Can It Make It Like the Lord");
+        assert_eq!(format_song_row(false, "M", "", "Amazing Grace"), "M Amazing Grace");
+    }
+
+    #[test]
+    fn keyword_empty_state_only_scolds_real_queries() {
+        use super::keyword_empty_message;
+        assert_eq!(keyword_empty_message(true, true), None);
+        assert_eq!(keyword_empty_message(false, false), None);
+        assert_eq!(
+            keyword_empty_message(false, true),
+            Some("No Bible verse found.")
         );
     }
 
