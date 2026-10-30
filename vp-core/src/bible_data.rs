@@ -89,6 +89,17 @@ impl Translation {
         out
     }
 
+    /// `true` when `line` is a beyond-chapter placeholder (`"10 […]"`):
+    /// the projector must never show these — the original shows only verses
+    /// the translation actually carries.
+    pub fn is_placeholder_line(line: &str) -> bool {
+        let mut parts = line.split_whitespace();
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(num), Some(mark), None) => mark == "[\u{2026}]" && num.parse::<u32>().is_ok(),
+            _ => false,
+        }
+    }
+
     /// Find verses containing specific words or a phrase — the original's
     /// third Bible search mode (the magnifier swaps the reference box for a
     /// keyword box; matching words in the selected translation are listed

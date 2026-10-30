@@ -87,7 +87,8 @@ use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
     BibleSearch, LayoutPrefs, PresKey, RibbonTab, SaveTarget, TOOL_STRIP_PENCIL_INDEX,
     agenda_rail_buttons, apply_verse_grid_click, bible_hit_rows, bible_slide_badge,
-    bible_slide_verses, chapter_count, default_verse_count, digit_slide_index, filmstrip_label,
+    bible_slide_verses, chapter_count, clamp_verses_to_chapter, default_verse_count,
+    digit_slide_index, filmstrip_label,
     font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
     presentation_start_index, rail_menu_items, route_pres_key, save_target, section_name,
     shortcut_help, slide_verse_id, style_dropdown_label, style_levels, style_override_dot,
@@ -1556,14 +1557,16 @@ impl Root {
                     .map(|t| t.resolve(bible_ref))
                     .unwrap_or_default();
                 if lines.is_empty() {
-                    return bible_ref
-                        .verses
-                        .iter()
-                        .map(|v| (v.to_string(), vec!["[…]".to_string()]))
-                        .collect();
+                    // No resolved text (all requested verses are OSIS gaps
+                    // the sample does not carry): honest empty, never a
+                    // fabricated `"10 […]"` row the original never shows.
+                    return Vec::new();
                 }
                 lines
                     .into_iter()
+                    .filter(|line| {
+                        !vp_core::bible_data::Translation::is_placeholder_line(line)
+                    })
                     .map(|line| {
                         let num = line.split_whitespace().next().unwrap_or("?").to_string();
                         (num, vec![line])
@@ -2058,7 +2061,11 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
         match parse_reference(text, &tid, Versification::En) {
-            Ok(r) => {
+            Ok(mut r) => {
+                // Clamp typed/pasted ranges to the installed chapter so
+                // `"10 […]"` placeholders can never enter the selection.
+                let max = self.bible_verse_max(&r.book, r.chapter);
+                r.verses = clamp_verses_to_chapter(&r.verses, max);
                 self.book_query = r.book.clone();
                 self.chapter = r.chapter;
                 if let Some(b) = match_book(&r.book) {
@@ -2893,9 +2900,25 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
         match parse_reference(&input, &tid, Versification::En) {
-            Ok(r) => {
+            Ok(mut r) => {
+                // Typed ranges (`1-10`) clamp to the installed chapter:
+                // beyond-chapter verses would resolve to `"N […]"`
+                // placeholder slides the original never shows.
+                let max = self.bible_verse_max(&r.book, r.chapter);
+                let clamped = clamp_verses_to_chapter(&r.verses, max);
+                if clamped.len() != r.verses.len() {
+                    self.set_status(
+                        cx,
+                        format!(
+                            "Bible ref clamped to {} verse(s) in this chapter.",
+                            clamped.len()
+                        ),
+                    );
+                } else {
+                    self.status = "Ready.".into();
+                }
+                r.verses = clamped;
                 self.biref = Some(r);
-                self.status = "Ready.".into();
             }
             Err(e) => {
                 self.biref = None;
@@ -2905,12 +2928,33 @@ impl Root {
         cx.notify();
     }
 
+    /// Verse ceiling for the current Bible selection: the installed
+    /// chapter length when known, else the canonical fallback. `Ctrl+*`
+    /// used to extend to a hardcoded 176 (Psalm 119), so a short chapter
+    /// grew `"10 […]"` placeholder slides the original never shows.
+    fn bible_verse_max(&self, book: &str, chapter: u32) -> u32 {
+        if let Some(n) = self.bibles.chapter_verse_count(book, chapter) {
+            return n;
+        }
+        let num = vp_core::bible_ref::match_book(book)
+            .map(|b| b.number)
+            .unwrap_or(self.sel_book);
+        default_verse_count(num, chapter)
+    }
+
     fn adjust_range(&mut self, cx: &mut Context<Self>, which: u8) {
         // 0: extend end (Ctrl+*), 1: shrink end (Ctrl+/),
         // 2: extend start (Shift+*), 3: shrink start (Shift+/).
+        // Extend clamps to the chapter length: beyond-chapter verses
+        // resolve to `"N […]"` placeholders, which must never be selected.
+        let max = self
+            .biref
+            .as_ref()
+            .map(|r| self.bible_verse_max(&r.book.clone(), r.chapter))
+            .unwrap_or(176);
         if let Some(r) = self.biref.as_mut() {
             match which {
-                0 => extend_end(r, 176),
+                0 => extend_end(r, max),
                 1 => shrink_end(r),
                 2 => extend_start(r),
                 _ => shrink_start(r),
