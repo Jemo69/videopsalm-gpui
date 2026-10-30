@@ -41,12 +41,12 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{Context, Div, MouseButton, ObjectFit, ScrollHandle, div, img, px};
+use gpui::{App, Context, Div, MouseButton, ObjectFit, ScrollHandle, Window, div, img, px};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
 use vp_core::schema::{BackgroundKind, BgFit};
 
-use crate::{Root, UI, btn, btn_disabled, label, row, section};
+use crate::{Root, TooltipLabel, UI, btn, btn_disabled, btn_tip, label, row, section};
 
 /// Sentinel id for the video gallery's leading black entry (RESEARCH §7):
 /// picking it *unassigns* the background (falls through the cascade to
@@ -69,9 +69,13 @@ pub struct GalleryState {
     /// "Keep the gallery opened" pin (RESEARCH §5): without it, picking a
     /// thumbnail closes the dropdown back to the tab buttons.
     pub keep_open: bool,
-    /// Vendor §9 compact mode: `false` = collapsed 2 rows × 5 (10 small
-    /// previews, no filenames) with an arrow to expand; `true` = full
-    /// captioned grid. Persisted in `LayoutPrefs::gallery_expanded`.
+    /// Compact/expanded switch. Operator-requested density (the vendor's §9
+    /// only documents a collapsed state + an expanded resizable grid with
+    /// remembered *size* — the 2×5-no-names compact strip is the operator's
+    /// large-library ask, not a vendor measurement). One flag covers both
+    /// galleries (simplification: the vendor remembers each gallery's
+    /// geometry separately — noted, not hidden). Persisted in
+    /// `LayoutPrefs::gallery_expanded`.
     pub expanded: bool,
     /// Last reported gallery folder for the Explore-folder row. Defaults to
     /// the vendor's documented `…/VideoPsalm/Images|Videos` layout *as a
@@ -163,13 +167,45 @@ impl GalleryState {
         }
     }
 
-    /// Vendor compact density: 2 rows × 5 columns = 10 previews (§9 +
-    /// operator report: compact shows small previews, no filenames; the
-    /// arrow expands to the full captioned grid).
+    /// Compact density (operator request for large libraries): 2 rows × 5
+    /// columns of small previews with no filenames; the arrow expands to
+    /// the full captioned grid. (Vendor §9 documents collapsed + expanded
+    /// + remembered size, not this exact density.)
     pub const COMPACT_CAP: usize = 10;
     /// Full-grid cap so a big folder stays fast (count line + Search
     /// narrow it further).
     pub const GRID_CAP: usize = 60;
+
+    /// File cells the compact strip holds for `kind`: the video sentinel
+    /// (§7, chrome not a file) occupies one of the 10 cells, so 9 files +
+    /// sentinel = a true 2×5 strip. Images hold 10 files.
+    pub fn compact_file_limit(kind: MediaFileKind) -> usize {
+        match kind {
+            MediaFileKind::Image => Self::COMPACT_CAP,
+            MediaFileKind::Video => Self::COMPACT_CAP - 1,
+        }
+    }
+
+    /// Which entry positions to render (pure, tested): the first `limit`
+    /// entries, plus the assigned one when it falls outside — the
+    /// highlighted thumbnail (§3/S3) must always be visible, never silently
+    /// cropped by the compact strip.
+    pub fn visible_positions(
+        total: usize,
+        limit: usize,
+        assigned_pos: Option<usize>,
+    ) -> Vec<usize> {
+        let mut out: Vec<usize> = (0..total.min(limit)).collect();
+        if let Some(a) = assigned_pos {
+            if a < total && !out.contains(&a) {
+                // Room for the pin: drop the last unassigned cell so the
+                // strip stays exactly 2×5.
+                out.pop();
+                out.push(a);
+            }
+        }
+        out
+    }
 
     /// How many library entries the grid shows in this mode (pure, tested).
     /// The video black sentinel (§7) is extra — it never counts against the
@@ -326,17 +362,31 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     // `+ Import videos`, file dialog, bottom-anchored in the original).
     kids.push(import_row(root, ui, cx, kind));
 
-    // Thumbnail grid — vendor §9 + operator report: collapsed = 2 rows × 5
-    // small previews with NO filenames + an arrow to expand; expanded = the
-    // full captioned grid. Both modes scroll inside a bounded box (their
-    // own ScrollHandle) so a large library never pushes the layout around
-    // and preview/projector stay in sync via republish-on-assign below.
-    // The video gallery leads with the black sentinel (§7, not a file).
+    // Thumbnail grid — operator-requested density on the vendor §9
+    // collapsed/expanded shape: collapsed = 2 rows × 5 small previews with
+    // NO filenames + an arrow to expand; expanded = the full captioned
+    // grid. Both modes scroll inside a bounded box (their own ScrollHandle)
+    // so a large library never pushes the layout around. Preview/projector
+    // stay in sync via republish-on-assign below.
+    // The video gallery leads with the black sentinel (§7, chrome — not a
+    // file, never counted against the cap).
     let expanded = root.galleries.expanded;
     let mut thumbs: Vec<Div> = Vec::new();
     if kind == MediaFileKind::Video {
         let assigned = root.bg_kind == BackgroundKind::Color;
-        thumbs.push(thumb_btn_compact_sentinel(ui, cx, assigned));
+        if expanded {
+            thumbs.push(thumb_btn(
+                ui,
+                cx,
+                kind,
+                BLACK_SENTINEL_ID,
+                "■ black (remove bg)",
+                assigned,
+                None,
+            ));
+        } else {
+            thumbs.push(thumb_compact_sentinel(ui, cx, assigned));
+        }
     }
     let entries: Vec<(String, String, bool, Option<PathBuf>)> = {
         let shown = match kind {
@@ -361,47 +411,52 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         ));
     }
     let total = entries.len();
-    let limit = GalleryState::visible_limit(total, expanded);
-    for (id, caption, assigned, path) in entries.into_iter().take(limit) {
+    // File cells this mode holds (compact video leaves one cell for the
+    // sentinel so the strip stays exactly 2×5).
+    let file_limit = if expanded {
+        GalleryState::GRID_CAP
+    } else {
+        GalleryState::compact_file_limit(kind)
+    };
+    // The highlighted (assigned) thumbnail must stay visible even when it
+    // falls outside the first N (§3/S3) — pin it into the rendered set.
+    let assigned_pos = entries.iter().position(|(_, _, a, _)| *a);
+    let positions = GalleryState::visible_positions(total, file_limit, assigned_pos);
+    let shown_files = positions.len();
+    for i in positions {
+        let (id, caption, assigned, path) = &entries[i];
         if expanded {
             thumbs.push(thumb_btn(
                 ui,
                 cx,
                 kind,
-                &id,
-                &caption,
-                assigned,
+                id,
+                caption,
+                *assigned,
                 path.as_deref(),
             ));
         } else {
-            thumbs.push(thumb_compact(ui, cx, kind, &id, &caption, assigned, path.as_deref()));
+            thumbs.push(thumb_compact(
+                ui,
+                cx,
+                kind,
+                id,
+                caption,
+                *assigned,
+                path.as_deref(),
+            ));
         }
-    }
-    if total > limit {
-        thumbs.push(label(
-            ui,
-            &format!(
-                "+{} more — {} to see {}.",
-                total - limit,
-                if expanded {
-                    "refine Search"
-                } else {
-                    "expand ▾ or refine Search"
-                },
-                if expanded { "them" } else { "all" },
-            ),
-            11.,
-        ));
     }
     // Bounded, breathing grid: 5 columns, 8px gaps/padding (was 4px —
     // the "suffocated" report), own scroller per gallery so the scroll
     // offset never leaks between Images/Videos and never shoves the
-    // control stack off-screen. Compact ≈ 2 rows (10 previews, no
-    // captions); expanded ≈ 5 rows of captioned tiles.
+    // control stack off-screen. Compact ≈ 2 rows (10 cells, no captions);
+    // expanded shows captioned tiles in the same box height with a scroll
+    // (≈3 rows visible, the rest scrolls).
     let (scroll_id, max_h, handle): (&'static str, f32, ScrollHandle) = match (kind, expanded) {
-        (MediaFileKind::Image, false) => ("gallery-images-compact", 168., root.galleries.scroll_images.clone()),
+        (MediaFileKind::Image, false) => ("gallery-images-compact", 184., root.galleries.scroll_images.clone()),
         (MediaFileKind::Image, true) => ("gallery-images-full", 336., root.galleries.scroll_images.clone()),
-        (MediaFileKind::Video, false) => ("gallery-videos-compact", 168., root.galleries.scroll_videos.clone()),
+        (MediaFileKind::Video, false) => ("gallery-videos-compact", 184., root.galleries.scroll_videos.clone()),
         (MediaFileKind::Video, true) => ("gallery-videos-full", 336., root.galleries.scroll_videos.clone()),
     };
     let grid_list = div()
@@ -418,8 +473,12 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         .max_h(px(max_h))
         .children(thumbs);
     // `grid_list` is Stateful (it has an id so it can scroll) while the
-    // count line is a plain Div — wrap so the column has one child type.
-    let grid_body: Div = div()
+    // count/overflow lines are plain Divs — wrap so the column has one
+    // child type. The overflow note lives HERE, not in the wrapping grid
+    // (as a grid cell it became a wide 12th tile and broke the 2×5).
+    // Counts name matches, never rendered tiles: "200 match" with 10
+    // tiles shown is honest; "200 shown" was the lie.
+    let mut grid_body: Div = div()
         .flex()
         .flex_col()
         .gap(px(6.))
@@ -430,17 +489,37 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
         .child(label(
             ui,
             &format!(
-                "{count} shown{}",
+                "{count} match{}, showing {shown_files}{}",
+                if count == 1 { "" } else { "es" },
                 if expanded { " — full grid" } else { " — 2×5 compact, no names" },
             ),
             11.,
         ));
+    if total > file_limit {
+        grid_body = grid_body.child(label(
+            ui,
+            &format!(
+                "+{} more — {}.",
+                total - file_limit,
+                if expanded {
+                    "refine Search to narrow the grid"
+                } else {
+                    "expand ▾ for the captioned grid or refine Search"
+                },
+            ),
+            11.,
+        ));
+    }
     kids.push(grid_body);
     // The expand/collapse arrow: vendor §9 "expand the gallery". Compact
     // is the default (large libraries stay a calm 2×5 strip); one press
-    // opens the full captioned grid, another collapses back.
+    // opens the full captioned grid, another collapses back. The label
+    // promises matches, not rendered tiles (above GRID_CAP only the first
+    // 60 render — Search narrows the rest).
     let expand_label: String = if expanded {
         "▴ Collapse to 2×5 compact".to_string()
+    } else if count > GalleryState::GRID_CAP {
+        format!("▾ Expand — show first {} of {count}", GalleryState::GRID_CAP)
     } else {
         format!("▾ Expand — show all {count}")
     };
@@ -625,11 +704,11 @@ fn thumb_btn(
     })
 }
 
-/// Compact thumbnail: small preview ONLY, no filename (vendor §9 collapsed
-/// density + operator report: "small preview not name of the file"). The
-/// full caption survives as the hover title via the assigned highlight —
-/// captions return in the expanded grid. Same 112×63 preview so compact
-/// and expanded tiles align when the arrow flips.
+/// Compact thumbnail: small preview ONLY, no filename (operator request
+/// for large libraries: "small preview not name of the file"). The
+/// filename survives as a hover tooltip (a11y + parity) and captions return
+/// in the expanded grid. Same 112×63 preview so compact and expanded tiles
+/// align when the arrow flips.
 fn thumb_compact(
     ui: &UI,
     cx: &mut Context<Root>,
@@ -660,14 +739,16 @@ fn thumb_compact(
         } else {
             cell.border_1().border_color(ui.border)
         };
-        // Hover title carries the filename the tile hides (a11y + parity).
         cell = cell.child(
             img(file)
                 .object_fit(ObjectFit::Cover)
                 .w(px(112.))
                 .h(px(63.)),
         );
-        let _ = tip;
+        // Hover tooltip carries the filename the tile hides.
+        cell.interactivity().tooltip(
+            move |_: &mut Window, cx: &mut App| cx.new(|_| TooltipLabel(tip.clone())).into(),
+        );
         return cell.on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -675,24 +756,31 @@ fn thumb_compact(
             }),
         );
     }
-    // Videos + missing files: compact glyph tile, no caption text.
+    // Videos + missing files: compact glyph tile with the filename on
+    // hover — bare "▶" tiles are otherwise indistinguishable.
     let glyph = match kind {
         MediaFileKind::Image => "▦",
         MediaFileKind::Video => "▶",
     };
-    let _ = tip;
-    btn(ui, cx, glyph, assigned, move |this, _, _, cx| {
+    btn_tip(ui, cx, glyph, caption, assigned, move |this, _, _, cx| {
         assign_pick(this, cx, kind, &id_owned);
     })
 }
 
-/// Compact black sentinel: ■ only, no "(remove bg)" caption — the caption
-/// returns in the expanded grid.
-fn thumb_btn_compact_sentinel(ui: &UI, cx: &mut Context<Root>, assigned: bool) -> Div {
+/// Compact black sentinel: ■ only, no "(remove bg)" caption — the full
+/// caption returns in the expanded grid. Hover names it.
+fn thumb_compact_sentinel(ui: &UI, cx: &mut Context<Root>, assigned: bool) -> Div {
     let id_owned = BLACK_SENTINEL_ID.to_string();
-    btn(ui, cx, "■", assigned, move |this, _, _, cx| {
-        assign_pick(this, cx, MediaFileKind::Video, &id_owned);
-    })
+    btn_tip(
+        ui,
+        cx,
+        "■",
+        "■ black (remove bg) — falls through to Base",
+        assigned,
+        move |this, _, _, cx| {
+            assign_pick(this, cx, MediaFileKind::Video, &id_owned);
+        },
+    )
 }
 
 /// Luminosité row: the documented ⊟/⊞ steppers over a signed, zero-centred,
@@ -1209,9 +1297,41 @@ mod tests {
 
     #[test]
     fn sentinel_never_counts_against_the_compact_cap() {
-        // The black sentinel (§7) is chrome, not a file: visible_limit
-        // counts library entries only, so 10 files + sentinel = 10 files
-        // shown in compact, sentinel extra.
-        assert_eq!(GalleryState::visible_limit(10, false), 10);
+        // The black sentinel (§7) is chrome, not a file: video compact
+        // holds 9 files + sentinel = exactly 10 cells (2×5).
+        assert_eq!(
+            GalleryState::compact_file_limit(MediaFileKind::Image),
+            10
+        );
+        assert_eq!(
+            GalleryState::compact_file_limit(MediaFileKind::Video),
+            9,
+            "sentinel takes the 10th cell"
+        );
+    }
+
+    #[test]
+    fn assigned_thumbnail_is_pinned_into_the_compact_strip() {
+        // §3/S3: the assigned thumbnail is highlighted — it must render
+        // even when it falls outside the first N.
+        assert_eq!(
+            GalleryState::visible_positions(200, 10, None),
+            (0..10).collect::<Vec<_>>()
+        );
+        // Assigned at position 50: pinned in, strip stays 10 cells.
+        let pinned = GalleryState::visible_positions(200, 10, Some(50));
+        assert_eq!(pinned.len(), 10);
+        assert!(pinned.contains(&50));
+        // Assigned inside the window: unchanged.
+        assert_eq!(
+            GalleryState::visible_positions(200, 10, Some(3)),
+            (0..10).collect::<Vec<_>>()
+        );
+        // Assigned out of range / empty library: no panic, no ghost.
+        assert_eq!(
+            GalleryState::visible_positions(5, 10, Some(99)),
+            (0..5).collect::<Vec<_>>()
+        );
+        assert!(GalleryState::visible_positions(0, 10, None).is_empty());
     }
 }
