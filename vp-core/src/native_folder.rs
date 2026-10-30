@@ -754,12 +754,149 @@ fn file_name(path: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Vendor shared folder on Windows: `C:\Users\Public\Documents\VideoPsalm`.
+/// The original installs its shared data here; the operator never picks it —
+/// the app finds it on boot and imports everything inside, then runs as
+/// normal. `PUBLIC` names the same place (`%PUBLIC%` =
+/// `C:\Users\Public`); the hardcoded fallback covers machines where the
+/// env is missing (Windows only — Linux/macOS have no vendor folder, so
+/// this returns `None` there unless `PUBLIC` is set for tests).
+///
+/// Only Windows is supported per product scope; other platforms rely on the
+/// explicit `VIDEOPSALM_FOLDER` override or the operator's Documents folder.
+///
+pub fn windows_public_dir() -> Option<String> {
+    if let Ok(v) = std::env::var("PUBLIC") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Some(
+                Path::new(v)
+                    .join("Documents")
+                    .join("VideoPsalm")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return Some(r"C:\Users\Public\Documents\VideoPsalm".to_string());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return None;
+    }
+}
+
+/// Application support folder — the app's own home, like other apps:
+/// settings, library database, and stored imports live here when no
+/// VideoPsalm document folder is open. Windows: `%APPDATA%/VideoPsalm`
+/// (else `%LOCALAPPDATA%/VideoPsalm`); macOS:
+/// `~/Library/Application Support/VideoPsalm`; Linux: `$XDG_DATA_HOME` /
+/// `~/.local/share/videopsalm`. Never fails: falls back to `./videopsalm-data`.
+///
+pub fn app_data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        for key in ["APPDATA", "LOCALAPPDATA"] {
+            if let Ok(v) = std::env::var(key) {
+                let v = v.trim();
+                if !v.is_empty() {
+                    return Path::new(v).join("VideoPsalm");
+                }
+            }
+        }
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let p = profile.trim();
+            if !p.is_empty() {
+                return Path::new(p)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("VideoPsalm");
+            }
+        }
+        return PathBuf::from(r"C:\Users\Public\Documents\VideoPsalm-AppData");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Path::new(h)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("VideoPsalm");
+            }
+        }
+        return PathBuf::from("./videopsalm-data");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            let x = xdg.trim();
+            if !x.is_empty() {
+                return Path::new(x).join("videopsalm");
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Path::new(h).join(".local").join("share").join("videopsalm");
+            }
+        }
+        return PathBuf::from("./videopsalm-data");
+    }
+}
+
+/// Media library inside the application folder (`<app-data>/Media`).
+/// Imports land in `Images/` / `Videos/` here when no VideoPsalm document
+/// folder is open — so an imported song, songbook image, or video is
+/// stored, not just referenced, and survives restart and USB-stick removal.
+///
+pub fn app_media_dir() -> PathBuf {
+    app_data_dir().join("Media")
+}
+
+/// SQLite library file inside the application folder.
+///
+pub fn app_library_path() -> PathBuf {
+    app_data_dir().join("library.db")
+}
+
+/// Create the application folder + `Media/Images` + `Media/Videos`.
+/// Returns the app-data dir. Errors are strings for the status line.
+///
+pub fn ensure_app_dirs() -> Result<PathBuf, String> {
+    let base = app_data_dir();
+    for dir in [
+        base.clone(),
+        base.join("Media").join("Images"),
+        base.join("Media").join("Videos"),
+    ] {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    Ok(base)
+}
+
 /// Candidate document folders, most-specific first.
+/// Windows-first: the vendor shared folder (`C:\Users\Public\Documents
+/// \VideoPsalm`) wins, then the operator's Documents copy.
+/// Only Windows carries a vendor folder; other platforms resolve through
+/// `VIDEOPSALM_FOLDER` or the operator's home (kept for dev/tests).
 pub fn folder_candidates(home: &str, documents: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(v) = std::env::var("VIDEOPSALM_FOLDER") {
+        let v = v.trim();
         if !v.is_empty() {
-            out.push(v);
+            out.push(v.to_string());
+        }
+    }
+    // Vendor shared folder on Windows — auto-found on boot so the app
+    // imports everything inside and just runs as normal.
+    if let Some(public) = windows_public_dir() {
+        if !out.contains(&public) {
+            out.push(public);
         }
     }
     for p in [
@@ -772,6 +909,15 @@ pub fn folder_candidates(home: &str, documents: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// First existing candidate folder, if any — the boot auto-find.
+/// Returns the resolved path (following `CommonSettings.json` relocation).
+pub fn find_default_folder(home: &str, documents: &str) -> Option<String> {
+    folder_candidates(home, documents)
+        .into_iter()
+        .find(|dir| Path::new(dir).is_dir())
+        .map(|dir| resolve_data_folder(&dir))
 }
 
 /// Scrub a picked file name the way the Electron port does (`safeMediaName`):
@@ -1025,5 +1171,85 @@ mod tests {
             import_media_file(&doc.join("missing.jpg"), &doc.to_string_lossy(), "image").is_err()
         );
         std::fs::remove_dir_all(&doc).ok();
+    }
+
+    #[test]
+    fn windows_public_dir_respects_public_env() {
+        // `PUBLIC` names the vendor shared folder: `%PUBLIC%/Documents/VideoPsalm`
+        // is `C:\Users\Public\Documents\VideoPsalm` on a real Windows box.
+        let dir = tmp_dir("public");
+        let prev = std::env::var("PUBLIC").ok();
+        std::env::set_var("PUBLIC", dir.as_os_str());
+        let got = windows_public_dir().expect("PUBLIC should resolve");
+        assert!(
+            got.ends_with("VideoPsalm"),
+            "should end at the VideoPsalm folder: {got}"
+        );
+        assert!(got.contains(&dir.to_string_lossy().into_owned()));
+        if let Some(v) = prev {
+            std::env::set_var("PUBLIC", v);
+        } else {
+            std::env::remove_var("PUBLIC");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn folder_candidates_prefers_vendor_public_dir() {
+        let dir = tmp_dir("candidates");
+        let prev_public = std::env::var("PUBLIC").ok();
+        let prev_folder = std::env::var("VIDEOPSALM_FOLDER").ok();
+        std::env::remove_var("VIDEOPSALM_FOLDER");
+        std::env::set_var("PUBLIC", dir.as_os_str());
+        let list = folder_candidates("/home/op", "/home/op/Documents");
+        let first = list.first().cloned().unwrap_or_default();
+        assert!(
+            first.contains(&dir.to_string_lossy().into_owned()),
+            "vendor public dir should win: {list:?}"
+        );
+        // Explicit override still beats the vendor default.
+        std::env::set_var("VIDEOPSALM_FOLDER", "/tmp/custom-vp");
+        let list2 = folder_candidates("/home/op", "/home/op/Documents");
+        assert_eq!(list2.first().map(String::as_str), Some("/tmp/custom-vp"));
+        if let Some(v) = prev_public {
+            std::env::set_var("PUBLIC", v);
+        } else {
+            std::env::remove_var("PUBLIC");
+        }
+        if let Some(v) = prev_folder {
+            std::env::set_var("VIDEOPSALM_FOLDER", v);
+        } else {
+            std::env::remove_var("VIDEOPSALM_FOLDER");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_default_folder_returns_existing_candidate() {
+        let dir = tmp_dir("default");
+        let vp = dir.join("VideoPsalm");
+        std::fs::create_dir_all(vp.join("SongBooks")).unwrap();
+        let prev = std::env::var("VIDEOPSALM_FOLDER").ok();
+        std::env::set_var("VIDEOPSALM_FOLDER", vp.as_os_str());
+        let found = find_default_folder("/nope", "/nope");
+        assert_eq!(found, Some(vp.to_string_lossy().into_owned()));
+        if let Some(v) = prev {
+            std::env::set_var("VIDEOPSALM_FOLDER", v);
+        } else {
+            std::env::remove_var("VIDEOPSALM_FOLDER");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn app_dirs_resolve_and_create() {
+        // App folder never fails: it is the app's own home for the library
+        // database and stored imports (like other apps' support folders).
+        let media = app_media_dir();
+        assert!(media.ends_with("Media"), "media lives in app folder: {}", media.display());
+        assert!(
+            app_library_path().ends_with("library.db"),
+            "library lives in app folder"
+        );
     }
 }
