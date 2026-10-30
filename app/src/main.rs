@@ -1184,6 +1184,8 @@ impl Root {
                 .videos()
                 .map(|e| e.path.to_string_lossy().into_owned())
                 .collect(),
+            gallery_expanded: self.galleries.expanded,
+            gallery_keep_open: self.galleries.keep_open,
         }
     }
 
@@ -1280,6 +1282,8 @@ impl Root {
             self.aspect_ratio = p.aspect_ratio.clone();
         }
         self.projector_display = p.projector_display;
+        self.galleries.expanded = p.gallery_expanded;
+        self.galleries.keep_open = p.gallery_keep_open;
     }
 
     /// True while the shield is armed: browsing songs must not repopulate the
@@ -2905,29 +2909,63 @@ impl Root {
 
     fn add_bible_to_agenda(&mut self, cx: &mut Context<Self>) {
         if let Some(r) = self.biref.clone() {
-            let mut overrides = vp_core::schema::ItemOverrides::default();
-            if self.bilingual {
-                let ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
-                if let Some(other) = ids.iter().find(|id| **id != r.translation_id) {
-                    overrides.second_translation_id = Some(other.clone());
-                }
-            }
-            let id = agenda_ops::new_id("item");
-            self.agenda.items.push(AgendaItem {
-                id,
-                kind: ItemKind::BibleVerses,
-                title: format_header(&r),
-                reference: ItemRef::Bible {
-                    bible_ref: r.clone(),
-                },
-                flow_type: FlowType::Manual,
-                auto_advance_ms: None,
-                overrides,
-            });
+            let other = self.bilingual_other_translation(&r.translation_id);
+            let item = bible_agenda_item(&r, other);
+            let title = item.title.clone();
+            self.agenda.items.push(item);
             self.sel_item = Some(self.agenda.items.len() - 1);
-            self.set_status(cx, format!("Added {}", format_header(&r)));
+            self.set_status(cx, format!("Added {title}"));
         } else {
             self.set_status(cx, "No valid Bible reference to add.");
+        }
+    }
+
+    /// Second translation for bilingual display (`None` = single). Pure
+    /// helper so the queue and project paths cannot disagree.
+    fn bilingual_other_translation(&self, current: &str) -> Option<String> {
+        if !self.bilingual {
+            return None;
+        }
+        let mut ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
+        ids.sort();
+        ids.into_iter().find(|id| id != current)
+    }
+
+    /// `Project ⏵` — the one-press Bible path (Electron parity:
+    /// `bible-project` pushes the preview straight to the room). Queues the
+    /// current reference when needed, then goes live on it, so picking a
+    /// book/chapter/verse and pressing one button is the whole flow.
+    /// Without this, picking verses only edits data and the room never
+    /// changes — the reported "bible is not working" class.
+    fn project_bible_now(&mut self, cx: &mut Context<Self>) {
+        let Some(r) = self.biref.clone() else {
+            self.set_status(cx, "Pick a book, chapter and verse first — then Project ⏵.");
+            return;
+        };
+        let header = format_header(&r);
+        let other = self.bilingual_other_translation(&r.translation_id);
+        let item = bible_agenda_item(&r, other);
+        self.agenda.items.push(item);
+        let idx = self.agenda.items.len() - 1;
+        self.set_status(cx, format!("Projecting {header}"));
+        // `show_live` clears blank, selects, pushes the snapshot and
+        // publishes to the projector window + preview (WI-033).
+        self.show_live(cx, idx);
+    }
+
+    /// Import a Bible translation via the OS picker (no typed path needed).
+    /// Fills the path field and runs the same import as the Import button,
+    /// so the ribbon entry and the pane entry cannot drift apart.
+    fn import_bible_via_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = crate::file_picker::pick_file(
+            "Import Bible (XML or native .vpc)",
+            &[("XML", &["xml"]), ("VideoPsalm Bible", &["vpc"])],
+        ) {
+            self.bible_xml_field
+                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+            self.import_bible_file(cx);
+        } else {
+            self.set_status(cx, "Bible import cancelled — no file chosen.");
         }
     }
 
@@ -3301,8 +3339,19 @@ impl Root {
     /// `.` / `,`: the home screen (usually black) and the current slide
     /// toggle each other. Re-publishes even while frozen: blank is a display
     /// flag, not a slide change, so the wall must obey under a hold.
+    /// This IS "Turn off display": the room sees solid black while the
+    /// control preview names the way back. Works with Bible/song/video
+    /// alike because it short-circuits the frame before slide resolution.
     fn toggle_base(&mut self, cx: &mut Context<Self>) {
         self.blank = !self.blank;
+        self.set_status(
+            cx,
+            if self.blank {
+                "Display off — room sees black (. to bring it back)."
+            } else {
+                "Display on — room sees the live slide again."
+            },
+        );
         self.republish(cx);
         cx.notify();
     }
@@ -3417,18 +3466,23 @@ impl Root {
         );
     }
 
-    /// `Ctrl+P`: open/close the projector *window*. On opens the windowed
-    /// test view (Go live opens it fullscreen instead); off closes it.
-    /// The in-window Projector tab works with no window at all.
+    /// `Ctrl+P`: open/close the projector *window* — and ONLY the window.
+    /// It never leaves the control view: the operator stays where the songs
+    /// and Bibles are while the room gets its own window (vendor dual-screen
+    /// model). The in-window Projector tab works with no window at all;
+    /// `F6` is the explicit way to visit it, `Esc`/`F6`-back the way home.
+    /// (Regression: this used to flip `mode` to Projector on open, which
+    /// read as "Ctrl+P leaves control" instead of opening the room's
+    /// window. Bible projection itself always went through the pushed
+    /// snapshot — the window just never opened where the operator looked.)
     fn toggle_projector(&mut self, cx: &mut Context<Self>) {
         if self.projector_window.is_some() {
             self.close_projector(cx);
             self.projector_on = false;
         } else {
             self.projector_on = true;
-            if self.mode != Mode::Projector {
-                self.mode = Mode::Projector;
-            }
+            // Stay in control — do NOT touch `mode`. The window is the
+            // projector; the tab is just a single-screen fallback.
             self.open_projector(cx, false);
         }
         self.persist_layout_quiet();
@@ -3880,7 +3934,10 @@ impl Root {
         let path = self.bible_xml_field.read(cx).text();
         let path = path.trim().to_string();
         if path.is_empty() {
-            self.set_status(cx, "Enter the path of the Bible file to import.");
+            // A church should not have to know where its Bible XML sits:
+            // offer the file picker when no path was typed (Electron
+            // parity — `bible-import` does the same fallback).
+            self.import_bible_via_picker(cx);
             return;
         }
         let fallback = std::path::Path::new(&path)
@@ -4617,6 +4674,38 @@ fn split_meta_list(text: &str) -> Vec<String> {
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .collect()
+}
+
+/// Build the agenda item for a Bible reference (queue AND project paths
+/// share it, so +Agenda and Project ⏵ can never disagree on title, kind
+/// or bilingual override). Pure so the Bible flow is unit-testable.
+fn bible_agenda_item(
+    r: &vp_core::schema::BibleRef,
+    second_translation: Option<String>,
+) -> AgendaItem {
+    AgendaItem {
+        id: agenda_ops::new_id("item"),
+        kind: ItemKind::BibleVerses,
+        title: format_header(r),
+        reference: ItemRef::Bible {
+            bible_ref: r.clone(),
+        },
+        flow_type: FlowType::Manual,
+        auto_advance_ms: None,
+        overrides: ItemOverrides {
+            second_translation_id: second_translation,
+            ..Default::default()
+        },
+    }
+}
+
+/// `true` when no real translation is installed beyond the built-in samples
+/// (ids starting with `SAMPLE-`): the Bible pane should then say so and
+/// point at Import instead of showing an empty tab strip. Pure, tested.
+fn needs_bible_import(installed_ids: &[String]) -> bool {
+    !installed_ids
+        .iter()
+        .any(|id| !id.starts_with("SAMPLE-"))
 }
 
 pub(crate) fn row(kids: Vec<Div>) -> Div {
@@ -5416,6 +5505,39 @@ impl Root {
             .flex_row()
             .gap_2()
             .items_start()
+            .child(group(ui, "New / Import", vec![
+                btn_tip(
+                    ui,
+                    cx,
+                    "＋ Song",
+                    "Create a new song (opens in the editor)",
+                    false,
+                    |this, _, _, cx| {
+                        this.create_song(cx);
+                    },
+                ),
+                btn_tip(
+                    ui,
+                    cx,
+                    "＋ Songbook",
+                    "Import a songbook file (.json or .vpc) into the library",
+                    false,
+                    |this, _, _, cx| {
+                        this.import_songbook_file(cx);
+                    },
+                ),
+                btn_tip(
+                    ui,
+                    cx,
+                    "＋ Bible",
+                    "Import a new Bible translation (.xml or .vpc)",
+                    false,
+                    |this, _, _, cx| {
+                        this.left_tab = LeftTab::Bibles;
+                        this.import_bible_via_picker(cx);
+                    },
+                ),
+            ]))
             .child(group(ui, "Song", song_kids))
             .child(group(ui, &self.t("styles"), style_kids))
             .child(group(ui, &self.t("font"), font_kids))
@@ -6632,29 +6754,39 @@ impl Root {
         if grid.is_empty() {
             grid.push(label(ui, "(?)", 12.));
         }
-        // Import row: path field + Browse + button, mirroring the .pptx row's shape.
+        // Import row: label + path field + Browse + button. The label names
+        // the formats (discoverability: "import new translation" must be
+        // findable) and Browse imports straight away — no typed path needed.
+        let mut installed: Vec<String> =
+            self.bibles.translations().keys().cloned().collect();
+        installed.sort();
+        let import_hint = if needs_bible_import(&installed) {
+            "Only samples installed — Import a .xml/.vpc translation"
+        } else {
+            "Add another translation (.xml/.vpc)"
+        };
         let import_row = vec![
+            label(ui, "New translation:", 11.),
             div().flex_1().child(self.bible_xml_field.clone()),
             btn(ui, cx, "Browse…", false, |this, _, _, cx| {
-                if let Some(p) = crate::file_picker::pick_file(
-                    "Import Bible (XML or native .vpc)",
-                    &[("XML", &["xml"]), ("VideoPsalm Bible", &["vpc"])],
-                ) {
-                    this.bible_xml_field
-                        .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                    // Browse means do it: import straight away.
+                // Browse means do it: import straight away.
+                this.import_bible_via_picker(cx);
+            }),
+            btn_tip(
+                ui,
+                cx,
+                &self.t("import_bible"),
+                "Import a Bible translation file (.xml or .vpc); empty field opens the file picker",
+                false,
+                |this, _, _, cx| {
                     this.import_bible_file(cx);
-                } else {
-                    this.set_status(cx, "Browse cancelled — no file chosen.");
-                }
-            }),
-            btn(ui, cx, &self.t("import_bible"), false, |this, _, _, cx| {
-                this.import_bible_file(cx);
-            }),
+                },
+            ),
         ];
         let mut out = vec![
             row(trans_row),
             row(import_row),
+            row(vec![label(ui, import_hint, 11.)]),
             row(fav_row),
             row(vec![
                 btn(
@@ -6668,10 +6800,32 @@ impl Root {
                         cx.notify();
                     },
                 ),
-                btn(ui, cx, "+Agenda", false, |this, _, _, cx| {
-                    this.add_bible_to_agenda(cx);
-                }),
+                btn_tip(
+                    ui,
+                    cx,
+                    "+Agenda",
+                    "Queue the current passage in the agenda (then Show it from the slides)",
+                    false,
+                    |this, _, _, cx| {
+                        this.add_bible_to_agenda(cx);
+                    },
+                ),
+                btn_tip(
+                    ui,
+                    cx,
+                    "Project ⏵",
+                    "Show this passage on the projector now (queues it and goes live)",
+                    false,
+                    |this, _, _, cx| {
+                        this.project_bible_now(cx);
+                    },
+                ),
             ]),
+            row(vec![label(
+                ui,
+                "Pick book → chapter → verses, then Project ⏵.",
+                11.,
+            )]),
             row(vec![
                 btn(ui, cx, &self.t("old_testament"), ot, |this, _, _, cx| {
                     this.testament = Testament::OT;
@@ -7952,7 +8106,7 @@ impl Root {
                     btn(ui, cx, &self.t("next"), false, |this, _, _, cx| {
                         this.next_slide(cx);
                     }),
-                    btn(ui, cx, &self.t("blank"), self.blank, |this, _, _, cx| {
+                    btn_tip(ui, cx, &self.t("blank"), "Turn off display (black) — room sees black; . / , does the same", self.blank, |this, _, _, cx| {
                         this.toggle_base(cx);
                     }),
                     btn(ui, cx, &self.t("hide"), false, |this, _, _, cx| {
@@ -8768,5 +8922,51 @@ mod tests {
             split_meta_list(" a , ,b ,, c "),
             vec!["a", "b", "c"]
         );
+    }
+
+    #[test]
+    fn bible_queue_and_project_share_one_item_shape() {
+        // The "bible is not working" class: +Agenda queued one shape while
+        // Project built another inline. Both now go through
+        // `bible_agenda_item`, so title/kind/override cannot disagree.
+        let r = vp_core::schema::BibleRef {
+            translation_id: "KJV".to_string(),
+            book: "John".to_string(),
+            chapter: 3,
+            verses: vec![16, 17],
+            versification: Versification::En,
+        };
+        let solo = bible_agenda_item(&r, None);
+        assert_eq!(solo.kind, ItemKind::BibleVerses);
+        assert_eq!(solo.title, format_header(&r));
+        assert!(matches!(
+            solo.reference,
+            ItemRef::Bible { .. }
+        ));
+        assert_eq!(solo.overrides.second_translation_id, None);
+        let bi = bible_agenda_item(&r, Some("ASV".to_string()));
+        assert_eq!(
+            bi.overrides.second_translation_id,
+            Some("ASV".to_string())
+        );
+        // Queue and project build the same item for the same input.
+        let again = bible_agenda_item(&r, Some("ASV".to_string()));
+        assert_eq!(bi.title, again.title);
+        assert_eq!(bi.kind, again.kind);
+    }
+
+    #[test]
+    fn bible_import_hint_fires_only_for_samples() {
+        assert!(needs_bible_import(&[]));
+        assert!(needs_bible_import(&["SAMPLE-EN".to_string()]));
+        assert!(needs_bible_import(&[
+            "SAMPLE-EN".to_string(),
+            "SAMPLE-FR".to_string()
+        ]));
+        assert!(!needs_bible_import(&["KJV".to_string()]));
+        assert!(!needs_bible_import(&[
+            "SAMPLE-EN".to_string(),
+            "KJV".to_string()
+        ]));
     }
 }
