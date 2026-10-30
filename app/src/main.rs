@@ -2556,6 +2556,7 @@ impl Root {
             fg_color,
             luminosity,
             lum_source,
+            transition: self.transition.clone(),
             frame,
             blank: self.blank,
             header,
@@ -8039,7 +8040,9 @@ impl Root {
                             snap.bg_fit,
                         )),
                 );
-        if matches!(snap.bg_kind, BackgroundKind::Image) && snap.luminosity != 0.0 {
+        // Same rule as the projector (projector_window::grades_luminosity_overlay):
+        // video backgrounds resolve a luminosity too, so they grade too.
+        if projector_window::grades_luminosity_overlay(snap.bg_kind) && snap.luminosity != 0.0 {
             let (lighten, alpha) = vp_core::media::luminosity_overlay(snap.luminosity);
             let shade = if lighten { 1.0 } else { 0.0 };
             bgcol = bgcol.child(div().absolute().size_full().bg(Rgba {
