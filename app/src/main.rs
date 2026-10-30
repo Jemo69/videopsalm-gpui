@@ -2931,26 +2931,45 @@ impl Root {
         ids.into_iter().find(|id| id != current)
     }
 
-    /// `Project ⏵` — the one-press Bible path (Electron parity:
-    /// `bible-project` pushes the preview straight to the room). Queues the
-    /// current reference when needed, then goes live on it, so picking a
+    /// `Project ⏵` — the one-press Bible path (Electron has `Show` +
+    /// `Project ⏵`: render-then-push without queueing. v1 queues the
+    /// passage into the agenda AND goes live — a stated superset, so the
+    /// passage stays in the service order after the service). Picking a
     /// book/chapter/verse and pressing one button is the whole flow.
     /// Without this, picking verses only edits data and the room never
     /// changes — the reported "bible is not working" class.
+    ///
+    /// No duplicates: pressing Project twice reuses the queued item for the
+    /// same reference instead of appending a twin. The operator's view is
+    /// preserved: `show_live` targets the Projector tab, but the operator
+    /// stays where they pressed the button (the room + preview still
+    /// update via the published snapshot).
     fn project_bible_now(&mut self, cx: &mut Context<Self>) {
         let Some(r) = self.biref.clone() else {
             self.set_status(cx, "Pick a book, chapter and verse first — then Project ⏵.");
             return;
         };
         let header = format_header(&r);
-        let other = self.bilingual_other_translation(&r.translation_id);
-        let item = bible_agenda_item(&r, other);
-        self.agenda.items.push(item);
-        let idx = self.agenda.items.len() - 1;
+        let idx = match self.agenda.items.iter().position(|it| match &it.reference {
+            ItemRef::Bible { bible_ref } => same_bible_ref(bible_ref, &r),
+            _ => false,
+        }) {
+            Some(i) => i,
+            None => {
+                let other = self.bilingual_other_translation(&r.translation_id);
+                let item = bible_agenda_item(&r, other);
+                self.agenda.items.push(item);
+                self.agenda.items.len() - 1
+            }
+        };
         self.set_status(cx, format!("Projecting {header}"));
         // `show_live` clears blank, selects, pushes the snapshot and
-        // publishes to the projector window + preview (WI-033).
+        // publishes to the projector window + preview (WI-033) — then hand
+        // the operator's view straight back.
+        let mode = self.mode;
         self.show_live(cx, idx);
+        self.mode = mode;
+        cx.notify();
     }
 
     /// Import a Bible translation via the OS picker (no typed path needed).
@@ -4398,7 +4417,7 @@ pub(crate) fn btn(
 }
 
 /// One-line floating help: dark chip, light text, small.
-struct TooltipLabel(String);
+pub(crate) struct TooltipLabel(pub String);
 
 impl Render for TooltipLabel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -4697,6 +4716,17 @@ fn bible_agenda_item(
             ..Default::default()
         },
     }
+}
+
+/// `true` when two Bible references address the same passage (pure:
+/// the Project-no-duplicates rule). Versification rides along — EN vs RU
+/// numbering can genuinely differ, so they are not the same passage.
+fn same_bible_ref(a: &vp_core::schema::BibleRef, b: &vp_core::schema::BibleRef) -> bool {
+    a.translation_id == b.translation_id
+        && a.book == b.book
+        && a.chapter == b.chapter
+        && a.verses == b.verses
+        && a.versification == b.versification
 }
 
 /// `true` when no real translation is installed beyond the built-in samples
@@ -8968,5 +8998,41 @@ mod tests {
             "SAMPLE-EN".to_string(),
             "KJV".to_string()
         ]));
+    }
+
+    #[test]
+    fn project_reuses_the_queued_passage_instead_of_duplicating() {
+        // Pressing Project ⏵ twice for John 3:16-17 must not twin the
+        // agenda item: same translation/book/chapter/verses = same passage.
+        let r = vp_core::schema::BibleRef {
+            translation_id: "KJV".to_string(),
+            book: "John".to_string(),
+            chapter: 3,
+            verses: vec![16, 17],
+            versification: Versification::En,
+        };
+        let same = vp_core::schema::BibleRef {
+            verses: vec![16, 17],
+            ..r.clone()
+        };
+        assert!(same_bible_ref(&r, &same));
+        let other_verse = vp_core::schema::BibleRef {
+            verses: vec![16],
+            ..r.clone()
+        };
+        assert!(!same_bible_ref(&r, &other_verse));
+        let other_book = vp_core::schema::BibleRef {
+            book: "Psalm".to_string(),
+            chapter: 23,
+            verses: vec![1],
+            ..r.clone()
+        };
+        assert!(!same_bible_ref(&r, &other_book));
+        // Versification rides along: EN vs RU numbering can differ.
+        let ru = vp_core::schema::BibleRef {
+            versification: Versification::Ru,
+            ..r.clone()
+        };
+        assert!(!same_bible_ref(&r, &ru));
     }
 }
