@@ -5547,6 +5547,8 @@ impl Root {
             .min_h_0()
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
@@ -5561,8 +5563,32 @@ impl Root {
             .gap_2()
             .w(px(360.))
             .min_h_0()
-            .child(self.agenda_panel(ui, cx))
-            .child(div().flex_1().min_h_0().child(self.browser_panel(ui, cx)));
+            // Agenda caps at ~360px so the song/Bible browser below keeps a
+            // usable viewport: both panels were flex_1, splitting the column
+            // 50/50 and squeezing the songs list to ~50px (the "not
+            // scrollable / feels bad" complaint — the list scrolled, but its
+            // window was two rows tall). A short agenda fits content; a long
+            // one scrolls inside the cap.
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .min_h_0()
+                    .max_h(px(360.))
+                    .overflow_hidden()
+                    .child(self.agenda_panel(ui, cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.browser_panel(ui, cx)),
+            );
 
         if self.viewer_mode {
             return div()
@@ -6028,6 +6054,8 @@ impl Root {
                 .overflow_hidden()
                 .child(
                     div()
+                        .flex()
+                        .flex_col()
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
@@ -6115,7 +6143,7 @@ impl Root {
                         .gap(px(2.))
                         .min_h_0()
                         .id("scroll:songbooks")
-                        .max_h(px(150.))
+                        .max_h(px(110.))
                         .overflow_y_scroll()
                         .track_scroll(&self.scroll_songbooks)
                         .children(self.songbook_rows(ui, cx)),
