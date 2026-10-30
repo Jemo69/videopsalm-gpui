@@ -5661,7 +5661,9 @@ impl Root {
     /// slides panel.
     fn agenda_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let mut rows: Vec<Div> = Vec::new();
-        // No cap: the original shows every agenda item and scrolls.
+        // No per-row cap: every agenda item is rendered. The panel wrapper
+        // caps the whole list at 360px (see `left` in `control_view`), so a
+        // long agenda scrolls inside that cap and a short one fits content.
         for (idx, item) in self.agenda.items.iter().enumerate() {
             let selected = self.sel_item == Some(idx);
             let live = self.live_item == Some(idx);
