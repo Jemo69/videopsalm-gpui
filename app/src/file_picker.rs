@@ -34,9 +34,28 @@ pub fn pick_folder(title: &str) -> Option<PathBuf> {
 }
 
 /// Best-known VideoPsalm document folder, if it exists on this machine.
-/// Order: explicit override, Windows public documents (where the vendor
-/// installs its shared folder), the operator's documents, then home.
+/// Order: explicit override, Windows public documents
+/// (`C:\Users\Public\Documents\VideoPsalm` — where the vendor installs
+/// its shared folder), the operator's documents, then home.
+/// The app finds the vendor folder on boot and imports everything inside,
+/// then runs as normal — the operator never has to pick it by hand.
 pub fn videopsalm_start_dir() -> Option<PathBuf> {
+    // Shared logic lives in vp-core so both ports agree; this stays as the
+    // dialog's entry point (headless `--smoke` never opens a dialog).
+    if let Some(shared) = vp_core::native_folder::windows_public_dir() {
+        let pb = PathBuf::from(&shared);
+        if pb.is_dir() {
+            return Some(pb);
+        }
+        // Hardcoded vendor default when `%PUBLIC%` is missing (Windows).
+        #[cfg(target_os = "windows")]
+        {
+            let hard = PathBuf::from(r"C:\Users\Public\Documents\VideoPsalm");
+            if hard.is_dir() {
+                return Some(hard);
+            }
+        }
+    }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(v) = std::env::var("VIDEOPSALM_FOLDER") {
         if !v.trim().is_empty() {
@@ -53,6 +72,10 @@ pub fn videopsalm_start_dir() -> Option<PathBuf> {
                     .join("VideoPsalm"),
             );
         }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(PathBuf::from(r"C:\Users\Public\Documents\VideoPsalm"));
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.trim().is_empty() {

@@ -195,6 +195,22 @@ pub fn count_songs(conn: &Connection) -> Result<i64, rusqlite::Error> {
     conn.query_row("SELECT COUNT(*) FROM songs", [], |r| r.get(0))
 }
 
+/// All songs in the library (boot restore). The app's support folder keeps
+/// the SQLite library across runs; the in-memory browser list is rebuilt
+/// from here plus the bundled samples and the VideoPsalm folder scan.
+pub fn all_songs(conn: &Connection) -> Result<Vec<Song>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT data FROM songs")?;
+    let rows = stmt.query_map([], |row| {
+        let data: String = row.get(0)?;
+        Ok(serde_json::from_str(&data).unwrap_or_default())
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 /// Strip the spaces from an already-normalized string, producing the
 /// "phrase form" the original uses when you type a whole phrase as one
 /// word: `kingofkingslordoflords` narrows to the exact phrase even though
