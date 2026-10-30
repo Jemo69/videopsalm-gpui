@@ -274,10 +274,8 @@ fn bible_slides(
     }
     // Beyond-chapter `"N […]"` placeholders never reach the screen:
     // the original shows only verses the translation carries. Filtering
-    // here (not in `resolve`, which stays byte-par with Electron) keeps
-    // bilingual pairs intact: a missing FR line drops out and its EN twin
-    // projects alone instead of beside a placeholder.
-    lines.retain(|l| !Translation::is_placeholder_line(l));
+    // happens per slide below (not in `resolve`, which stays byte-par
+    // with Electron).
     let full_ref = format_header(&bref);
     let verse_list = compact_verses(&bref.verses);
     let default_header = if whole_reference_header || item.title.is_empty() {
@@ -311,12 +309,27 @@ fn bible_slides(
     // by max-lines/max-chars used to cut a verse mid-sentence and leave the
     // continuation without its number, which is not a slide the operator
     // ever wants to project.
+    // Placeholder lines are dropped per slide, never globally: a global
+    // `retain` would shift the bilingual EN/FR pairing whenever the gap is
+    // not trailing (e.g. FR missing v2 packs EN2+EN3 onto one slide). Each
+    // pair keeps its own verse together; a pair that is only placeholders
+    // yields no slide at all.
+    let clean = |l: &String| !Translation::is_placeholder_line(l);
     let chunks: Vec<Vec<String>> = if opts.split_bible_verses {
-        split_verse(&lines, opts)
+        let flat: Vec<String> = lines.into_iter().filter(|l| clean(l)).collect();
+        split_verse(&flat, opts)
     } else if bilingual {
-        lines.chunks(2).map(|c| c.to_vec()).collect()
+        lines
+            .chunks(2)
+            .map(|pair| pair.iter().filter(|l| clean(l)).cloned().collect::<Vec<String>>())
+            .filter(|slide| !slide.is_empty())
+            .collect()
     } else {
-        lines.iter().map(|l| vec![l.clone()]).collect()
+        lines
+            .into_iter()
+            .filter(|l| clean(l))
+            .map(|l| vec![l])
+            .collect()
     };
     chunks
         .into_iter()
@@ -475,12 +488,61 @@ mod tests {
         let slides = compute_item_slides(item, &songs(), &bibles(), &opts(), true, true);
         // One verse = one slide: 3 verses in, 3 slides out, each carrying
         // its bilingual EN+FR pair (FR v18 is missing from the sample, so
-        // the last slide's second line is the gap placeholder).
+        // the placeholder line is dropped and the last slide is EN-only).
         assert_eq!(slides.len(), 3);
         assert_eq!(slides[0].header, "John 3:16-18");
         // Bilingual: EN line followed by FR line.
         assert!(slides[0].lines.len() >= 2);
         assert!(slides[0].footer.contains("SAMPLE-FR"));
+    }
+
+    #[test]
+    fn bilingual_mid_gap_keeps_each_verse_on_its_own_slide() {
+        // FR carries v1 and v3 but not v2 (shorter chapter): the v2/v3
+        // placeholders must drop per pair, not shift the EN/FR pairing
+        // (a global retain would pack EN2+EN3 onto one "2-3" slide).
+        let en = Translation::from_json(
+            r#"{"translationId":"EN","books":[{"name":"John","chapters":[["sixteen","seventeen","eighteen"]]}]}"#,
+        )
+        .unwrap();
+        let fr = Translation::from_json(
+            r#"{"translationId":"FR","books":[{"name":"John","chapters":[["seize"]]}]}"#,
+        )
+        .unwrap();
+        let mut lib = BibleLibrary::default();
+        lib.install(en);
+        lib.install(fr);
+        let item = AgendaItem {
+            id: "b1".into(),
+            kind: ItemKind::BibleVerses,
+            title: "John 1:1-3".into(),
+            reference: ItemRef::Bible {
+                bible_ref: BibleRef {
+                    translation_id: "EN".into(),
+                    book: "John".into(),
+                    chapter: 1,
+                    verses: vec![1, 2, 3],
+                    versification: Versification::default(),
+                },
+            },
+            flow_type: FlowType::Manual,
+            auto_advance_ms: None,
+            overrides: ItemOverrides {
+                second_translation_id: Some("FR".into()),
+                ..Default::default()
+            },
+        };
+        let slides = compute_item_slides(&item, &songs(), &lib, &opts(), true, true);
+        assert_eq!(slides.len(), 3, "got {:?}", slides);
+        assert_eq!(slides[0].lines, vec!["1 sixteen".to_string(), "1 seize".to_string()]);
+        assert_eq!(slides[1].lines, vec!["2 seventeen".to_string()]);
+        assert_eq!(slides[2].lines, vec!["3 eighteen".to_string()]);
+        for sl in &slides {
+            assert!(
+                !sl.lines.iter().any(|l| Translation::is_placeholder_line(l)),
+                "placeholder leaked: {sl:?}"
+            );
+        }
     }
 
     #[test]
