@@ -7659,34 +7659,12 @@ impl Root {
                         this.project_bible_now(cx);
                     },
                 ),
-            ])]);
+            ])];
         pick_body.push(row(vec![label(
             ui,
             "Pick book → chapter → verses, then Project ⏵.",
             11.,
         )]));
-        pick_body.push(row(vec![
-                btn_tip(
-                    ui,
-                    cx,
-                    "+Agenda",
-                    "Queue the current passage in the agenda (then Show it from the slides)",
-                    false,
-                    |this, _, _, cx| {
-                        this.add_bible_to_agenda(cx);
-                    },
-                ),
-                btn_tip(
-                    ui,
-                    cx,
-                    "Project ⏵",
-                    "Show this passage on the projector now (queues it and goes live)",
-                    false,
-                    |this, _, _, cx| {
-                        this.project_bible_now(cx);
-                    },
-                ),
-            ])]));
         pick_body.push(row(vec![
                 btn(ui, cx, &self.t("old_testament"), ot, |this, _, _, cx| {
                     this.testament = Testament::OT;
