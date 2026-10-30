@@ -33,8 +33,10 @@
 //! fractions, which color — is pure and tested below.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui::prelude::*;
+use gpui::{Animation, AnimationExt, AnyElement, ElementId};
 use gpui::{
     App, Bounds, Context, DefiniteLength, Div, Entity, JustifyContent, ObjectFit, Render, Rgba,
     StyledImage, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
@@ -82,6 +84,11 @@ pub struct ProjectorSnapshot {
     pub align: Align,
     /// Vertical placement of the lyric block in its frame (WI-021).
     pub valign: VAlign,
+    /// Slide transition for the Animation ribbon (none/fade/slide/zoom).
+    /// Previously stored but never consumed — the ribbon wrote the style
+    /// and every render path ignored it, so the buttons visibly did
+    /// nothing. Snapshotted here so render can animate the entrance.
+    pub transition: String,
     pub chord: Option<String>,
     pub accent: Rgba,
     /// Alert-overlay background (WI-033): the only `UI` color the
@@ -265,6 +272,62 @@ fn standalone_layer(m: &StandaloneMedia) -> Div {
     }
 }
 
+/// Which background kinds get the composited luminosity overlay.
+/// Pure and headless-tested: `Image` (photo pixels) and `VideoLoop`
+/// (captioned tile) both resolve a luminosity in the snapshot, so both
+/// must grade. `Color` is graded arithmetically in `bg`; anything else
+/// carries no luminosity.
+pub fn grades_luminosity_overlay(kind: BackgroundKind) -> bool {
+    matches!(
+        kind,
+        BackgroundKind::Image | BackgroundKind::VideoLoop
+    )
+}
+
+/// Entrance animation for a fresh slide, from the stored transition.
+/// Pure constructor detail, headless-tested via `transition_animates`:
+/// `none` = hard cut (no wrapper); anything else runs a 450 ms oneshot
+/// keyed on the slide identity so advancing slides retriggers it.
+/// fade = opacity ramp; slide adds a horizontal settle; zoom grows the
+/// content box out of an inset pad (gpui 0.2.2 exposes no scale
+/// transform, so the zoom is a pad-shrink settle — stated, not hidden).
+pub fn transition_animates(transition: &str) -> bool {
+    matches!(transition, "fade" | "slide" | "zoom")
+}
+
+/// Apply the snapshot's entrance transition to a built slide element.
+/// The animation id embeds item + slide + transition: a new slide (or a
+/// changed transition) mounts a fresh animation; re-renders of the same
+/// slide keep the finished end-state instead of restarting.
+pub fn apply_transition(inner: Div, snap: &ProjectorSnapshot) -> AnyElement {
+    if !transition_animates(&snap.transition) {
+        return inner.into_any_element();
+    }
+    let id = ElementId::Name(
+        format!(
+            "vp-slide-{:?}-{}-{}",
+            snap.frame.item, snap.frame.slide, snap.transition
+        )
+        .into(),
+    );
+    let duration = Animation::new(Duration::from_millis(450));
+    match snap.transition.as_str() {
+        "slide" => inner
+            .with_animation(id, duration, |el, d| {
+                el.opacity(d).ml(px(64.0 * (1.0 - d)))
+            })
+            .into_any_element(),
+        "zoom" => inner
+            .with_animation(id, duration, |el, d| {
+                el.opacity(d).p(px(28.0 * (1.0 - d)))
+            })
+            .into_any_element(),
+        _ => inner
+            .with_animation(id, duration, |el, d| el.opacity(d))
+            .into_any_element(),
+    }
+}
+
 /// Render one snapshot: background, framed lyrics, overlays. No controls.
 ///
 /// `target_w/target_h` are the output pixels and `ratio` the optional
@@ -285,7 +348,7 @@ pub(crate) fn render_snapshot(
     };
     let scale = (bh / 1080.0).clamp(0.2, 3.0);
     let bg = apply_luminosity_color(snap.bg_color, snap.luminosity);
-    let mut inner = if let Some(m) = &snap.standalone {
+    let inner = if let Some(m) = &snap.standalone {
         standalone_layer(m)
     } else if snap.frame.black {
         div().size_full().bg(rgb(0x000000))
@@ -361,11 +424,13 @@ pub(crate) fn render_snapshot(
             snap.bg_file.as_ref(),
             snap.bg_fit,
         ));
-        // Luminosity over image pixels: gpui::img exposes no brightness
+        // Luminosity over media pixels: gpui::img exposes no brightness
         // filter, so grade honestly by compositing — a translucent overlay
-        // above the image, below the text. Color backgrounds are already
-        // graded in `bg` above.
-        if matches!(snap.bg_kind, BackgroundKind::Image) && snap.luminosity != 0.0 {
+        // above the background, below the text. Color backgrounds are
+        // already graded in `bg` above. VideoLoop used to be excluded here
+        // even though the snapshot resolves its luminosity, so brightness
+        // silently did nothing on video backgrounds.
+        if grades_luminosity_overlay(snap.bg_kind) && snap.luminosity != 0.0 {
             let (lighten, alpha) = vp_core::media::luminosity_overlay(snap.luminosity);
             let shade = if lighten { 1.0 } else { 0.0 };
             col = col.child(div().absolute().size_full().bg(Rgba {
@@ -418,6 +483,10 @@ pub(crate) fn render_snapshot(
         );
         col
     };
+    // Entrance transition (Animation ribbon): a fresh slide animates in;
+    // re-renders of the same slide keep the finished end-state. Overlays
+    // wrap the animated slide so alert/clock stay pinned while it moves.
+    let mut inner: AnyElement = apply_transition(inner, snap);
     if snap.alert_visible {
         inner = div()
             .flex()
@@ -431,18 +500,23 @@ pub(crate) fn render_snapshot(
                     .text_size(px(26.0 * scale))
                     .text_color(rgb(0xFFFFFF))
                     .child(snap.alert_text.clone()),
-            );
+            )
+            .into_any_element();
     }
     if snap.clock_overlay {
-        inner = div().size_full().child(inner).child(
-            div()
-                .absolute()
-                .top(frac(0.02))
-                .left(frac(0.85))
-                .text_size(px(28.0 * scale))
-                .text_color(rgb(0xFFFFFF))
-                .child(snap.clock_text.clone()),
-        );
+        inner = div()
+            .size_full()
+            .child(inner)
+            .child(
+                div()
+                    .absolute()
+                    .top(frac(0.02))
+                    .left(frac(0.85))
+                    .text_size(px(28.0 * scale))
+                    .text_color(rgb(0xFFFFFF))
+                    .child(snap.clock_text.clone()),
+            )
+            .into_any_element();
     }
     // Letterbox wrap: the slide lays out in the ratio box, centered on
     // black bars. With no preset the box IS the output, identical to before.
@@ -694,5 +768,28 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn luminosity_overlay_grades_images_and_video_loops() {
+        // Regression: the snapshot resolves luminosity for both media
+        // chains, but the overlay used to be Image-only — brightness
+        // silently did nothing on video backgrounds.
+        use vp_core::schema::BackgroundKind;
+        assert!(grades_luminosity_overlay(BackgroundKind::Image));
+        assert!(grades_luminosity_overlay(BackgroundKind::VideoLoop));
+        assert!(!grades_luminosity_overlay(BackgroundKind::Color));
+        assert!(!grades_luminosity_overlay(BackgroundKind::Camera));
+    }
+
+    #[test]
+    fn only_real_transitions_animate() {
+        // `none` (and anything unknown) is a hard cut: no wrapper, so
+        // re-renders never restart anything.
+        assert!(!transition_animates("none"));
+        assert!(!transition_animates("bogus"));
+        assert!(transition_animates("fade"));
+        assert!(transition_animates("slide"));
+        assert!(transition_animates("zoom"));
     }
 }

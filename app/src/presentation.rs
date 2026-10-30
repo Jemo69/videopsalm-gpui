@@ -48,6 +48,7 @@ impl PresentationState {
                 },
                 luminosity: 0.0,
                 lum_source: None,
+                transition: "none".to_string(),
                 frame: vp_core::media::ProjectorFrame {
                     black: true,
                     item: None,
