@@ -411,6 +411,11 @@ pub(crate) struct Root {
     /// Show the verses surrounding the current selection, so a speaker can
     /// read the passage around the verse on screen.
     bible_context: bool,
+    /// Message-tab Settings dialog (Stage view + alert/clock/countdown
+    /// options + workspace/theme/language). Session-only: rarely-changed
+    /// knobs live here, not in the ribbon — matching 1.29 where Display
+    /// buttons are on the ribbon and the rest sits behind Settings.
+    show_message_settings: bool,
     /// Style explorer visibility (attribute tree with source levels).
     show_style_explorer: bool,
     explorer: style_explorer::ExplorerUi,
@@ -776,6 +781,7 @@ impl Root {
             bible_hits: Vec::new(),
             bible_context: false,
             show_style_explorer: false,
+            show_message_settings: false,
             explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
             ribbon_collapsed: false,
@@ -5074,13 +5080,13 @@ impl Root {
                     .children(tabs),
             )
             .child(self.format_ribbon(ui, cx))
-            // The `Message` tab carries the alert overlay, the clock and the
-            // media transport. In 1.29 those controls live on the ribbon, not
-            // in a floating panel under the preview — which is why the control
-            // window is a clean three columns.
+            // The `Message` tab mirrors 1.29: Alert message | Clock |
+            // Countdown | Stage view | Display ribbon groups with captions
+            // below. Rarely-changed knobs (alert styling, clock designs,
+            // stage toggles, monitor/aspect/cut-scope, workspace/theme)
+            // sit behind the Settings dialog, not in the ribbon.
             .when(self.ribbon == RibbonTab::Message, |d| {
-                d.child(self.utility_ribbon(ui, cx))
-                    .child(self.live_panel(ui, cx))
+                d.child(self.message_ribbon(ui, cx))
             })
             // Background groups already render inline in the ribbon
             // (`background_ribbon`): no second panel below — the old stacked
@@ -5096,6 +5102,229 @@ impl Root {
     /// Utility actions formerly rendered in a custom top row. VideoPsalm keeps
     /// the window title in the OS title bar; its task-specific controls belong
     /// to a ribbon workspace, not a second title bar.
+    /// 1.29 `Message` tab (RESEARCH-weebly §§7.7–7.8, RESEARCH-org §5.3):
+    /// `Alert message | Clock | Countdown | Stage view | Display` ribbon
+    /// groups. Each group holds only the operator's live controls — text +
+    /// Display/Clear, clock Display + start/stop, countdown To + start,
+    /// stage Display + Settings, projector open/fullscreen. Everything the
+    /// operator sets once (fonts, colors, transparency, clock designs,
+    /// stage visibility toggles, monitor, aspect, workspace/theme) lives
+    /// behind the `Settings…` button (`message_settings`).
+    fn message_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let alert_on = self.alert_visible;
+        let alert_btn = if alert_on {
+            "Hide"
+        } else {
+            "Display"
+        };
+        let alert_group = group(
+            ui,
+            "Alert message",
+            vec![
+                div().w(px(220.)).child(self.alert_field.clone()),
+                btn(ui, cx, alert_btn, alert_on, |this, _, _, cx| {
+                    this.alert_visible = !this.alert_visible;
+                    cx.notify();
+                }),
+                btn(ui, cx, "Clear", false, |this, _, _, cx| {
+                    this.alert_visible = false;
+                    cx.notify();
+                }),
+            ],
+        );
+        let clock_group = group(
+            ui,
+            "Clock",
+            vec![
+                label(ui, &self.clock_display(), 13.),
+                btn(
+                    ui,
+                    cx,
+                    "Display",
+                    self.clock_overlay,
+                    |this, _, _, cx| {
+                        this.clock_overlay = !this.clock_overlay;
+                        cx.notify();
+                    },
+                ),
+                btn(ui, cx, "Start", self.clock_running, |this, _, _, cx| {
+                    this.clock_start(cx);
+                }),
+                btn(ui, cx, "Stop", false, |this, _, _, cx| {
+                    this.clock_stop(cx);
+                }),
+            ],
+        );
+        let countdown_group = group(
+            ui,
+            "Countdown",
+            vec![
+                label(ui, "To", 12.),
+                div().w(px(60.)).child(self.clock_field.clone()),
+                btn(
+                    ui,
+                    cx,
+                    if self.clock_mode == ClockMode::Countdown {
+                        "Countdown: on"
+                    } else {
+                        "Countdown"
+                    },
+                    self.clock_mode == ClockMode::Countdown,
+                    |this, _, _, cx| {
+                        this.clock_mode = ClockMode::Countdown;
+                        cx.notify();
+                    },
+                ),
+                btn(ui, cx, "Reset", false, |this, _, _, cx| {
+                    this.clock_reset(cx);
+                }),
+            ],
+        );
+        let stage_group = group(
+            ui,
+            "Stage view",
+            vec![
+                btn(ui, cx, "Display", self.mode == Mode::Stage, |this, _, _, cx| {
+                    this.ui_go(Mode::Stage, cx);
+                }),
+                btn(ui, cx, "Settings…", self.show_message_settings, |this, _, _, cx| {
+                    this.show_message_settings = !this.show_message_settings;
+                    cx.notify();
+                }),
+            ],
+        );
+        let display_group = group(
+            ui,
+            "Display",
+            vec![
+                btn(
+                    ui,
+                    cx,
+                    "Open projector",
+                    self.projector_window.is_some(),
+                    |this, _, _, cx| {
+                        this.open_projector(cx, false);
+                    },
+                ),
+                btn(ui, cx, "Fullscreen", false, |this, _, _, cx| {
+                    this.toggle_projector_fullscreen(cx);
+                }),
+                btn(
+                    ui,
+                    cx,
+                    if self.blank { "Unblank" } else { "Blank" },
+                    self.blank,
+                    |this, _, _, cx| {
+                        this.toggle_base(cx);
+                    },
+                ),
+            ],
+        );
+        let mut ribbon = div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .items_start()
+            .child(alert_group)
+            .child(clock_group)
+            .child(countdown_group)
+            .child(stage_group)
+            .child(display_group);
+        if self.show_message_settings {
+            ribbon = ribbon.child(self.message_settings(ui, cx));
+        }
+        ribbon
+    }
+
+    /// Rarely-changed Message-tab knobs, hidden behind `Settings…` so the
+    /// ribbon reads like 1.29: alert styling, clock mode/design, stage view
+    /// visibility toggles, projector monitor, workspace/theme/language and
+    /// the Edit-mode switch. Operators set these once; the ribbon keeps
+    /// only Display/Clear/Start/Stop.
+    fn message_settings(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        section(
+            ui,
+            "Stage view · clock · alert options (Settings)",
+            vec![
+                row(vec![
+                    label(ui, "clock mode:", 12.),
+                    btn(ui, cx, "clock", self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
+                        this.clock_mode = ClockMode::Clock;
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "stopwatch", self.clock_mode == ClockMode::Stopwatch, |this, _, _, cx| {
+                        this.clock_mode = ClockMode::Stopwatch;
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "whole-song stage", self.whole_song_stage, |this, _, _, cx| {
+                        this.whole_song_stage = !this.whole_song_stage;
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "ref header", self.whole_ref_header, |this, _, _, cx| {
+                        this.whole_ref_header = !this.whole_ref_header;
+                        cx.notify();
+                    }),
+                ]),
+                row(vec![
+                    label(ui, "projector monitor:", 12.),
+                    btn(ui, cx, "Display 1", self.projector_display == 0, |this, _, _, cx| {
+                        this.projector_display = 0;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "Display 2", self.projector_display == 1, |this, _, _, cx| {
+                        this.projector_display = 1;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "Display 3", self.projector_display == 2, |this, _, _, cx| {
+                        this.projector_display = 2;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "✖ Close projector", false, |this, _, _, cx| {
+                        this.close_projector(cx);
+                    }),
+                ]),
+                row(vec![
+                    label(ui, "workspace:", 12.),
+                    btn(ui, cx, "Control", self.mode == Mode::Control, |this, _, _, cx| {
+                        this.ui_go(Mode::Control, cx);
+                    }),
+                    btn(ui, cx, "Projector", self.mode == Mode::Projector, |this, _, _, cx| {
+                        this.ui_go(Mode::Projector, cx);
+                    }),
+                    label(ui, "theme:", 12.),
+                    btn(ui, cx, "Light", self.theme_id == "light", |this, _, _, cx| {
+                        this.theme_id = "light".into();
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "Dark", self.theme_id == "dark", |this, _, _, cx| {
+                        this.theme_id = "dark".into();
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
+                        this.lang = "en".into();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
+                        this.lang = "fr".into();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
+                        this.toggle_viewer_mode(cx);
+                    }),
+                ]),
+                row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
+                    this.show_message_settings = false;
+                    cx.notify();
+                })]),
+            ],
+        )
+    }
+
     fn utility_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         div()
             .flex()
