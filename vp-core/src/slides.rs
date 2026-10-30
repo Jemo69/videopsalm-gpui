@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::bible_data::BibleLibrary;
+use crate::bible_data::{BibleLibrary, Translation};
 use crate::bible_ref::{compact_verses, format_header, merge_bilingual};
 use crate::chord_transpose::strip_chords;
 use crate::schema::{AgendaItem, ItemKind, ItemRef, Song};
@@ -272,6 +272,12 @@ fn bible_slides(
             bilingual = true;
         }
     }
+    // Beyond-chapter `"N […]"` placeholders never reach the screen:
+    // the original shows only verses the translation carries. Filtering
+    // here (not in `resolve`, which stays byte-par with Electron) keeps
+    // bilingual pairs intact: a missing FR line drops out and its EN twin
+    // projects alone instead of beside a placeholder.
+    lines.retain(|l| !Translation::is_placeholder_line(l));
     let full_ref = format_header(&bref);
     let verse_list = compact_verses(&bref.verses);
     let default_header = if whole_reference_header || item.title.is_empty() {

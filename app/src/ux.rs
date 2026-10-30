@@ -891,6 +891,27 @@ pub fn apply_verse_grid_click(
     }
 }
 
+/// Clamp a requested verse selection to the chapter that is actually
+/// installed (`1..=max`). Out-of-range numbers (typed `1-10` for a chapter
+/// the sample only carries 2 verses of, or `Ctrl+*` past the last verse)
+/// would otherwise resolve to `"10 […]"` placeholder slides the original
+/// never shows — the congregation must never see a placeholder verse.
+/// Empty after clamping means "nothing selectable" (the panel then shows
+/// `(no verses)`, never a fabricated placeholder row).
+pub fn clamp_verses_to_chapter(verses: &[u32], max: u32) -> Vec<u32> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<u32> = verses
+        .iter()
+        .copied()
+        .filter(|&v| v >= 1 && v <= max)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Verse id from a projector slide header. Song slides render as
 /// `"{title} — {verse}"` (optionally `"{title} — {verse} (i/n)"`); Bible
 /// and other headers carry no `—` marker and yield `None`.
@@ -1852,6 +1873,22 @@ mod tests {
         assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
         assert_eq!(default_verse_count(43, 3), 36); // John 3
         assert_eq!(default_verse_count(19, 23), 6); // Psalm 23
+    }
+
+    #[test]
+    fn clamp_verses_drops_placeholders_beyond_the_chapter() {
+        // Psalm 23:1-10 typed against a 6-verse chapter must not keep
+        // verses 7-10 — those would resolve to `"10 […]"` slides.
+        assert_eq!(clamp_verses_to_chapter(&[1, 2, 7, 10], 6), vec![1, 2]);
+        // Full containment passes through, sorted and deduped.
+        assert_eq!(
+            clamp_verses_to_chapter(&[18, 16, 17, 16], 36),
+            vec![16, 17, 18]
+        );
+        // Nothing selectable clamps to nothing (panel shows `(no verses)`).
+        assert!(clamp_verses_to_chapter(&[9, 10], 6).iter().all(|&v| v <= 6));
+        assert!(clamp_verses_to_chapter(&[10], 6).is_empty());
+        assert!(clamp_verses_to_chapter(&[1], 0).is_empty());
     }
 
     #[test]
