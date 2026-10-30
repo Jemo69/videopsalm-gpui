@@ -592,7 +592,20 @@ impl Root {
             .map(|s| serde_json::from_str(s).unwrap())
             .collect();
 
-        let db = library::open_memory().unwrap();
+        // Application support folder (like other apps): the SQLite library
+        // lives in the OS app-data dir (`%APPDATA%/VideoPsalm` on Windows,
+        // `~/.local/share/videopsalm` on Linux) so songs, songbooks, and
+        // imports survive restart. Falls back to in-memory when the folder
+        // cannot be created (read-only profile, headless test).
+        let db = match vp_core::native_folder::ensure_app_dirs() {
+            Ok(base) => {
+                let path = base.join("library.db");
+                library::open(path.to_string_lossy().as_ref()).unwrap_or_else(|_| {
+                    library::open_memory().expect("in-memory library")
+                })
+            }
+            Err(_) => library::open_memory().unwrap(),
+        };
         library::upsert_songbook(
             &db,
             &vp_core::schema::Songbook {
@@ -1039,6 +1052,76 @@ impl Root {
             this.apply_layout_prefs(&layout);
             this.status = format!("Layout restored from {}.", LayoutPrefs::FILE);
         }
+        // Restore persisted library songs (app support folder) so imports
+        // survive restart — the browser list is rebuilt from the database,
+        // not just the bundled samples.
+        if let Ok(stored) = library::all_songs(&this.db) {
+            let (added, _) = merge_native_songs(&mut this.songs, stored);
+            if added > 0 {
+                let q = this.search_field.read(cx).text();
+                this.refresh_search(&q, cx);
+            }
+        }
+        // Boot auto-find: the vendor shared folder on Windows
+        // (`C:\Users\Public\Documents\VideoPsalm`). When it exists, import
+        // everything inside (songbooks, images, videos) and run as normal —
+        // no picking, no extra clicks. Songs merge by id so a second boot
+        // never duplicates; galleries list the discovered media.
+        let mut vp_note: Option<String> = None;
+        if let Some(vp_dir) = crate::file_picker::videopsalm_start_dir() {
+            let folder = vp_dir.to_string_lossy().into_owned();
+            let scan = vp_core::native_folder::scan_folder(&folder);
+            if !scan.songs.is_empty() || !scan.images.is_empty() || !scan.videos.is_empty() {
+                let (added, kept) = merge_native_songs(&mut this.songs, scan.songs);
+                let mut failed = 0;
+                for s in &this.songs {
+                    if library::upsert_song(&this.db, s).is_err() {
+                        failed += 1;
+                    }
+                }
+                for nb in &scan.songbooks {
+                    let _ = library::upsert_songbook(
+                        &this.db,
+                        &vp_core::schema::Songbook {
+                            id: nb.abbrev.clone(),
+                            name: nb.name.clone(),
+                            abbrev: nb.abbrev.clone(),
+                            read_only: true,
+                        },
+                    );
+                }
+                for img in &scan.images {
+                    let pb = PathBuf::from(img);
+                    if pb.is_file() {
+                        this.galleries.library.add(pb, MediaFileKind::Image);
+                    }
+                }
+                for vid in &scan.videos {
+                    let pb = PathBuf::from(vid);
+                    if pb.is_file() {
+                        this.galleries.library.add(pb, MediaFileKind::Video);
+                    }
+                }
+                this.native_path_field.update(cx, |f, cx| f.set_text(&folder, cx));
+                let mut msg = format!(
+                    "VideoPsalm folder: {} song(s) ({} new), {} book(s), {} image(s), {} video(s).",
+                    added + kept,
+                    added,
+                    scan.songbooks.len(),
+                    scan.images.len(),
+                    scan.videos.len()
+                );
+                if failed > 0 {
+                    msg.push_str(&format!(" {failed} library write(s) failed."));
+                }
+                for w in scan.errors.iter().take(3) {
+                    msg.push_str(&format!(" [{w}]"));
+                }
+                vp_note = Some(msg);
+                let q = this.search_field.read(cx).text();
+                this.refresh_search(&q, cx);
+            }
+        }
         this.adopt_agenda_styles(); // Styles travel with the agenda file.
         if !boot_import_errors.is_empty() {
             this.status = format!(
@@ -1048,6 +1131,15 @@ impl Root {
             );
         } else if boot_imports > 0 {
             this.status = format!("Installed {boot_imports} Bible translation(s) from bibles/.");
+        }
+        // The VideoPsalm folder note wins on a fresh boot with media — it is
+        // what the operator acted on last (or what auto-import found).
+        if let Some(note) = vp_note {
+            if this.status.starts_with("Layout restored") || this.status == "Ready." {
+                this.status = note;
+            } else {
+                this.status = format!("{} — {note}", this.status);
+            }
         }
         this
     }

@@ -639,24 +639,32 @@ pub(crate) fn wire_gallery_fields(root: &mut Root, cx: &mut Context<Root>) {
 /// points at a directory), the file is copied into its Images/Videos
 /// library first, so the background survives as managed media; otherwise
 /// the picked path is listed directly, like a typed import.
-/// Persistent media dir next to the layout file: picks are COPIED here so
-/// backgrounds survive restart and USB-stick removal (lens 2/3). The native
-/// doc-folder path above wins when set; otherwise the file lands in
-/// `./media/Images|Videos` beside `videopsalm-layout.json`.
+/// Application folder (like other apps): picks are COPIED into the app's own
+/// `Media/Images|Videos` support folder so backgrounds survive restart and
+/// USB-stick removal (lens 2/3). The native doc-folder path above wins when
+/// set; otherwise the file lands in `<app-data>/Media/Images|Videos`.
 fn persistent_media_copy(src: &Path, kind: &str) -> Result<PathBuf, String> {
     let sub = match kind {
         "video" => "Videos",
         _ => "Images",
     };
-    let base = std::path::Path::new(crate::ux::LayoutPrefs::FILE)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    // Empty parent (bare filename) means cwd.
-    let dir = if base.as_os_str().is_empty() {
-        Path::new(".").join("media").join(sub)
-    } else {
-        base.join("media").join(sub)
+    // App support folder first (Windows `%APPDATA%/VideoPsalm`, Linux
+    // `~/.local/share/videopsalm`, macOS `~/Library/Application Support`).
+    // Falls back to `./media` beside the layout file when the support
+    // folder cannot be created (read-only profile, headless test).
+    let dir = match vp_core::native_folder::ensure_app_dirs() {
+        Ok(base) => base.join("Media").join(sub),
+        Err(_) => {
+            let base = std::path::Path::new(crate::ux::LayoutPrefs::FILE)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            if base.as_os_str().is_empty() {
+                Path::new(".").join("media").join(sub)
+            } else {
+                base.join("media").join(sub)
+            }
+        }
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let name = src
@@ -833,11 +841,40 @@ pub(crate) fn import_path(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
             cx,
             format!("Import: {p} is not reachable now — listed anyway, projector will say so."),
         );
-    } else {
-        root.set_status(cx, format!("Imported {p}."));
+        let id = root.galleries.library.add(path, kind);
+        root.galleries.select(kind, &id);
+        cx.notify();
+        return;
     }
-    let id = root.galleries.library.add(path, kind);
+    // Store the import: copy into the VideoPsalm document folder when one is
+    // open (`Images/` / `Videos/`), else into the application's own support
+    // folder — an imported image/video is stored, not just referenced.
+    let sub = if kind == MediaFileKind::Video { "video" } else { "image" };
+    let doc = root.native_path_field.read(cx).text();
+    let stored = if !doc.trim().is_empty() && Path::new(doc.trim()).is_dir() {
+        match vp_core::native_folder::import_media_file(&path, doc.trim(), sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(cx, format!("Import: copy failed ({e}) — listed in place."));
+                path.clone()
+            }
+        }
+    } else {
+        match persistent_media_copy(&path, sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(cx, format!("Import: copy failed ({e}) — listed in place."));
+                path.clone()
+            }
+        }
+    };
+    let stored_msg = stored.to_string_lossy().into_owned();
+    let id = root.galleries.library.add(stored, kind);
     root.galleries.select(kind, &id);
+    // Only overwrite the "copy failed" note when the store succeeded.
+    if !root.status.starts_with("Import: copy failed") {
+        root.set_status(cx, format!("Imported {p} → stored at {stored_msg}."));
+    }
     cx.notify();
 }
 
