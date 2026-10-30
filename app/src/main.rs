@@ -258,11 +258,22 @@ impl UI {
             .and_then(themes::parse_hex)
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
+        // VideoPsalm chrome: panels are white on a light-blue window with
+        // thin steel-blue borders (#7F9DB9, the Office 2007 edge). Painting
+        // every border with the accent (#2E74B5) made the whole control
+        // window read as a grid of bright-blue boxes next to the original's
+        // soft gray-blue chrome (viewer-mode.png). The border is its own
+        // token on light; other skins keep the accent edge.
+        let border = if t.id == "light" {
+            rgb(0x7F9DB9)
+        } else {
+            hex(t.accent)
+        };
         UI {
             bg: hex(t.bg),
             fg: hex(t.fg),
             panel: hex(t.muted),
-            border: hex(t.accent),
+            border,
             accent,
             accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
@@ -4414,6 +4425,12 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 }
 
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
+    // VideoPsalm panel chrome (agenda-panel.png / slides-panel.png): a light-
+    // blue header bar with dark-blue bold text sits on a white panel with a
+    // thin steel border. The old plain 13px label on a transparent panel with
+    // a bright-blue edge read as a wireframe next to the original.
+    let header_bg = rgb(0xC9DDF3);
+    let header_ink = rgb(0x1E3A5F);
     let mut col = div()
         .flex()
         .flex_col()
@@ -4427,14 +4444,33 @@ pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(div().text_size(px(13.)).child(title.to_string()));
+        .bg(ui.panel)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded_sm()
+                .bg(header_bg)
+                .text_color(header_ink)
+                .text_size(px(13.))
+                .font_weight(FontWeight::BOLD)
+                .child(title.to_string()),
+        );
     for k in kids {
         col = col.child(k);
     }
     col
 }
 
-/// Compact ribbon group box: small caps caption + wrapped controls.
+/// Compact ribbon group box: wrapped controls + small caption BELOW.
+///
+/// 1.29 lays group names UNDER their controls (SCREENSHOT-1.29-LAYOUT.md
+/// §Ribbon: `caption` labels BELOW the controls). The old caption-on-top
+/// with accent color read as a second tab row next to the original's soft
+/// gray captions under light-blue groups.
 fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
     div()
         .flex()
@@ -4445,12 +4481,7 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(ui.accent)
-                .child(caption.to_string()),
-        )
+        .bg(ui.panel)
         .child(
             div()
                 .flex()
@@ -4459,6 +4490,14 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
                 .gap_1()
                 .items_center()
                 .children(kids),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_center()
+                .text_size(px(11.))
+                .text_color(rgb(0x5B6B82))
+                .child(caption.to_string()),
         )
 }
 
@@ -4520,7 +4559,7 @@ fn mini(
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .bg(if active { ui.selection } else { ui.bg })
+        .bg(if active { ui.selection } else { ui.panel })
         .text_color(if active { ui.selection_ink } else { ui.fg })
         .text_size(px(11.))
         .cursor_pointer()
@@ -4619,7 +4658,21 @@ fn section_scrolled_with_rail(
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(div().text_size(px(13.)).child(title.to_string()));
+        .bg(ui.panel)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded_sm()
+                .bg(rgb(0xC9DDF3))
+                .text_color(rgb(0x1E3A5F))
+                .text_size(px(13.))
+                .font_weight(FontWeight::BOLD)
+                .child(title.to_string()),
+        );
     for k in top {
         col = col.child(k);
     }
@@ -4921,23 +4974,27 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                // The active tab is ORANGE in the original (UX-RESEARCH §4.1),
-                // not an accent outline: an outlined tab reads as a button,
-                // not as the selected ribbon page.
-                let (tab_bg, tab_ink) = if active {
-                    (self.ui().engaged, ink_on(self.ui().engaged))
+                // 1.29 Background tab (Screenshot 2026-10-30 111820): solid
+                // VideoPsalm-blue ribbon with the active tab WHITE and
+                // inactive tabs blue with white text. The old white ribbon
+                // with an orange active tab read as a different app next
+                // to the original's blue chrome.
+                let ribbon_blue = rgb(0x1E6CC8);
+                let (tab_bg, tab_ink, tab_border) = if active {
+                    (rgb(0xFFFFFF), rgb(0x1E3A5F), rgb(0xFFFFFF))
                 } else {
-                    (self.ui().panel, self.ui().fg)
+                    (ribbon_blue, rgb(0xFFFFFF), rgb(0x5AA0E8))
                 };
                 div()
                     .px_2()
                     .py(px(2.))
                     .rounded_sm()
                     .border_1()
-                    .border_color(self.ui().border)
+                    .border_color(tab_border)
                     .bg(tab_bg)
                     .text_color(tab_ink)
                     .cursor_pointer()
+                    .when(active, |d| d.font_weight(FontWeight::BOLD))
                     .child(title.to_string())
                     .on_mouse_up(
                         MouseButton::Left,
@@ -4960,6 +5017,10 @@ impl Root {
             .flex_col()
             .gap(px(2.))
             .px(px(6.))
+            .py(px(4.))
+            .bg(rgb(0x1E6CC8))
+            .border_b_1()
+            .border_color(rgb(0x155AAD))
             .child(
                 div()
                     .flex()
@@ -4977,12 +5038,10 @@ impl Root {
                 d.child(self.utility_ribbon(ui, cx))
                     .child(self.live_panel(ui, cx))
             })
-            // The `Background` tab carries the image + video galleries
-            // (B-32): click-to-assign at the Images/Videos style level with
-            // the Luminosité steppers beside each grid.
-            .when(self.ribbon == RibbonTab::Background, |d| {
-                d.child(media_gallery::background_tab(self, ui, cx))
-            })
+            // Background groups already render inline in the ribbon
+            // (`background_ribbon`): no second panel below — the old stacked
+            // Images/Videos dropdown section is what made the tab read as
+            // empty next to 1.29's thumbnail strips.
             // The style explorer opens from the Styles-group launcher above
             // (§5.3), over whichever tab is active — it is not a tab itself.
             .when(self.show_style_explorer, |d| {
@@ -5070,7 +5129,165 @@ impl Root {
     // notation) | Colors (accent swatches) | Animation (transition selector
     // stored in the style). Text/unicode glyphs only (clean room).
 
+    /// Background tab groups matching 1.29 (Screenshot 2026-10-30 111820):
+    /// Image thumbnails + Video thumbnails + Brightness + Animation +
+    /// Aspect ratio, inline in the ribbon — not dropdown buttons that open
+    /// a panel below. Empty galleries show a one-line way in (Browse…)
+    /// so the tab never reads as broken when the library is empty.
+    fn background_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        // Image group: up to 5 file-name buttons (click = assign) + Browse +
+        // Cover/Contain fit. Original shows thumbnail strips; v1 shows
+        // captions (no thumbnail cache) which is the documented gallery UI.
+        let mut image_kids: Vec<Div> = Vec::new();
+        let images: Vec<(String, String, bool)> = self
+            .galleries
+            .filtered_images()
+            .into_iter()
+            .take(5)
+            .map(|e| {
+                let name = e
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| e.id.clone());
+                let assigned = self.bg_file.as_deref() == Some(e.path.as_path());
+                (e.id.clone(), name, assigned)
+            })
+            .collect();
+        if images.is_empty() {
+            image_kids.push(label(ui, "No images yet", 11.));
+        } else {
+            for (id, name, assigned) in images {
+                let short: String = name.chars().take(14).collect();
+                image_kids.push(btn(ui, cx, &short, assigned, move |this, _, _, cx| {
+                    media_gallery::assign_pick(this, cx, MediaFileKind::Image, &id);
+                }));
+            }
+        }
+        image_kids.push(btn(
+            ui,
+            cx,
+            "Browse…",
+            false,
+            |this, _, _, cx| {
+                media_gallery::browse_assign_background(this, cx);
+            },
+        ));
+        image_kids.push(btn(
+            ui,
+            cx,
+            "Cover",
+            self.bg_fit == BgFit::Cover,
+            |this, _, _, cx| {
+                this.bg_fit = BgFit::Cover;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ));
+        image_kids.push(btn(
+            ui,
+            cx,
+            "Contain",
+            self.bg_fit == BgFit::Contain,
+            |this, _, _, cx| {
+                this.bg_fit = BgFit::Contain;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ));
+        // Video group: same shape, video kinds.
+        let mut video_kids: Vec<Div> = Vec::new();
+        let videos: Vec<(String, String, bool)> = self
+            .galleries
+            .filtered_videos()
+            .into_iter()
+            .take(5)
+            .map(|e| {
+                let name = e
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| e.id.clone());
+                let assigned = self.bg_file.as_deref() == Some(e.path.as_path());
+                (e.id.clone(), name, assigned)
+            })
+            .collect();
+        if videos.is_empty() {
+            video_kids.push(label(ui, "No videos yet", 11.));
+        } else {
+            for (id, name, assigned) in videos {
+                let short: String = name.chars().take(14).collect();
+                video_kids.push(btn(ui, cx, &short, assigned, move |this, _, _, cx| {
+                    media_gallery::assign_pick(this, cx, MediaFileKind::Video, &id);
+                }));
+            }
+        }
+        video_kids.push(btn(
+            ui,
+            cx,
+            "Browse…",
+            false,
+            |this, _, _, cx| {
+                media_gallery::browse_assign_background(this, cx);
+            },
+        ));
+        // Brightness group: sun + steppers (Luminosité at Images level).
+        let mut bright_kids: Vec<Div> = vec![
+            btn(ui, cx, "☀ -", false, |this, _, _, cx| {
+                media_gallery::step_luminosity(this, cx, MediaFileKind::Image, -5.0);
+            }),
+            btn(ui, cx, "☀ +", false, |this, _, _, cx| {
+                media_gallery::step_luminosity(this, cx, MediaFileKind::Image, 5.0);
+            }),
+        ];
+        let _ = &mut bright_kids;
+        // Animation group: same transitions as the Text tab.
+        let mut anim_kids: Vec<Div> = Vec::new();
+        for t in transitions() {
+            let active = self.transition == t;
+            let text = match t {
+                "none" => "○ none",
+                "fade" => "◐ fade",
+                "slide" => "▸ slide",
+                "zoom" => "⊕ zoom",
+                _ => t,
+            };
+            anim_kids.push(btn(ui, cx, text, active, move |this, _, _, cx| {
+                this.set_transition(cx, t);
+            }));
+        }
+        // Aspect ratio group: Current + 5 presets (1.29 right edge).
+        let mut aspect_kids: Vec<Div> = Vec::new();
+        for ratio in ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"] {
+            let active = self.aspect_ratio == ratio;
+            let caption = if ratio == "current" { "Current" } else { ratio };
+            aspect_kids.push(btn(ui, cx, caption, active, move |this, _, _, cx| {
+                this.aspect_ratio = ratio.to_string();
+                this.persist_layout_quiet();
+                cx.notify();
+            }));
+        }
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .items_start()
+            .child(group(ui, "Image", image_kids))
+            .child(group(ui, "Video", video_kids))
+            .child(group(ui, "Brightness", bright_kids))
+            .child(group(ui, &self.t("animation"), anim_kids))
+            .child(group(ui, "Aspect ratio", aspect_kids))
+    }
+
     fn format_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        // 1.29 tabs own their groups (Screenshot 2026-10-30 111820): the
+        // Background tab shows Image / Video / Brightness / Animation /
+        // Aspect ratio, NOT the Text tab's Song/Styles/Font groups. The old
+        // code always rendered Text groups, so the Background tab stacked
+        // Text controls over empty dropdowns and never looked like 1.29.
+        if self.ribbon == RibbonTab::Background {
+            return self.background_ribbon(ui, cx);
+        }
         // Song group: the only group of the Text tab's left edge
         // (SCREENSHOT-1.29-LAYOUT.md §Ribbon). Song-document actions live
         // here, not buried in the editor panel.
@@ -5744,7 +5961,7 @@ impl Root {
                     .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(if live { ui.selection } else { ui.bg })
+                    .bg(if live { ui.selection } else { ui.panel })
                     .text_color(if live { ui.selection_ink } else { ui.fg })
                     .cursor_pointer()
                     .child(title_cell)
@@ -6428,7 +6645,7 @@ impl Root {
             div()
                 .px_1()
                 .rounded_sm()
-                .bg(if selected { ui.selection } else { ui.bg })
+                .bg(if selected { ui.selection } else { ui.panel })
                 .text_color(if selected { ui.selection_ink } else { ui.fg })
                 .cursor_pointer()
                 .child(title)
@@ -6678,7 +6895,7 @@ impl Root {
                     .px_1()
                     .rounded_sm()
                     .text_size(px(12.))
-                    .bg(ui.bg)
+                    .bg(ui.panel)
                     .child(div().text_color(ui.accent).child(reference))
                     .child(div().flex_1().child(snippet))
                     .cursor_pointer()
@@ -6816,7 +7033,7 @@ impl Root {
                 div()
                     .px_1()
                     .rounded_sm()
-                    .bg(if active { ui.selection } else { ui.bg })
+                    .bg(if active { ui.selection } else { ui.panel })
                     .text_color(if active { ui.selection_ink } else { ui.fg })
                     .cursor_pointer()
                     .child(title)
@@ -7190,7 +7407,9 @@ impl Root {
             // blue", since 1.2, on every skin). Using `ui.accent` here made
             // that cue yellow on two of the four themes. `selected` is the
             // keyboard cursor and stays subtler so the two never read as one.
-            let row_bg = if live_now { ui.selection } else { ui.bg };
+            // White rows on the blue window = the original's white lists
+            // (slides-panel.png); the old window-gray rows read as disabled.
+            let row_bg = if live_now { ui.selection } else { ui.panel };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
             let border_c = if selected {
                 ui.engaged
@@ -7301,7 +7520,8 @@ impl Root {
                     .all(|v| self.is_hidden(&item_id, &v.to_string()));
             let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(badge.as_str());
-            let row_bg = if live_now { ui.selection } else { ui.bg };
+            // White rows on the blue window = the original's white lists.
+            let row_bg = if live_now { ui.selection } else { ui.panel };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
             let border_c = if selected {
                 ui.engaged
@@ -7544,13 +7764,20 @@ impl Root {
             .rounded_sm()
             .border_1()
             .border_color(ui.border)
+            .bg(ui.panel)
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_2()
+                    .px(px(6.))
+                    .py(px(3.))
+                    .rounded_sm()
+                    .bg(rgb(0xC9DDF3))
+                    .text_color(rgb(0x1E3A5F))
                     .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
                     .child(format!(
                         "{} — {} {count}",
                         self.t("preview"),
@@ -7674,8 +7901,9 @@ impl Root {
             .text_size(px(15.))
             .cursor_pointer()
             .when(outline, |d| d.border_2().border_color(ui.engaged))
-            // Lane G: drawn SVG on a neutral chip, so a coloured icon stays
-            // readable on its same-coloured circle (and on light skins).
+            // Lane G: drawn SVG on a white chip, so a coloured icon stays
+            // readable on its same-coloured circle (VideoPsalm's solid glossy
+            // buttons: tint ring with white center).
             .child(
                 div()
                     .w(px(26.))
@@ -7684,7 +7912,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(ui.bg)
+                    .bg(rgb(0xFFFFFF))
                     .child(icons::art(icon)),
             )
             .on_mouse_up(
@@ -7889,14 +8117,29 @@ impl Root {
             .rounded_sm()
             .border_1()
             .border_color(ui.border)
+            .bg(ui.panel)
             // Panel title is the song title with the songbook's note glyph.
             // Song header carries its own `*` — the agenda's flag covers the
-            // agenda, this covers the lyrics document.
-            .child(div().text_size(px(13.)).child(format!(
-                "♪ {}{}",
-                if self.song_dirty { "*" } else { "" },
-                song.title
-            )))
+            // agenda, this covers the lyrics document. Blue bar like the
+            // original's panel headers (agenda-panel.png).
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px(px(6.))
+                    .py(px(3.))
+                    .rounded_sm()
+                    .bg(rgb(0xC9DDF3))
+                    .text_color(rgb(0x1E3A5F))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!(
+                        "♪ {}{}",
+                        if self.song_dirty { "*" } else { "" },
+                        song.title
+                    )),
+            )
             // `Paroles | Divers` — Divers holds transposition, capo and CCLI.
             .child(row(vec![
                 // Four document tabs, not two. `Lyrics | Files | Chords | Miscellaneous`
