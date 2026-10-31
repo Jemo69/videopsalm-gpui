@@ -31,10 +31,15 @@ pub fn builtin_themes() -> [Theme; 4] {
         Theme {
             id: "light",
             name: "Light",
-            bg: "#F4F4F5",
-            fg: "#18181B",
-            accent: "#2563EB",
-            muted: "#D4D4D8",
+            // VideoPsalm 1.29 window: light blue-gray glass (Office 2007
+            // blue) with white panels, steel-blue borders, VideoPsalm blue
+            // accent. The old flat gray (#F4F4F5 / #D4D4D8 / #2563EB)
+            // read as a generic web app next to the original's blue chrome
+            // (viewer-mode.png / edit-mode.png).
+            bg: "#D9E2F1",
+            fg: "#1E3A5F",
+            accent: "#2E74B5",
+            muted: "#FFFFFF",
             projection_bg: "#000000",
             projection_fg: "#FFFFFF",
         },

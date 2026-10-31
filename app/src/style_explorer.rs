@@ -143,6 +143,7 @@ pub fn clear_attribute(cascade: &mut Cascade, level: Level, attr: Attribute) {
         Attribute::Italic => next.italic = None,
         Attribute::Underline => next.underline = None,
         Attribute::Strike => next.strike = None,
+        Attribute::Align => next.align = None,
         Attribute::VAlign => next.v_align = None,
         Attribute::BgColor => next.bg_color = None,
         Attribute::Transition => next.transition = None,
@@ -303,10 +304,14 @@ impl Root {
             }),
             btn(ui, cx, "reset", false, move |this, _, _, cx| {
                 this.cascade.reset(level);
+                this.sync_cascade_to_agenda();
+                this.agenda_dirty = true;
+                this.persist_layout_quiet();
                 this.set_status(
                     cx,
                     format!("{} reset — values re-inherit.", level_caption(level)),
                 );
+                cx.notify();
             }),
         ])];
         if open {
@@ -336,6 +341,9 @@ impl Root {
                         .child(marker),
                     btn(ui, cx, "clear", false, move |this, _, _, cx| {
                         clear_attribute(&mut this.cascade, level, attr);
+                        this.sync_cascade_to_agenda();
+                        this.agenda_dirty = true;
+                        this.persist_layout_quiet();
                         this.set_status(
                             cx,
                             format!(
@@ -344,6 +352,7 @@ impl Root {
                                 level_caption(level)
                             ),
                         );
+                        cx.notify();
                     }),
                 ]));
             }
@@ -421,7 +430,7 @@ mod tests {
     fn rows_carry_source_and_inherited_flags_for_a_seeded_cascade() {
         let c = seeded();
         let rows = c.resolve(Chain::Songs).explorer_rows(Some(Level::Song));
-        assert_eq!(rows.len(), 11);
+        assert_eq!(rows.len(), 12);
         let font = rows.iter().find(|r| r.attr == Attribute::Font).unwrap();
         let size = rows.iter().find(|r| r.attr == Attribute::Size).unwrap();
         assert_eq!(font.value, "Times");

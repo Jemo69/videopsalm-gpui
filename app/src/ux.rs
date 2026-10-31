@@ -167,6 +167,25 @@ pub fn style_dropdown_label(level: &str) -> String {
     format!("{level} ▾")
 }
 
+/// Cascade levels a ribbon edit writes to, from the Styles dropdown value.
+///
+/// This is the write target only — reading always resolves the whole chain,
+/// so a value set at `Songbooks` flows down to every song and verse. `Media`
+/// writes both media rungs; `Alert`/`Clock` have no chain levels and stay
+/// agenda-global (flat style), as do unknown values. Pure and unit-tested.
+pub fn style_write_targets(level: &str) -> Vec<vp_core::cascade::Level> {
+    use vp_core::cascade::Level::*;
+    match level {
+        "Base" => vec![Base],
+        "Songbooks" => vec![Songbooks],
+        "Song" => vec![Song],
+        "Verse" => vec![SongVerse],
+        "Bible" => vec![Bible],
+        "Media" => vec![Images, Videos],
+        _ => Vec::new(),
+    }
+}
+
 /// Verse numbers leading each Bible slide line (`"16 text..."`).
 ///
 /// Pure so per-slide Bible rows are unit-testable: the panel groups verses
@@ -723,15 +742,6 @@ pub enum BibleSearch {
 }
 
 impl BibleSearch {
-    /// The other mode — what the magnifier button switches to.
-    #[allow(dead_code)] // kept for magnifier-button rewire
-    pub fn toggled(self) -> BibleSearch {
-        match self {
-            BibleSearch::Reference => BibleSearch::Keyword,
-            BibleSearch::Keyword => BibleSearch::Reference,
-        }
-    }
-
     pub fn id(self) -> &'static str {
         match self {
             BibleSearch::Reference => "reference",
@@ -881,6 +891,27 @@ pub fn apply_verse_grid_click(
     }
 }
 
+/// Clamp a requested verse selection to the chapter that is actually
+/// installed (`1..=max`). Out-of-range numbers (typed `1-10` for a chapter
+/// the sample only carries 2 verses of, or `Ctrl+*` past the last verse)
+/// would otherwise resolve to `"10 […]"` placeholder slides the original
+/// never shows — the congregation must never see a placeholder verse.
+/// Empty after clamping means "nothing selectable" (the panel then shows
+/// `(no verses)`, never a fabricated placeholder row).
+pub fn clamp_verses_to_chapter(verses: &[u32], max: u32) -> Vec<u32> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<u32> = verses
+        .iter()
+        .copied()
+        .filter(|&v| v >= 1 && v <= max)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Verse id from a projector slide header. Song slides render as
 /// `"{title} — {verse}"` (optionally `"{title} — {verse} (i/n)"`); Bible
 /// and other headers carry no `—` marker and yield `None`.
@@ -1011,8 +1042,6 @@ pub struct LayoutPrefs {
     /// Gallery chrome: expanded 2×5-compact → full grid (vendor §9:
     /// collapsed compact + arrow to expand). Persisted so a large library
     /// stays in the operator's chosen density across restarts.
-    #[serde(default)]
-    pub gallery_expanded: bool,
     /// "Keep the gallery opened" pin (RESEARCH §5). Persistence is GAP
     /// in the vendor docs; v1 persists it so the choice survives restart.
     #[serde(default)]
@@ -1070,7 +1099,6 @@ impl Default for LayoutPrefs {
             projector_display: 0,
             gallery_images: Vec::new(),
             gallery_videos: Vec::new(),
-            gallery_expanded: false,
             gallery_keep_open: false,
         }
     }
@@ -1096,6 +1124,65 @@ impl LayoutPrefs {
 
     pub fn save_file(&self, path: &str) -> std::io::Result<()> {
         std::fs::write(path, self.to_json_pretty())
+    }
+}
+
+/// Caret blink cadence shared by the single-line fields and the lyrics
+/// document: solid for the first interval after any cursor move or focus
+/// gain, then toggling on/off. Pure and unit-testable — each widget only adds
+/// the repaint timer (`poll` says *when*, the widget schedules it).
+pub const CARET_BLINK_MS: u128 = 530;
+
+/// Blink phase for one editor. `poll` resets the phase whenever the cursor
+/// moves or focus is (re)gained, so typing or clicking always shows a solid
+/// caret first instead of landing mid-blink.
+#[derive(Clone, Debug)]
+pub struct CaretBlink {
+    epoch: Option<std::time::Instant>,
+    last_cursor: usize,
+    last_focused: bool,
+}
+
+impl CaretBlink {
+    pub fn new() -> Self {
+        CaretBlink {
+            epoch: None,
+            last_cursor: usize::MAX,
+            last_focused: false,
+        }
+    }
+
+    /// Returns `(visible, repaint_in)`: whether the caret draws this frame,
+    /// and how long until the next phase flip (the widget should repaint
+    /// then). `None` repaint while unfocused or while a range is selected —
+    /// nothing blinks then, so no timer runs.
+    pub fn poll(
+        &mut self,
+        now: std::time::Instant,
+        focused: bool,
+        collapsed: bool,
+        cursor: usize,
+    ) -> (bool, Option<std::time::Duration>) {
+        if !focused || !collapsed {
+            self.epoch = None;
+            self.last_focused = focused;
+            self.last_cursor = cursor;
+            return (false, None);
+        }
+        if self.epoch.is_none() || !self.last_focused || cursor != self.last_cursor {
+            self.epoch = Some(now);
+        }
+        self.last_focused = true;
+        self.last_cursor = cursor;
+        let elapsed = now
+            .saturating_duration_since(self.epoch.unwrap_or(now))
+            .as_millis();
+        let visible = (elapsed / CARET_BLINK_MS) % 2 == 0;
+        let next_in = CARET_BLINK_MS - (elapsed % CARET_BLINK_MS) + 8;
+        (
+            visible,
+            Some(std::time::Duration::from_millis(next_in as u64)),
+        )
     }
 }
 
@@ -1186,7 +1273,6 @@ mod tests {
         p.max_lines = 6;
         p.gallery_images = vec!["/tmp/a.png".to_string()];
         p.gallery_videos = vec!["/tmp/b.mp4".to_string()];
-        p.gallery_expanded = true;
         p.gallery_keep_open = true;
         let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
         assert_eq!(back, p);
@@ -1226,6 +1312,35 @@ mod tests {
     }
 
     #[test]
+    fn style_write_targets_hit_real_chain_levels() {
+        use vp_core::cascade::Level::*;
+        // Every dropdown value that has chain levels maps to exactly those.
+        assert_eq!(style_write_targets("Base"), vec![Base]);
+        assert_eq!(style_write_targets("Songbooks"), vec![Songbooks]);
+        assert_eq!(style_write_targets("Song"), vec![Song]);
+        assert_eq!(style_write_targets("Verse"), vec![SongVerse]);
+        assert_eq!(style_write_targets("Bible"), vec![Bible]);
+        assert_eq!(style_write_targets("Media"), vec![Images, Videos]);
+        // Alert/Clock/unknown stay flat (agenda-global): no chain levels.
+        assert!(style_write_targets("Alert").is_empty());
+        assert!(style_write_targets("Clock").is_empty());
+        assert!(style_write_targets("").is_empty());
+        // The mapped levels really participate in their chains.
+        for (dropdown, chain) in [
+            ("Song", vp_core::cascade::Chain::Songs),
+            ("Verse", vp_core::cascade::Chain::Songs),
+            ("Bible", vp_core::cascade::Chain::Bibles),
+        ] {
+            for level in style_write_targets(dropdown) {
+                assert!(
+                    chain.contains(level),
+                    "{dropdown} maps outside its chain"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn transitions_match_style_schema_values() {
         assert_eq!(transitions(), ["none", "fade", "slide", "zoom"]);
     }
@@ -1244,6 +1359,34 @@ mod tests {
         assert!(fams.contains(&"Verdana"));
         assert!(fams.contains(&"Arial"));
         assert!(fams.len() >= 6);
+    }
+
+    #[test]
+    fn caret_blink_starts_solid_then_toggles() {
+        use std::time::{Duration, Instant};
+        let mut b = CaretBlink::new();
+        let t0 = Instant::now();
+        // Focus gain: solid caret, with a repaint scheduled.
+        let (vis, rep) = b.poll(t0, true, true, 5);
+        assert!(vis);
+        assert!(rep.is_some());
+        // Same cursor shortly after: still solid.
+        let (vis, _) = b.poll(t0 + Duration::from_millis(100), true, true, 5);
+        assert!(vis);
+        // Past one interval: hidden, still scheduling.
+        let (vis, rep) = b.poll(t0 + Duration::from_millis(600), true, true, 5);
+        assert!(!vis);
+        assert!(rep.is_some());
+        // Cursor move resets to solid.
+        let (vis, _) = b.poll(t0 + Duration::from_millis(610), true, true, 6);
+        assert!(vis);
+        // Blur or selection: hidden, no timer.
+        let (vis, rep) = b.poll(t0, false, true, 6);
+        assert!(!vis);
+        assert!(rep.is_none());
+        let (vis, rep) = b.poll(t0, true, false, 6);
+        assert!(!vis);
+        assert!(rep.is_none());
     }
 
     #[test]
@@ -1374,12 +1517,6 @@ mod tests {
     #[test]
     fn bible_search_mode_toggles_and_labels() {
         assert_eq!(BibleSearch::default(), BibleSearch::Reference);
-        assert_eq!(BibleSearch::Reference.toggled(), BibleSearch::Keyword);
-        assert_eq!(BibleSearch::Keyword.toggled(), BibleSearch::Reference);
-        assert_eq!(
-            BibleSearch::Reference.toggled().toggled(),
-            BibleSearch::Reference
-        );
         assert_eq!(BibleSearch::Reference.id(), "reference");
         assert_eq!(BibleSearch::Keyword.id(), "keyword");
         // Placeholders tell the operator what the box expects, per language.
@@ -1745,6 +1882,22 @@ mod tests {
         assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
         assert_eq!(default_verse_count(43, 3), 36); // John 3
         assert_eq!(default_verse_count(19, 23), 6); // Psalm 23
+    }
+
+    #[test]
+    fn clamp_verses_drops_placeholders_beyond_the_chapter() {
+        // Psalm 23:1-10 typed against a 6-verse chapter must not keep
+        // verses 7-10 — those would resolve to `"10 […]"` slides.
+        assert_eq!(clamp_verses_to_chapter(&[1, 2, 7, 10], 6), vec![1, 2]);
+        // Full containment passes through, sorted and deduped.
+        assert_eq!(
+            clamp_verses_to_chapter(&[18, 16, 17, 16], 36),
+            vec![16, 17, 18]
+        );
+        // Nothing selectable clamps to nothing (panel shows `(no verses)`).
+        assert!(clamp_verses_to_chapter(&[9, 10], 6).iter().all(|&v| v <= 6));
+        assert!(clamp_verses_to_chapter(&[10], 6).is_empty());
+        assert!(clamp_verses_to_chapter(&[1], 0).is_empty());
     }
 
     #[test]

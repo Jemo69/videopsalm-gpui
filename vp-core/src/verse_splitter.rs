@@ -17,6 +17,12 @@ pub struct SplitOptions {
     pub max_lines: usize,
     /// Maximum characters per line (>= 1; 0 is treated as 1).
     pub max_chars: usize,
+    /// Split Bible verses across slides. **Off by default**: a verse is the
+    /// unit the projector should show. Auto-splitting one verse into
+    /// "…him. /" + "3 When Herod…" breaks the verse mid-sentence, drops the
+    /// verse number on the continuation slide and reads as a bug to the
+    /// congregation. Only an explicit operator request turns this on.
+    pub split_bible_verses: bool,
 }
 
 impl Default for SplitOptions {
@@ -24,6 +30,7 @@ impl Default for SplitOptions {
         SplitOptions {
             max_lines: 4,
             max_chars: 40,
+            split_bible_verses: false,
         }
     }
 }
@@ -146,6 +153,7 @@ mod tests {
         SplitOptions {
             max_lines: lines,
             max_chars: chars,
+            split_bible_verses: false,
         }
     }
 

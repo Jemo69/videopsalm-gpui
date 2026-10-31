@@ -233,15 +233,46 @@ pub struct Song {
 }
 
 impl Song {
+    /// The song's verses in display order.
+    ///
+    /// `order` is a tie-breaker only: when it is a real permutation
+    /// (distinct, dense) it drives the sequence. When it is missing,
+    /// duplicated or gappy — which is what a stale save leaves behind —
+    /// document order wins instead, so the default verse order is always
+    /// `V1, V2, V3, …` and never the scrambled `V3, V4, V5, V1, V2` a stable
+    /// sort over equal keys produced.
+    pub fn ordered_verses(&self) -> Vec<&SongVerse> {
+        let mut verses: Vec<&SongVerse> = self.verses.iter().collect();
+        if verses_have_usable_order(&verses) {
+            verses.sort_by_key(|v| v.order);
+        }
+        verses
+    }
+
     /// Collect every lyric line of every verse in verse order.
     pub fn all_lines(&self) -> Vec<&str> {
-        let mut verses: Vec<&SongVerse> = self.verses.iter().collect();
-        verses.sort_by_key(|v| v.order);
-        verses
+        self.ordered_verses()
             .iter()
             .flat_map(|v| v.lines.iter().map(|l| l.as_str()))
             .collect()
     }
+}
+
+/// `true` when `order` actually encodes a sequence: every verse distinct and
+/// forming a dense run. Anything else (stale duplicates, all zero, gaps) is
+/// treated as "no order recorded" and the array order is used verbatim.
+fn verses_have_usable_order(verses: &[&SongVerse]) -> bool {
+    if verses.len() < 2 {
+        return false;
+    }
+    let mut orders: Vec<i32> = verses.iter().map(|v| v.order).collect();
+    orders.sort_unstable();
+    orders.dedup();
+    if orders.len() != verses.len() {
+        return false;
+    }
+    // Dense: max - min + 1 == count is enough; an offset is harmless.
+    matches!((orders.first(), orders.last()), (Some(&lo), Some(&hi)) if (hi - lo + 1) as usize == orders.len())
 }
 
 /// A songbook containing songs.
@@ -549,6 +580,12 @@ pub struct AgendaItem {
 pub struct AgendaSettings {
     #[serde(default)]
     pub style: Option<Style>,
+    /// Per-style-level values (the cascade): Base / Songbooks / Song /
+    /// Verse / … — written by the style ribbon, resolved per item chain at
+    /// render. `None` = pre-cascade file; readers adopt the flat `style`
+    /// at `Base`. Same shape as Electron's `agenda.settings.cascade`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<crate::cascade::Cascade>,
     /// Bilingual verse display with empty-line suppression (SPEC 2.3).
     #[serde(default)]
     pub bilingual_suppress_empty: bool,
@@ -707,6 +744,14 @@ impl Align {
     pub fn literal(&self) -> &'static str {
         Align::LITERALS[Align::ALL.iter().position(|a| a == self).unwrap()]
     }
+    /// Parse a wire literal; unknown (or empty) means centered.
+    pub fn from_literal(s: &str) -> Align {
+        match s {
+            "left" => Align::Left,
+            "right" => Align::Right,
+            _ => Align::Center,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -731,6 +776,14 @@ impl VAlign {
     /// on write, so files written before WI-021 round-trip byte-identical.
     pub fn is_center(&self) -> bool {
         matches!(self, VAlign::Center)
+    }
+    /// Parse a wire literal; unknown (or empty) means centered.
+    pub fn from_literal(s: &str) -> VAlign {
+        match s {
+            "top" => VAlign::Top,
+            "bottom" => VAlign::Bottom,
+            _ => VAlign::Center,
+        }
     }
 }
 
@@ -1019,6 +1072,33 @@ mod tests {
         assert_eq!(song.chords.overlays[0].chord, "G");
         let back = serde_json::to_value(&song).unwrap();
         assert_eq!(back, json);
+    }
+
+    #[test]
+    fn agenda_settings_cascade_round_trips_under_the_cascade_key() {
+        // The per-style-level cascade persists inside the agenda file under
+        // "cascade" — the same key Electron reads (`agenda.settings.cascade`).
+        // Absent when unset, so pre-cascade files are byte-identical.
+        let mut plain = Agenda::new("T");
+        let v: serde_json::Value = serde_json::to_value(&plain).unwrap();
+        assert!(v["settings"].get("cascade").is_none());
+        let mut casc = crate::cascade::Cascade::default();
+        casc.set(
+            crate::cascade::Level::SongVerse,
+            crate::cascade::LevelValues {
+                align: Some("right".into()),
+                ..Default::default()
+            },
+        );
+        plain.settings.cascade = Some(casc);
+        let v: serde_json::Value = serde_json::to_value(&plain).unwrap();
+        assert_eq!(v["settings"]["cascade"]["values"]["songVerse"]["align"], "right");
+        let back: Agenda = serde_json::from_value(v).unwrap();
+        let got = back.settings.cascade.expect("cascade must round-trip");
+        assert_eq!(
+            got.resolve(crate::cascade::Chain::Songs).align.value,
+            "right"
+        );
     }
 
     #[test]
