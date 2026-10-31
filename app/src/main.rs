@@ -2386,6 +2386,10 @@ impl Root {
             self.agenda_dirty = true;
             self.persist_layout_quiet();
             self.set_status(cx, format!("{what} (agenda default — no chain level)."));
+            // The edited self.* fallback may already be live in the
+            // preview: publish so the room meets it (harmless otherwise —
+            // same slides, same position).
+            self.republish(cx);
             cx.notify();
             return;
         }
@@ -2403,6 +2407,10 @@ impl Root {
             .collect::<Vec<_>>()
             .join(" + ");
         self.set_status(cx, format!("{what} (stored at {where_})."));
+        // Style edits are wall content with the SAME slides: republish so
+        // the room follows the preview at once. This never moves slide
+        // position and holds under freeze by construction (unlike push).
+        self.republish(cx);
         cx.notify();
     }
 
@@ -5252,6 +5260,8 @@ impl Root {
                         "dark".into()
                     };
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5263,6 +5273,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "light".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5274,6 +5286,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "dark".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5285,6 +5299,7 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "gray".into();
                     this.persist_layout_quiet();
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5296,6 +5311,7 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "blue".into();
                     this.persist_layout_quiet();
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5671,11 +5687,13 @@ impl Root {
                     btn(ui, cx, "Light", self.theme_id == "light", |this, _, _, cx| {
                         this.theme_id = "light".into();
                         this.persist_layout_quiet();
+                        this.republish(cx);
                         cx.notify();
                     }),
                     btn(ui, cx, "Dark", self.theme_id == "dark", |this, _, _, cx| {
                         this.theme_id = "dark".into();
                         this.persist_layout_quiet();
+                        this.republish(cx);
                         cx.notify();
                     }),
                     btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
@@ -5743,6 +5761,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "light".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5754,6 +5774,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "dark".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5841,6 +5863,9 @@ impl Root {
             aspect_kids.push(btn(ui, cx, caption, active, move |this, _, _, cx| {
                 this.aspect_ratio = ratio.to_string();
                 this.persist_layout_quiet();
+                // The room letterboxes from the published aspect: publish.
+                // (The Message-tab row is labeled preview-only: untouched.)
+                this.republish(cx);
                 cx.notify();
             }));
         }
@@ -6249,6 +6274,8 @@ impl Root {
             color_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.accent_override = Some(sw.into());
                 this.persist_layout_quiet();
+                // Accent tints the wall snapshot: publish with it.
+                this.republish(cx);
                 cx.notify();
             }));
         }
@@ -6260,6 +6287,7 @@ impl Root {
             |this, _, _, cx| {
                 this.accent_override = None;
                 this.persist_layout_quiet();
+                this.republish(cx);
                 cx.notify();
             },
         ));
