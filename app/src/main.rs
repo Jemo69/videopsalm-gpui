@@ -351,6 +351,11 @@ pub(crate) struct Root {
     clock_running: bool,
     clock_started: Option<Instant>,
     clock_banked: Duration,
+    /// Last clock text published to the room (`None` = never). The 250ms
+    /// tick re-publishes only when the text moves — not 4×/second.
+    last_published_clock: Option<String>,
+    /// A clock tick loop is already spawned. Session-only, never persisted.
+    clock_ticking: bool,
     whole_song_stage: bool,
     whole_ref_header: bool,
 
@@ -761,6 +766,8 @@ impl Root {
             clock_running: false,
             clock_started: None,
             clock_banked: Duration::ZERO,
+            last_published_clock: None,
+            clock_ticking: false,
             whole_song_stage: false,
             whole_ref_header: true,
             ribbon: RibbonTab::Text,
@@ -997,6 +1004,16 @@ impl Root {
                         this.clock_total_secs = secs;
                         cx.notify();
                     }
+                }
+            },
+        );
+        this._subs.push(sub);
+        let alert_sub = alert_field.clone();
+        let sub = cx.subscribe(
+            &alert_sub,
+            |this: &mut Root, emitter, _ev: &Changed, cx| {
+                if emitter == this.alert_field && this.alert_visible {
+                    this.republish(cx);
                 }
             },
         );
@@ -4015,33 +4032,69 @@ impl Root {
         }
     }
 
+    /// Whether the 250ms clock loop has work (pure, tested): a running
+    /// countdown, or a visible overlay — even a static wall clock needs one
+    /// publish so the room stops showing a stale time.
     fn clock_start(&mut self, cx: &mut Context<Self>) {
         if !self.clock_running {
             self.clock_running = true;
             self.clock_started = Some(Instant::now());
-            cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
-                let mut async_cx = async_cx.clone();
-                async move {
-                    loop {
-                        async_cx
-                            .background_executor()
-                            .timer(Duration::from_millis(250))
-                            .await;
-                        let stop = weak
-                            .update(&mut async_cx, |this: &mut Root, cx| {
-                                cx.notify();
-                                !this.clock_running
-                            })
-                            .unwrap_or(true);
-                        if stop {
-                            break;
-                        }
-                    }
-                }
-            })
-            .detach();
+            self.ensure_clock_tick(cx);
             cx.notify();
         }
+    }
+
+    /// Spawn the 250ms tick loop unless one already runs. Each tick repaints
+    /// control AND re-publishes the room snapshot while the clock overlay
+    /// is on and its text moved: without this the room's clock freezes at
+    /// the last publish while control ticks — the out-of-sync class. The
+    /// loop stops itself when nothing needs it (a static overlay publishes
+    /// once, then sleeps; any later change re-arms here).
+    fn ensure_clock_tick(&mut self, cx: &mut Context<Self>) {
+        if self.clock_ticking || !clock_tick_active(self.clock_running, self.clock_overlay) {
+            return;
+        }
+        self.clock_ticking = true;
+        cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
+            let mut async_cx = async_cx.clone();
+            async move {
+                loop {
+                    async_cx
+                        .background_executor()
+                        .timer(Duration::from_millis(250))
+                        .await;
+                    let stop = weak
+                        .update(&mut async_cx, |this: &mut Root, cx| {
+                            cx.notify();
+                            let now = this.clock_display();
+                            if clock_text_moved(
+                                this.clock_overlay,
+                                this.last_published_clock.as_deref(),
+                                &now,
+                            ) {
+                                this.last_published_clock = Some(now.clone());
+                                this.republish(cx);
+                            }
+                            let settled = this.clock_overlay
+                                && !this.clock_running
+                                && this.last_published_clock.as_deref() == Some(now.as_str());
+                            if !clock_tick_active(this.clock_running, this.clock_overlay)
+                                || settled
+                            {
+                                this.clock_ticking = false;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     fn clock_stop(&mut self, cx: &mut Context<Self>) {
@@ -4049,6 +4102,8 @@ impl Root {
             self.clock_banked = self.elapsed();
             self.clock_running = false;
             self.clock_started = None;
+            // The frozen banked text is new: let the room catch up once.
+            self.ensure_clock_tick(cx);
             cx.notify();
         }
     }
@@ -4057,6 +4112,8 @@ impl Root {
         self.clock_running = false;
         self.clock_started = None;
         self.clock_banked = Duration::ZERO;
+        // Back to 00:00 is a new text: let the room catch up once.
+        self.ensure_clock_tick(cx);
         cx.notify();
     }
 
@@ -4999,6 +5056,19 @@ fn prefer_second_translation(
 /// `true` when two Bible references address the same passage (pure:
 /// the Project-no-duplicates rule). Versification rides along — EN vs RU
 /// numbering can genuinely differ, so they are not the same passage.
+/// Whether the 250ms clock loop has work (pure, tested): a running
+/// countdown, or a visible overlay — even a static wall clock needs one
+/// publish so the room stops showing a stale time.
+fn clock_tick_active(running: bool, overlay: bool) -> bool {
+    running || overlay
+}
+
+/// Whether this tick must re-publish the room (pure, tested): the overlay
+/// is up and the displayed text moved since the last publish.
+fn clock_text_moved(overlay: bool, last: Option<&str>, now: &str) -> bool {
+    overlay && last != Some(now)
+}
+
 fn same_bible_ref(a: &vp_core::schema::BibleRef, b: &vp_core::schema::BibleRef) -> bool {
     a.translation_id == b.translation_id
         && a.book == b.book
@@ -5398,10 +5468,14 @@ impl Root {
                 div().w(px(220.)).child(self.alert_field.clone()),
                 btn(ui, cx, alert_btn, alert_on, |this, _, _, cx| {
                     this.alert_visible = !this.alert_visible;
+                    // An alert on/off change is wall content: re-publish so
+                    // the room follows instead of going stale.
+                    this.republish(cx);
                     cx.notify();
                 }),
                 btn(ui, cx, "Clear", false, |this, _, _, cx| {
                     this.alert_visible = false;
+                    this.republish(cx);
                     cx.notify();
                 }),
             ],
@@ -5418,6 +5492,9 @@ impl Root {
                     self.clock_overlay,
                     |this, _, _, cx| {
                         this.clock_overlay = !this.clock_overlay;
+                        // A static wall-clock overlay ticks too: start the
+                        // loop so the room follows (it sleeps once steady).
+                        this.ensure_clock_tick(cx);
                         cx.notify();
                     },
                 ),
@@ -9115,6 +9192,7 @@ impl Root {
                         self.alert_visible,
                         |this, _, _, cx| {
                             this.alert_visible = !this.alert_visible;
+                            this.republish(cx);
                             cx.notify();
                         },
                     ),
@@ -9933,5 +10011,30 @@ mod tests {
         assert!(!can_freeze(0));
         assert!(can_freeze(1));
         assert!(can_freeze(40));
+    }
+
+    #[test]
+    fn clock_loop_runs_while_there_is_time_to_show() {
+        // Countdown running, overlay on/off: the loop repaints control.
+        assert!(clock_tick_active(true, false));
+        assert!(clock_tick_active(true, true));
+        // Static wall-clock overlay with nothing running: one publish so
+        // the room stops showing a stale time, then the loop sleeps.
+        assert!(clock_tick_active(false, true));
+        // Nothing to show: no loop, no wakeups.
+        assert!(!clock_tick_active(false, false));
+    }
+
+    #[test]
+    fn room_republishes_only_when_its_clock_text_moves() {
+        // Overlay up, first sight: publish.
+        assert!(clock_text_moved(true, None, "00:04:59"));
+        // Same second (250ms loop, 1Hz text): stay quiet.
+        assert!(!clock_text_moved(true, Some("00:04:59"), "00:04:59"));
+        // Next second: publish once.
+        assert!(clock_text_moved(true, Some("00:04:59"), "00:04:58"));
+        // Overlay off: the room shows no clock — never publish for it.
+        assert!(!clock_text_moved(false, None, "00:04:59"));
+        assert!(!clock_text_moved(false, Some("00:04:59"), "00:04:58"));
     }
 }
