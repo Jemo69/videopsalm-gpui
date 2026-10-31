@@ -4045,16 +4045,15 @@ impl Root {
     }
 
     /// Clock wall-content changed (overlay flip, mode, duration, stop,
-    /// reset): if the room shows a clock, publish the new text now and make
-    /// sure the tick loop runs. When the overlay is off there is nothing
-    /// wall-visible to sync — a no-op by design.
+    /// reset): if the room shows a clock, publish the new text now. The
+    /// tick loop is always re-armed (it self-gates on running-or-overlay,
+    /// so this is a no-op when nothing needs it).
     fn resync_clock(&mut self, cx: &mut Context<Self>) {
-        if !self.clock_overlay {
-            return;
+        if self.clock_overlay {
+            let now = self.clock_display();
+            self.republish(cx);
+            self.last_published_clock = Some(now);
         }
-        let now = self.clock_display();
-        self.republish(cx);
-        self.last_published_clock = Some(now);
         self.ensure_clock_tick(cx);
     }
 
