@@ -307,6 +307,9 @@ impl Root {
                 this.sync_cascade_to_agenda();
                 this.agenda_dirty = true;
                 this.persist_layout_quiet();
+                // Reset re-inherits: the wall look changes, so the room
+                // follows (same class as per-attribute clear).
+                this.republish(cx);
                 this.set_status(
                     cx,
                     format!("{} reset — values re-inherit.", level_caption(level)),

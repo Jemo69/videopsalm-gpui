@@ -380,6 +380,9 @@ impl crate::Root {
     fn frame_drag_end(&mut self, cx: &mut Context<Self>) {
         if self.frame_drag.is_some() {
             self.frame_drag = None;
+            // The rect committed during the drag feeds the wall's body box:
+            // publish once at release (not per move) so the room lands it.
+            self.republish(cx);
             cx.notify();
         }
     }
