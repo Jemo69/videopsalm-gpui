@@ -127,7 +127,7 @@ const LOCALE_FR: &str = include_str!("../../locales/fr.json");
 // State
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Control,
     Projector,
@@ -3094,14 +3094,14 @@ impl Root {
     }
 
     /// Second translation for bilingual display (`None` = single). Pure
-    /// helper so the queue and project paths cannot disagree.
+    /// helper so the queue and project paths cannot disagree: the
+    /// operator's favorite first, else the first installed id.
     fn bilingual_other_translation(&self, current: &str) -> Option<String> {
         if !self.bilingual {
             return None;
         }
-        let mut ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
-        ids.sort();
-        ids.into_iter().find(|id| id != current)
+        let ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
+        prefer_second_translation(current, ids, &self.bibles.favorites)
     }
 
     /// `Project ⏵` — the one-press Bible path (Electron has `Show` +
@@ -3136,13 +3136,10 @@ impl Root {
             }
         };
         self.set_status(cx, format!("Projecting {header}"));
-        // `show_live` clears blank, selects, pushes the snapshot and
-        // publishes to the projector window + preview (WI-033) — then hand
-        // the operator's view straight back.
-        let mode = self.mode;
+        // `show_live` clears blank (announcing it), selects, pushes the
+        // snapshot and publishes to the projector window + preview (WI-033)
+        // and leaves the operator's view per `live_mode_target`.
         self.show_live(cx, idx);
-        self.mode = mode;
-        cx.notify();
     }
 
     /// Import a Bible translation via the OS picker (no typed path needed).
@@ -3375,8 +3372,8 @@ impl Root {
     fn show_live(&mut self, cx: &mut Context<Self>, item_idx: usize) {
         self.live_item = Some(item_idx);
         self.live_slide = 0;
-        self.blank = false;
-        self.mode = Mode::Projector;
+        self.wake_display(cx);
+        self.mode = live_mode_target(self.mode, self.projector_window.is_some());
         // Explicit show: project it now (WI-033).
         self.push_projection(cx);
         cx.notify();
@@ -3436,7 +3433,7 @@ impl Root {
                 self.live_slide = prev.saturating_sub(1);
             }
         }
-        self.blank = false;
+        self.wake_display(cx);
         if let Some(item_idx) = self.live_item {
             let slides = self.item_slides(item_idx);
             if let Some(cur) = slides.get(self.live_slide) {
@@ -3551,6 +3548,21 @@ impl Root {
         cx.notify();
     }
 
+    /// Wake the room display after a blackout: clear a `.`/Blank blackout
+    /// started earlier and SAY so — unblanking must never ride silently on
+    /// navigation (the operator blacked the room for a reason; the status
+    /// line is the receipt). Returns whether the room was black.
+    /// `go_live` keeps its own clear (it already reports every released
+    /// hold by name), every other navigation-caused clear routes here.
+    fn wake_display(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.blank {
+            return false;
+        }
+        self.blank = false;
+        self.set_status(cx, "Display on — room sees the live slide again.");
+        true
+    }
+
     /// `Escape`: end the presentation — back to the control view with the
     /// projector blanked.
     /// `Escape*` — ends the presentation, **but only in single-screen mode**.
@@ -3615,7 +3627,7 @@ impl Root {
             return;
         }
         self.live_slide = if to_end { n - 1 } else { 0 };
-        self.blank = false;
+        self.wake_display(cx);
         // Explicit jump: project it now (WI-033).
         self.push_projection(cx);
         cx.notify();
@@ -3688,7 +3700,7 @@ impl Root {
         let n = self.live_slides().len();
         if idx < n {
             self.live_slide = idx;
-            self.blank = false;
+            self.wake_display(cx);
             self.text_hidden = false;
             // Explicit click: project the slide now (WI-033).
             self.push_projection(cx);
@@ -3708,7 +3720,7 @@ impl Root {
         }
         let slides = self.item_slides(item_idx);
         self.live_slide = slide_idx.min(slides.len().saturating_sub(1));
-        self.blank = false;
+        self.wake_display(cx);
         // Footer/highlight follows the projected slide: song verse id from
         // the header, Bible verse number by text match.
         if let Some(cur) = slides.get(self.live_slide) {
@@ -3787,7 +3799,7 @@ impl Root {
             .position(|s| s.header.contains(&format!("— {want}")))
         {
             self.live_slide = slide_idx;
-            self.blank = false;
+            self.wake_display(cx);
             // Explicit jump: project it now (WI-033).
             self.push_projection(cx);
             cx.notify();
@@ -4933,6 +4945,38 @@ fn bible_agenda_item(
             ..Default::default()
         },
     }
+}
+
+/// Where Go-live leaves the operator's view (pure, tested): with a real
+/// projector window open the operator stays where they are — the room has
+/// its own window, so teleporting to the Projector tab is the "Ctrl+P
+/// leaves control" bug class through the Go-live door. Single-window
+/// fallback still visits the Projector tab so the room view stays visible,
+/// which also keeps the `*`-guarded Esc/`-` shortcuts armed mid-service.
+fn live_mode_target(current: Mode, projector_window_open: bool) -> Mode {
+    if projector_window_open {
+        current
+    } else {
+        Mode::Projector
+    }
+}
+
+/// Pick the bilingual second translation (pure, tested): the operator's
+/// favorite when one is installed and isn't the current translation, else
+/// the first installed id that isn't current. Never the current twice.
+fn prefer_second_translation(
+    current: &str,
+    mut ids: Vec<String>,
+    favorites: &[String],
+) -> Option<String> {
+    ids.sort();
+    if let Some(fav) = favorites
+        .iter()
+        .find(|f| f.as_str() != current && ids.iter().any(|id| id == *f))
+    {
+        return Some(fav.clone());
+    }
+    ids.into_iter().find(|id| id != current)
 }
 
 /// `true` when two Bible references address the same passage (pure:
@@ -9800,5 +9844,45 @@ mod tests {
             ..r.clone()
         };
         assert!(!same_bible_ref(&r, &ru));
+    }
+
+    #[test]
+    fn go_live_stays_put_with_a_window_open() {
+        // Dual-screen: the room has its own window, so Go-live must not
+        // teleport the operator (the Ctrl+P bug class through the Go-live
+        // door). Single-window fallback still visits the Projector tab so
+        // the room view — and the `*`-guarded shortcuts — stay live.
+        for stayed in [Mode::Control, Mode::Projector, Mode::Stage] {
+            assert_eq!(live_mode_target(stayed, true), stayed);
+        }
+        for from in [Mode::Control, Mode::Stage] {
+            assert_eq!(live_mode_target(from, false), Mode::Projector);
+        }
+    }
+
+    #[test]
+    fn bilingual_second_prefers_the_favorite() {
+        let ids = vec!["ASV".to_string(), "KJV".to_string()];
+        // Favorite wins over alphabetical-first.
+        assert_eq!(
+            prefer_second_translation("KJV", ids.clone(), &["ASV".to_string()]),
+            Some("ASV".to_string())
+        );
+        // ...but never the current translation, even when favorited.
+        assert_eq!(
+            prefer_second_translation("KJV", ids.clone(), &["KJV".to_string()]),
+            Some("ASV".to_string())
+        );
+        // No favorite installed: first sorted id that isn't current.
+        assert_eq!(
+            prefer_second_translation("ASV", ids.clone(), &[]),
+            Some("KJV".to_string())
+        );
+        // Nothing else installed: single translation, honestly None.
+        assert_eq!(
+            prefer_second_translation("KJV", vec!["KJV".to_string()], &[]),
+            None
+        );
+        assert_eq!(prefer_second_translation("KJV", vec![], &[]), None);
     }
 }
