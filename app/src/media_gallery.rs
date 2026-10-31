@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{App, Context, Div, MouseButton, ObjectFit, ScrollHandle, Window, div, img, px};
+use gpui::{App, Context, Div, MouseButton, ObjectFit, Rgba, ScrollHandle, Window, div, img, px, rgb};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
 use vp_core::schema::{BackgroundKind, BgFit};
@@ -424,6 +424,11 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     let positions = GalleryState::visible_positions(total, file_limit, assigned_pos);
     let shown_files = positions.len();
     for i in positions {
+        // Compact tile number = 1-based match position (stable under the
+        // filter): tiles stay distinguishable without filenames, and the
+        // operator can say "click 7". The pinned assigned entry keeps its
+        // true number, not its strip slot.
+        let n = i + 1;
         let (id, caption, assigned, path) = &entries[i];
         if expanded {
             thumbs.push(thumb_btn(
@@ -444,6 +449,7 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
                 caption,
                 *assigned,
                 path.as_deref(),
+                n,
             ));
         }
     }
@@ -706,7 +712,8 @@ fn thumb_btn(
 
 /// Compact thumbnail: small preview ONLY, no filename (operator request
 /// for large libraries: "small preview not name of the file"). The
-/// filename survives as a hover tooltip (a11y + parity) and captions return
+/// filename survives as a hover tooltip (a11y + parity), `n` (1-based match
+/// position) keeps tiles distinguishable without names, and captions return
 /// in the expanded grid. Same 112×63 preview so compact and expanded tiles
 /// align when the arrow flips.
 fn thumb_compact(
@@ -717,9 +724,11 @@ fn thumb_compact(
     caption: &str,
     assigned: bool,
     thumb: Option<&Path>,
+    n: usize,
 ) -> Div {
     let id_owned = id.to_string();
     let tip = caption.to_string();
+    let badge = format!("{n}");
     if kind == MediaFileKind::Image
         && let Some(p) = thumb
         && p.exists()
@@ -739,11 +748,35 @@ fn thumb_compact(
         } else {
             cell.border_1().border_color(ui.border)
         };
+        // Position badge overlaid top-left: the tile stays nameless but
+        // countable ("click 7"), and the pinned assigned entry shows its
+        // true match number.
         cell = cell.child(
-            img(file)
-                .object_fit(ObjectFit::Cover)
-                .w(px(112.))
-                .h(px(63.)),
+            div()
+                .relative()
+                .child(
+                    img(file)
+                        .object_fit(ObjectFit::Cover)
+                        .w(px(112.))
+                        .h(px(63.)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(2.))
+                        .left(px(2.))
+                        .px(px(5.))
+                        .rounded_sm()
+                        .bg(Rgba {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.65,
+                        })
+                        .text_size(px(10.))
+                        .text_color(rgb(0xFFFFFF))
+                        .child(badge),
+                ),
         );
         // Hover tooltip carries the filename the tile hides.
         cell.interactivity().tooltip(
@@ -756,13 +789,13 @@ fn thumb_compact(
             }),
         );
     }
-    // Videos + missing files: compact glyph tile with the filename on
+    // Videos + missing files: numbered glyph tile with the filename on
     // hover — bare "▶" tiles are otherwise indistinguishable.
     let glyph = match kind {
-        MediaFileKind::Image => "▦",
-        MediaFileKind::Video => "▶",
+        MediaFileKind::Image => format!("▦ {n}"),
+        MediaFileKind::Video => format!("▶ {n}"),
     };
-    btn_tip(ui, cx, glyph, caption, assigned, move |this, _, _, cx| {
+    btn_tip(ui, cx, &glyph, caption, assigned, move |this, _, _, cx| {
         assign_pick(this, cx, kind, &id_owned);
     })
 }
