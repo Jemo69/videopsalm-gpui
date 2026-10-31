@@ -1219,7 +1219,6 @@ impl Root {
                 .videos()
                 .map(|e| e.path.to_string_lossy().into_owned())
                 .collect(),
-            gallery_expanded: self.galleries.expanded,
             gallery_keep_open: self.galleries.keep_open,
         }
     }
@@ -1317,7 +1316,6 @@ impl Root {
             self.aspect_ratio = p.aspect_ratio.clone();
         }
         self.projector_display = p.projector_display;
-        self.galleries.expanded = p.gallery_expanded;
         self.galleries.keep_open = p.gallery_keep_open;
     }
 
@@ -5682,99 +5680,32 @@ impl Root {
         // Image group: up to 5 file-name buttons (click = assign) + Browse +
         // Cover/Contain fit. Original shows thumbnail strips; v1 shows
         // captions (no thumbnail cache) which is the documented gallery UI.
-        let mut image_kids: Vec<Div> = Vec::new();
-        let images: Vec<(String, String, bool)> = self
-            .galleries
-            .filtered_images()
-            .into_iter()
-            .take(5)
-            .map(|e| {
-                let name = e
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| e.id.clone());
-                let assigned = self.bg_file.as_deref() == Some(e.path.as_path());
-                (e.id.clone(), name, assigned)
-            })
-            .collect();
-        if images.is_empty() {
-            image_kids.push(label(ui, "No images yet", 11.));
-        } else {
-            for (id, name, assigned) in images {
-                let short: String = name.chars().take(14).collect();
-                image_kids.push(btn(ui, cx, &short, assigned, move |this, _, _, cx| {
-                    media_gallery::assign_pick(this, cx, MediaFileKind::Image, &id);
-                }));
-            }
-        }
-        image_kids.push(btn(
+        // Image group: the compact 2×5 strip (numbered previews, no
+        // filenames) + ▾ arrow into the full gallery below. The strip lives
+        // in `media_gallery` next to the panel so the two cannot disagree
+        // about filtering, pinning or assignment.
+        let image_group = group(
             ui,
-            cx,
-            "Browse…",
-            false,
-            |this, _, _, cx| {
-                media_gallery::browse_assign_background(this, cx);
-            },
-        ));
-        image_kids.push(btn(
+            "Image",
+            vec![media_gallery::gallery_strip(
+                self,
+                ui,
+                cx,
+                MediaFileKind::Image,
+            )],
+        );
+        // Video group: same shape, video kinds (leading ■ sentinel
+        // unassigns back to Base).
+        let video_group = group(
             ui,
-            cx,
-            "Cover",
-            self.bg_fit == BgFit::Cover,
-            |this, _, _, cx| {
-                this.bg_fit = BgFit::Cover;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
-        image_kids.push(btn(
-            ui,
-            cx,
-            "Contain",
-            self.bg_fit == BgFit::Contain,
-            |this, _, _, cx| {
-                this.bg_fit = BgFit::Contain;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
-        // Video group: same shape, video kinds.
-        let mut video_kids: Vec<Div> = Vec::new();
-        let videos: Vec<(String, String, bool)> = self
-            .galleries
-            .filtered_videos()
-            .into_iter()
-            .take(5)
-            .map(|e| {
-                let name = e
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| e.id.clone());
-                let assigned = self.bg_file.as_deref() == Some(e.path.as_path());
-                (e.id.clone(), name, assigned)
-            })
-            .collect();
-        if videos.is_empty() {
-            video_kids.push(label(ui, "No videos yet", 11.));
-        } else {
-            for (id, name, assigned) in videos {
-                let short: String = name.chars().take(14).collect();
-                video_kids.push(btn(ui, cx, &short, assigned, move |this, _, _, cx| {
-                    media_gallery::assign_pick(this, cx, MediaFileKind::Video, &id);
-                }));
-            }
-        }
-        video_kids.push(btn(
-            ui,
-            cx,
-            "Browse…",
-            false,
-            |this, _, _, cx| {
-                media_gallery::browse_assign_background(this, cx);
-            },
-        ));
+            "Video",
+            vec![media_gallery::gallery_strip(
+                self,
+                ui,
+                cx,
+                MediaFileKind::Video,
+            )],
+        );
         // Brightness group: sun + steppers (Luminosité at Images level).
         let mut bright_kids: Vec<Div> = vec![
             btn(ui, cx, "☀ -", false, |this, _, _, cx| {
@@ -5811,16 +5742,28 @@ impl Root {
                 cx.notify();
             }));
         }
-        div()
+        let groups_row = div()
             .flex()
             .flex_row()
             .gap_2()
             .items_start()
-            .child(group(ui, "Image", image_kids))
-            .child(group(ui, "Video", video_kids))
+            .child(image_group)
+            .child(video_group)
             .child(group(ui, "Brightness", bright_kids))
             .child(group(ui, &self.t("animation"), anim_kids))
-            .child(group(ui, "Aspect ratio", aspect_kids))
+            .child(group(ui, "Aspect ratio", aspect_kids));
+        // The open gallery drops its full panel (search, captioned grid,
+        // the seven-row control stack) under the strips; picking assigns
+        // and collapses back unless pinned.
+        match self.galleries.open {
+            Some(kind) => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(groups_row)
+                .child(media_gallery::gallery_panel(self, ui, cx, kind)),
+            None => groups_row,
+        }
     }
 
     fn format_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
