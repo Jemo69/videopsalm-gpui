@@ -5678,12 +5678,9 @@ impl Root {
     /// so the tab never reads as broken when the library is empty.
     fn background_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         // Image group: the compact 2×5 strip (real thumbnails, numbered,
-        // no filenames) + Cover/Contain fit. Full captions live in the open
-        // panel below, which is the documented gallery UI.
-        // Image group: the compact 2×5 strip (numbered previews, no
-        // filenames) + ▾ arrow into the full gallery below. The strip lives
-        // in `media_gallery` next to the panel so the two cannot disagree
-        // about filtering, pinning or assignment.
+        // no filenames) + ▾ arrow into the full gallery below. The strip
+        // lives in `media_gallery` next to the panel so the two cannot
+        // disagree about filtering, pinning or assignment.
         let image_group = group(
             ui,
             "Image",
