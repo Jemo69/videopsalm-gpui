@@ -207,17 +207,6 @@ impl GalleryState {
         out
     }
 
-    /// How many library entries the grid shows in this mode (pure, tested).
-    /// The video black sentinel (§7) is extra — it never counts against the
-    /// cap because it is not a file.
-    pub fn visible_limit(total: usize, expanded: bool) -> usize {
-        let cap = if expanded {
-            Self::GRID_CAP
-        } else {
-            Self::COMPACT_CAP
-        };
-        total.min(cap)
-    }
 }
 
 /// Read the gallery folder label (Explore-folder row).
@@ -1313,19 +1302,22 @@ mod tests {
 
     #[test]
     fn compact_defaults_to_two_by_five_with_full_grid_on_expand() {
-        // Vendor §9 + operator report: collapsed = 2 rows × 5 small
-        // previews (no names); the arrow expands to the full captioned grid.
+        // Operator ask on the vendor §9 collapsed/expanded shape: collapsed
+        // = 2 rows × 5 small previews (no names); the arrow expands to the
+        // full captioned grid (capped for speed, Search narrows the rest).
         let s = GalleryState::default();
         assert!(!s.expanded, "compact is the default — large libraries stay calm");
         assert_eq!(GalleryState::COMPACT_CAP, 10, "2 rows × 5");
         assert_eq!(GalleryState::GRID_CAP, 60);
-        assert_eq!(GalleryState::visible_limit(0, false), 0);
-        assert_eq!(GalleryState::visible_limit(8, false), 8);
-        assert_eq!(GalleryState::visible_limit(10, false), 10);
-        assert_eq!(GalleryState::visible_limit(11, false), 10, "compact clamps");
-        assert_eq!(GalleryState::visible_limit(200, false), 10);
-        assert_eq!(GalleryState::visible_limit(200, true), 60, "expanded caps for speed");
-        assert_eq!(GalleryState::visible_limit(25, true), 25);
+        // Per-kind compact budgets (video leaves a cell for the sentinel).
+        assert_eq!(GalleryState::compact_file_limit(MediaFileKind::Image), 10);
+        assert_eq!(GalleryState::compact_file_limit(MediaFileKind::Video), 9);
+        // Rendered sets clamp: compact clamps, expanded caps for speed.
+        assert!(GalleryState::visible_positions(0, 10, None).is_empty());
+        assert_eq!(GalleryState::visible_positions(8, 10, None).len(), 8);
+        assert_eq!(GalleryState::visible_positions(200, 10, None).len(), 10);
+        assert_eq!(GalleryState::visible_positions(200, 60, None).len(), 60);
+        assert_eq!(GalleryState::visible_positions(25, 60, None).len(), 25);
     }
 
     #[test]
