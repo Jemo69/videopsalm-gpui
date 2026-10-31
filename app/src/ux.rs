@@ -724,6 +724,7 @@ pub enum BibleSearch {
 
 impl BibleSearch {
     /// The other mode — what the magnifier button switches to.
+    #[allow(dead_code)] // kept for magnifier-button rewire
     pub fn toggled(self) -> BibleSearch {
         match self {
             BibleSearch::Reference => BibleSearch::Keyword,

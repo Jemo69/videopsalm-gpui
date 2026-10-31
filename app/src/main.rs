@@ -1662,6 +1662,7 @@ impl Root {
     }
 
     /// Projected slide index holding a Bible verse's text snippet.
+    #[allow(dead_code)] // CENTER Bible-row click handler, kept for rewire
     fn slide_for_bible_text(&self, slides: &[Slide], verse_text: &str) -> Option<usize> {
         let text = verse_text.trim();
         if text.is_empty() {
@@ -1701,6 +1702,7 @@ impl Root {
     }
 
     /// Click a CENTER Bible row: re-include when unchecked, then project.
+    #[allow(dead_code)] // kept for CENTER Bible-row rewire
     fn goto_bible_verse(
         &mut self,
         cx: &mut Context<Self>,
@@ -4891,6 +4893,7 @@ fn viewer_chrome_visible(viewer_mode: bool) -> bool {
 }
 
 impl Root {
+    #[allow(dead_code)] // legacy top bar, kept for rewire
     fn topbar(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let mode = self.mode;
         div()

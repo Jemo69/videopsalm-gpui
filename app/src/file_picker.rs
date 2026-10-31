@@ -25,6 +25,7 @@ pub fn pick_file(title: &str, filters: &[(&str, &[&str])]) -> Option<PathBuf> {
 
 /// Pick a folder (gallery folders, the VideoPsalm document folder).
 /// Starts in the VideoPsalm folder when one is known.
+#[allow(dead_code)] // gallery-folder picker, kept for rewire
 pub fn pick_folder(title: &str) -> Option<PathBuf> {
     let mut dlg = rfd::FileDialog::new().set_title(title);
     if let Some(start) = videopsalm_start_dir() {
