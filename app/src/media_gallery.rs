@@ -77,6 +77,10 @@ pub struct GalleryState {
     /// inside its own bounded box instead of clipping.
     pub scroll_images: ScrollHandle,
     pub scroll_videos: ScrollHandle,
+    /// The open panel's own scroller: the ribbon never scrolls, so a tall
+    /// panel (grid + seven-row stack) gets a bounded box of its own instead
+    /// of crushing the editor below on short windows.
+    pub scroll_panel: ScrollHandle,
 }
 
 impl Default for GalleryState {
@@ -92,6 +96,7 @@ impl Default for GalleryState {
             folder: None,
             scroll_images: ScrollHandle::new(),
             scroll_videos: ScrollHandle::new(),
+            scroll_panel: ScrollHandle::new(),
         }
     }
 }
@@ -330,6 +335,7 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         .min_h_0()
         .id(scroll_id)
         .overflow_y_scroll()
+        .overflow_x_scroll()
         .track_scroll(&handle)
         .max_h(px(max_h))
         .children(thumbs);
@@ -553,6 +559,7 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         .min_h_0()
         .id(scroll_id)
         .overflow_y_scroll()
+        .overflow_x_scroll()
         .track_scroll(&handle)
         .max_h(px(184.))
         .children(thumbs);

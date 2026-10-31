@@ -5677,9 +5677,9 @@ impl Root {
     /// a panel below. Empty galleries show a one-line way in (Browse…)
     /// so the tab never reads as broken when the library is empty.
     fn background_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        // Image group: up to 5 file-name buttons (click = assign) + Browse +
-        // Cover/Contain fit. Original shows thumbnail strips; v1 shows
-        // captions (no thumbnail cache) which is the documented gallery UI.
+        // Image group: the compact 2×5 strip (real thumbnails, numbered,
+        // no filenames) + Cover/Contain fit. Full captions live in the open
+        // panel below, which is the documented gallery UI.
         // Image group: the compact 2×5 strip (numbered previews, no
         // filenames) + ▾ arrow into the full gallery below. The strip lives
         // in `media_gallery` next to the panel so the two cannot disagree
@@ -5754,14 +5754,28 @@ impl Root {
             .child(group(ui, "Aspect ratio", aspect_kids));
         // The open gallery drops its full panel (search, captioned grid,
         // the seven-row control stack) under the strips; picking assigns
-        // and collapses back unless pinned.
+        // and collapses back unless pinned. The panel gets its own bounded
+        // scroller (the ribbon never scrolls): without it ~800px of chrome
+        // crushes the editor on short windows.
+        let panel_scroll = self.galleries.scroll_panel.clone();
         match self.galleries.open {
             Some(kind) => div()
                 .flex()
                 .flex_col()
                 .gap_2()
                 .child(groups_row)
-                .child(media_gallery::gallery_panel(self, ui, cx, kind)),
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .id("gallery-panel-scroll")
+                        .overflow_y_scroll()
+                        .track_scroll(&panel_scroll)
+                        .max_h(px(460.))
+                        .child(media_gallery::gallery_panel(self, ui, cx, kind)),
+                ),
             None => groups_row,
         }
     }
