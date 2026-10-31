@@ -43,6 +43,7 @@ pub fn slide_count(document: &str) -> usize {
 /// `true` when any verse in the document renders as a blank slide — the
 /// single-space idiom. Surfaced in the editor so an empty slide is explained
 /// rather than mysterious.
+#[allow(dead_code)] // editor explanation hook, kept for rewire
 pub fn has_empty_slide(document: &str) -> bool {
     split_verses(document)
         .iter()
@@ -66,6 +67,7 @@ pub struct VerseBlock {
 impl VerseBlock {
     /// `true` when this verse has no visible text at all — the "single space"
     /// case, which projects as a genuinely empty slide.
+    #[allow(dead_code)] // kept for editor rewire
     pub fn is_empty_slide(&self) -> bool {
         self.lines.iter().all(|l| l.trim().is_empty())
     }

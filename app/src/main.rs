@@ -1696,6 +1696,7 @@ impl Root {
     }
 
     /// Projected slide index holding a Bible verse's text snippet.
+    #[allow(dead_code)] // CENTER Bible-row click handler, kept for rewire
     fn slide_for_bible_text(&self, slides: &[Slide], verse_text: &str) -> Option<usize> {
         let text = verse_text.trim();
         if text.is_empty() {
@@ -1735,6 +1736,7 @@ impl Root {
     }
 
     /// Click a CENTER Bible row: re-include when unchecked, then project.
+    #[allow(dead_code)] // kept for CENTER Bible-row rewire
     fn goto_bible_verse(
         &mut self,
         cx: &mut Context<Self>,
@@ -4060,6 +4062,7 @@ impl Root {
 
     // ------------------------------------------------------------- export
 
+    #[allow(dead_code)] // export actions, kept for menu rewire
     fn print_booklet(&mut self, cx: &mut Context<Self>) {
         // The booklet prints songs: resolve the songs chain, same as the
         // projector does for song items.
@@ -4107,6 +4110,7 @@ impl Root {
         }
     }
 
+    #[allow(dead_code)] // kept for menu rewire
     fn import_pptx(&mut self, cx: &mut Context<Self>) {
         let path = self.pptx_field.read(cx).text();
         match std::fs::read(path.trim()) {
@@ -5106,6 +5110,7 @@ fn viewer_chrome_visible(viewer_mode: bool) -> bool {
 }
 
 impl Root {
+    #[allow(dead_code)] // legacy top bar, kept for rewire
     fn topbar(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let mode = self.mode;
         div()
@@ -5594,6 +5599,7 @@ impl Root {
         )
     }
 
+    #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
     fn utility_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         div()
             .flex()
@@ -8890,6 +8896,7 @@ impl Root {
             ]))
     }
 
+    #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
     fn live_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let slides = self.live_slides();
         let n = slides.len();
@@ -9536,6 +9543,19 @@ unsafe extern "system" {
     fn AttachConsole(dwProcessId: u32) -> i32;
 }
 
+/// Clamp the boot window to the available display, keeping a margin for
+/// OS chrome/taskbar. Found by boaz headless testing: the hardcoded
+/// 1500x950 opens at -108,-75 (overflowing) on any display smaller than
+/// itself, e.g. 1280x800. Pure so unit tests pin it without a GPU/display.
+fn clamp_boot_size(want: (f32, f32), avail: (f32, f32)) -> (f32, f32) {
+    const MARGIN: f32 = 64.0;
+    const MIN: (f32, f32) = (800.0, 600.0);
+    (
+        want.0.min((avail.0 - MARGIN).max(MIN.0)),
+        want.1.min((avail.1 - MARGIN).max(MIN.1)),
+    )
+}
+
 fn main() {
     // Crash diagnostics first: on Windows GUI builds there is no console,
     // so without this a panic is a silent vanishing act (WI-029).
@@ -9576,7 +9596,17 @@ fn main() {
             cx.bind_keys([KeyBinding::new("ctrl-q", QuitApp, None)]);
             cx.on_action(|_: &QuitApp, cx| cx.quit());
 
-            let bounds = Bounds::centered(None, size(px(1500.), px(950.)), cx);
+            let avail = cx
+                .displays()
+                .into_iter()
+                .next()
+                .map(|d| {
+                    let s = d.bounds().size;
+                    (f32::from(s.width), f32::from(s.height))
+                })
+                .unwrap_or((1500., 950.));
+            let (boot_w, boot_h) = clamp_boot_size((1500., 950.), avail);
+            let bounds = Bounds::centered(None, size(px(boot_w), px(boot_h)), cx);
             // OS chrome carries the agenda name, like the original's
             // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
             // Same sample Root::build opens, so the two can never disagree.
@@ -9605,6 +9635,25 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_size_keeps_default_on_large_display() {
+        assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn boot_size_clamps_to_small_display() {
+        // boaz headless screen: 1280x800 must not open a 1500x950 window.
+        assert_eq!(
+            clamp_boot_size((1500., 950.), (1280., 800.)),
+            (1216., 736.)
+        );
+    }
+
+    #[test]
+    fn boot_size_floors_on_tiny_display() {
+        assert_eq!(clamp_boot_size((1500., 950.), (400., 300.)), (800., 600.));
+    }
 
     fn test_song(id: &str, book: &str) -> Song {
         Song {
