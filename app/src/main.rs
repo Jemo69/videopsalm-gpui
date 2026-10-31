@@ -3135,11 +3135,13 @@ impl Root {
                 self.agenda.items.len() - 1
             }
         };
-        self.set_status(cx, format!("Projecting {header}"));
-        // `show_live` clears blank (announcing it), selects, pushes the
-        // snapshot and publishes to the projector window + preview (WI-033)
-        // and leaves the operator's view per `live_mode_target`.
+        // `show_live` wakes the display (announcing it when the room was
+        // black), selects, pushes the snapshot and publishes to the
+        // projector window + preview (WI-033), leaving the operator's view
+        // per `live_mode_target`. The "Projecting" receipt goes LAST so a
+        // just-lifted blackout never overwrites it with the unblank note.
         self.show_live(cx, idx);
+        self.set_status(cx, format!("Projecting {header}"));
     }
 
     /// Import a Bible translation via the OS picker (no typed path needed).
@@ -3551,16 +3553,20 @@ impl Root {
     /// Wake the room display after a blackout: clear a `.`/Blank blackout
     /// started earlier and SAY so — unblanking must never ride silently on
     /// navigation (the operator blacked the room for a reason; the status
-    /// line is the receipt). Returns whether the room was black.
-    /// `go_live` keeps its own clear (it already reports every released
-    /// hold by name), every other navigation-caused clear routes here.
-    fn wake_display(&mut self, cx: &mut Context<Self>) -> bool {
+    /// line is the receipt). Re-publishes like `toggle_base`: display flags
+    /// obey even under a freeze hold, while `push_projection` (which the
+    /// caller runs next) deliberately withholds slide changes under freeze.
+    /// Without this the receipt would lie — "Display on" while the wall
+    /// stays black until the freeze releases. `go_live` keeps its own
+    /// clear (it already reports every released hold by name); every other
+    /// navigation-caused clear routes here.
+    fn wake_display(&mut self, cx: &mut Context<Self>) {
         if !self.blank {
-            return false;
+            return;
         }
         self.blank = false;
         self.set_status(cx, "Display on — room sees the live slide again.");
-        true
+        self.republish(cx);
     }
 
     /// `Escape`: end the presentation — back to the control view with the
@@ -4951,8 +4957,9 @@ fn bible_agenda_item(
 /// projector window open the operator stays where they are — the room has
 /// its own window, so teleporting to the Projector tab is the "Ctrl+P
 /// leaves control" bug class through the Go-live door. Single-window
-/// fallback still visits the Projector tab so the room view stays visible,
-/// which also keeps the `*`-guarded Esc/`-` shortcuts armed mid-service.
+/// fallback still visits the Projector tab so the room view stays visible;
+/// being in the projector view is also what arms the `*` guard, so a stray
+/// Esc/`-` mid-service stays disabled while projecting.
 fn live_mode_target(current: Mode, projector_window_open: bool) -> Mode {
     if projector_window_open {
         current
