@@ -1002,6 +1002,8 @@ impl Root {
                 if emitter == this.clock_field {
                     if let Ok(secs) = ev.text.trim().parse::<u64>() {
                         this.clock_total_secs = secs;
+                        // New total while the room shows it: publish now.
+                        this.resync_clock(cx);
                         cx.notify();
                     }
                 }
@@ -4044,6 +4046,19 @@ impl Root {
         }
     }
 
+    /// Clock wall-content changed (overlay flip, mode, duration, stop,
+    /// reset): if the room shows a clock, publish the new text now and make
+    /// sure the tick loop runs. When the overlay is off there is nothing
+    /// wall-visible to sync — a no-op by design.
+    fn resync_clock(&mut self, cx: &mut Context<Self>) {
+        if !self.clock_overlay {
+            return;
+        }
+        self.republish(cx);
+        self.last_published_clock = Some(self.clock_display());
+        self.ensure_clock_tick(cx);
+    }
+
     /// Spawn the 250ms tick loop unless one already runs. Each tick repaints
     /// control AND re-publishes the room snapshot while the clock overlay
     /// is on and its text moved: without this the room's clock freezes at
@@ -4102,8 +4117,8 @@ impl Root {
             self.clock_banked = self.elapsed();
             self.clock_running = false;
             self.clock_started = None;
-            // The frozen banked text is new: let the room catch up once.
-            self.ensure_clock_tick(cx);
+            // The frozen banked text is new: publish it now if shown.
+            self.resync_clock(cx);
             cx.notify();
         }
     }
@@ -4112,8 +4127,8 @@ impl Root {
         self.clock_running = false;
         self.clock_started = None;
         self.clock_banked = Duration::ZERO;
-        // Back to 00:00 is a new text: let the room catch up once.
-        self.ensure_clock_tick(cx);
+        // Back to 00:00 is a new text: publish it now if shown.
+        self.resync_clock(cx);
         cx.notify();
     }
 
@@ -5492,9 +5507,17 @@ impl Root {
                     self.clock_overlay,
                     |this, _, _, cx| {
                         this.clock_overlay = !this.clock_overlay;
-                        // A static wall-clock overlay ticks too: start the
-                        // loop so the room follows (it sleeps once steady).
-                        this.ensure_clock_tick(cx);
+                        if this.clock_overlay {
+                            // New clock on the wall: publish now, loop after.
+                            this.resync_clock(cx);
+                        } else {
+                            // Removing the clock is wall content too: the
+                            // tick loop's overlay-off gate is correctly
+                            // false, so without this publish the room would
+                            // keep the last clock forever.
+                            this.last_published_clock = None;
+                            this.republish(cx);
+                        }
                         cx.notify();
                     },
                 ),
@@ -5523,6 +5546,7 @@ impl Root {
                     self.clock_mode == ClockMode::Countdown,
                     |this, _, _, cx| {
                         this.clock_mode = ClockMode::Countdown;
+                        cx.notify();this.resync_clock(cx);
                         cx.notify();
                     },
                 ),
@@ -5601,10 +5625,12 @@ impl Root {
                     label(ui, "clock mode:", 12.),
                     btn(ui, cx, "clock", self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
                         this.clock_mode = ClockMode::Clock;
+                        cx.notify();this.resync_clock(cx);
                         cx.notify();
                     }),
                     btn(ui, cx, "stopwatch", self.clock_mode == ClockMode::Stopwatch, |this, _, _, cx| {
                         this.clock_mode = ClockMode::Stopwatch;
+                        cx.notify();this.resync_clock(cx);
                         cx.notify();
                     }),
                     btn(ui, cx, "whole-song stage", self.whole_song_stage, |this, _, _, cx| {
@@ -9210,6 +9236,7 @@ impl Root {
                         self.clock_mode == ClockMode::Clock,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Clock;
+                            cx.notify();this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -9220,6 +9247,7 @@ impl Root {
                         self.clock_mode == ClockMode::Countdown,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Countdown;
+                            cx.notify();this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -9230,6 +9258,7 @@ impl Root {
                         self.clock_mode == ClockMode::Stopwatch,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Stopwatch;
+                            cx.notify();this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -10033,7 +10062,9 @@ mod tests {
         assert!(!clock_text_moved(true, Some("00:04:59"), "00:04:59"));
         // Next second: publish once.
         assert!(clock_text_moved(true, Some("00:04:59"), "00:04:58"));
-        // Overlay off: the room shows no clock — never publish for it.
+        // Overlay off: no TEXT republish from the tick (the room shows no
+        // clock). The overlay flip itself still republishes once — via the
+        // toggle handler, not this helper — so a hidden clock never sticks.
         assert!(!clock_text_moved(false, None, "00:04:59"));
         assert!(!clock_text_moved(false, Some("00:04:59"), "00:04:58"));
     }
