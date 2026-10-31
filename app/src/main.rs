@@ -4953,6 +4953,14 @@ fn bible_agenda_item(
     }
 }
 
+/// Whether a freeze hold is meaningful right now (pure, tested): freezing
+/// with no projected slide stores `Some((None, 0))` — a frozen BLACK frame
+/// that later makes `wake_display` lie ("Display on" over a black wall
+/// with pushes still withheld). The freeze button refuses instead.
+fn can_freeze(projected_slide_count: usize) -> bool {
+    projected_slide_count > 0
+}
+
 /// Where Go-live leaves the operator's view (pure, tested): with a real
 /// projector window open the operator stays where they are — the room has
 /// its own window, so teleporting to the Projector tab is the "Ctrl+P
@@ -8607,6 +8615,12 @@ impl Root {
             // Releasing the hold re-syncs to live (WI-033).
             self.push_projection(cx);
             self.set_status(cx, "Projection live again.");
+        } else if !can_freeze(self.projected_slides.len()) {
+            // Nothing on the wall yet: engaging would store
+            // `Some((None, 0))` — a frozen BLACK frame that later makes
+            // `wake_display` lie ("Display on" over a black wall with
+            // pushes still withheld). Refuse with a status line instead.
+            self.set_status(cx, "Nothing projected — freeze needs a live slide first.");
         } else {
             // The hold freezes the *projected* snapshot, not the live
             // selection (WI-033): mid-edit typing cannot leak onto it.
@@ -9891,5 +9905,15 @@ mod tests {
             None
         );
         assert_eq!(prefer_second_translation("KJV", vec![], &[]), None);
+    }
+
+    #[test]
+    fn freeze_refuses_with_nothing_on_the_wall() {
+        // Freezing with no projected slide stores `Some((None, 0))` — a
+        // frozen BLACK frame that later makes `wake_display` lie. The
+        // button refuses instead; unfreezing is always allowed (releases).
+        assert!(!can_freeze(0));
+        assert!(can_freeze(1));
+        assert!(can_freeze(40));
     }
 }
