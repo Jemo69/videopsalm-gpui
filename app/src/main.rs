@@ -127,7 +127,7 @@ const LOCALE_FR: &str = include_str!("../../locales/fr.json");
 // State
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Control,
     Projector,
@@ -1219,6 +1219,7 @@ impl Root {
                 .videos()
                 .map(|e| e.path.to_string_lossy().into_owned())
                 .collect(),
+            gallery_keep_open: self.galleries.keep_open,
         }
     }
 
@@ -1315,6 +1316,7 @@ impl Root {
             self.aspect_ratio = p.aspect_ratio.clone();
         }
         self.projector_display = p.projector_display;
+        self.galleries.keep_open = p.gallery_keep_open;
     }
 
     /// True while the shield is armed: browsing songs must not repopulate the
@@ -3078,29 +3080,81 @@ impl Root {
 
     fn add_bible_to_agenda(&mut self, cx: &mut Context<Self>) {
         if let Some(r) = self.biref.clone() {
-            let mut overrides = vp_core::schema::ItemOverrides::default();
-            if self.bilingual {
-                let ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
-                if let Some(other) = ids.iter().find(|id| **id != r.translation_id) {
-                    overrides.second_translation_id = Some(other.clone());
-                }
-            }
-            let id = agenda_ops::new_id("item");
-            self.agenda.items.push(AgendaItem {
-                id,
-                kind: ItemKind::BibleVerses,
-                title: format_header(&r),
-                reference: ItemRef::Bible {
-                    bible_ref: r.clone(),
-                },
-                flow_type: FlowType::Manual,
-                auto_advance_ms: None,
-                overrides,
-            });
+            let other = self.bilingual_other_translation(&r.translation_id);
+            let item = bible_agenda_item(&r, other);
+            let title = item.title.clone();
+            self.agenda.items.push(item);
             self.sel_item = Some(self.agenda.items.len() - 1);
-            self.set_status(cx, format!("Added {}", format_header(&r)));
+            self.set_status(cx, format!("Added {title}"));
         } else {
             self.set_status(cx, "No valid Bible reference to add.");
+        }
+    }
+
+    /// Second translation for bilingual display (`None` = single). Pure
+    /// helper so the queue and project paths cannot disagree: the
+    /// operator's favorite first, else the first installed id.
+    fn bilingual_other_translation(&self, current: &str) -> Option<String> {
+        if !self.bilingual {
+            return None;
+        }
+        let ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
+        prefer_second_translation(current, ids, &self.bibles.favorites)
+    }
+
+    /// `Project ⏵` — the one-press Bible path (Electron has `Show` +
+    /// `Project ⏵`: render-then-push without queueing. v1 queues the
+    /// passage into the agenda AND goes live — a stated superset, so the
+    /// passage stays in the service order after the service). Picking a
+    /// book/chapter/verse and pressing one button is the whole flow.
+    /// Without this, picking verses only edits data and the room never
+    /// changes — the reported "bible is not working" class.
+    ///
+    /// No duplicates: pressing Project twice reuses the queued item for the
+    /// same reference instead of appending a twin. The operator's view is
+    /// preserved: `show_live` targets the Projector tab, but the operator
+    /// stays where they pressed the button (the room + preview still
+    /// update via the published snapshot).
+    fn project_bible_now(&mut self, cx: &mut Context<Self>) {
+        let Some(r) = self.biref.clone() else {
+            self.set_status(cx, "Pick a book, chapter and verse first — then Project ⏵.");
+            return;
+        };
+        let header = format_header(&r);
+        let idx = match self.agenda.items.iter().position(|it| match &it.reference {
+            ItemRef::Bible { bible_ref } => same_bible_ref(bible_ref, &r),
+            _ => false,
+        }) {
+            Some(i) => i,
+            None => {
+                let other = self.bilingual_other_translation(&r.translation_id);
+                let item = bible_agenda_item(&r, other);
+                self.agenda.items.push(item);
+                self.agenda.items.len() - 1
+            }
+        };
+        // `show_live` wakes the display (announcing it when the room was
+        // black), selects, pushes the snapshot and publishes to the
+        // projector window + preview (WI-033), leaving the operator's view
+        // per `live_mode_target`. The "Projecting" receipt goes LAST so a
+        // just-lifted blackout never overwrites it with the unblank note.
+        self.show_live(cx, idx);
+        self.set_status(cx, format!("Projecting {header}"));
+    }
+
+    /// Import a Bible translation via the OS picker (no typed path needed).
+    /// Fills the path field and runs the same import as the Import button,
+    /// so the ribbon entry and the pane entry cannot drift apart.
+    fn import_bible_via_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = crate::file_picker::pick_file(
+            "Import Bible (XML or native .vpc)",
+            &[("XML", &["xml"]), ("VideoPsalm Bible", &["vpc"])],
+        ) {
+            self.bible_xml_field
+                .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+            self.import_bible_file(cx);
+        } else {
+            self.set_status(cx, "Bible import cancelled — no file chosen.");
         }
     }
 
@@ -3318,8 +3372,8 @@ impl Root {
     fn show_live(&mut self, cx: &mut Context<Self>, item_idx: usize) {
         self.live_item = Some(item_idx);
         self.live_slide = 0;
-        self.blank = false;
-        self.mode = Mode::Projector;
+        self.wake_display(cx);
+        self.mode = live_mode_target(self.mode, self.projector_window.is_some());
         // Explicit show: project it now (WI-033).
         self.push_projection(cx);
         cx.notify();
@@ -3379,7 +3433,7 @@ impl Root {
                 self.live_slide = prev.saturating_sub(1);
             }
         }
-        self.blank = false;
+        self.wake_display(cx);
         if let Some(item_idx) = self.live_item {
             let slides = self.item_slides(item_idx);
             if let Some(cur) = slides.get(self.live_slide) {
@@ -3477,10 +3531,40 @@ impl Root {
     /// `.` / `,`: the home screen (usually black) and the current slide
     /// toggle each other. Re-publishes even while frozen: blank is a display
     /// flag, not a slide change, so the wall must obey under a hold.
+    /// This IS "Turn off display": the room sees solid black while the
+    /// control preview names the way back. Works with Bible/song/video
+    /// alike because it short-circuits the frame before slide resolution.
     fn toggle_base(&mut self, cx: &mut Context<Self>) {
         self.blank = !self.blank;
+        self.set_status(
+            cx,
+            if self.blank {
+                "Display off — room sees black (. to bring it back)."
+            } else {
+                "Display on — room sees the live slide again."
+            },
+        );
         self.republish(cx);
         cx.notify();
+    }
+
+    /// Wake the room display after a blackout: clear a `.`/Blank blackout
+    /// started earlier and SAY so — unblanking must never ride silently on
+    /// navigation (the operator blacked the room for a reason; the status
+    /// line is the receipt). Re-publishes like `toggle_base`: display flags
+    /// obey even under a freeze hold, while `push_projection` (which the
+    /// caller runs next) deliberately withholds slide changes under freeze.
+    /// Without this the receipt would lie — "Display on" while the wall
+    /// stays black until the freeze releases. `go_live` keeps its own
+    /// clear (it already reports every released hold by name); every other
+    /// navigation-caused clear routes here.
+    fn wake_display(&mut self, cx: &mut Context<Self>) {
+        if !self.blank {
+            return;
+        }
+        self.blank = false;
+        self.set_status(cx, "Display on — room sees the live slide again.");
+        self.republish(cx);
     }
 
     /// `Escape`: end the presentation — back to the control view with the
@@ -3547,7 +3631,7 @@ impl Root {
             return;
         }
         self.live_slide = if to_end { n - 1 } else { 0 };
-        self.blank = false;
+        self.wake_display(cx);
         // Explicit jump: project it now (WI-033).
         self.push_projection(cx);
         cx.notify();
@@ -3593,18 +3677,23 @@ impl Root {
         );
     }
 
-    /// `Ctrl+P`: open/close the projector *window*. On opens the windowed
-    /// test view (Go live opens it fullscreen instead); off closes it.
-    /// The in-window Projector tab works with no window at all.
+    /// `Ctrl+P`: open/close the projector *window* — and ONLY the window.
+    /// It never leaves the control view: the operator stays where the songs
+    /// and Bibles are while the room gets its own window (vendor dual-screen
+    /// model). The in-window Projector tab works with no window at all;
+    /// `F6` is the explicit way to visit it, `Esc`/`F6`-back the way home.
+    /// (Regression: this used to flip `mode` to Projector on open, which
+    /// read as "Ctrl+P leaves control" instead of opening the room's
+    /// window. Bible projection itself always went through the pushed
+    /// snapshot — the window just never opened where the operator looked.)
     fn toggle_projector(&mut self, cx: &mut Context<Self>) {
         if self.projector_window.is_some() {
             self.close_projector(cx);
             self.projector_on = false;
         } else {
             self.projector_on = true;
-            if self.mode != Mode::Projector {
-                self.mode = Mode::Projector;
-            }
+            // Stay in control — do NOT touch `mode`. The window is the
+            // projector; the tab is just a single-screen fallback.
             self.open_projector(cx, false);
         }
         self.persist_layout_quiet();
@@ -3615,7 +3704,7 @@ impl Root {
         let n = self.live_slides().len();
         if idx < n {
             self.live_slide = idx;
-            self.blank = false;
+            self.wake_display(cx);
             self.text_hidden = false;
             // Explicit click: project the slide now (WI-033).
             self.push_projection(cx);
@@ -3635,7 +3724,7 @@ impl Root {
         }
         let slides = self.item_slides(item_idx);
         self.live_slide = slide_idx.min(slides.len().saturating_sub(1));
-        self.blank = false;
+        self.wake_display(cx);
         // Footer/highlight follows the projected slide: song verse id from
         // the header, Bible verse number by text match.
         if let Some(cur) = slides.get(self.live_slide) {
@@ -3714,7 +3803,7 @@ impl Root {
             .position(|s| s.header.contains(&format!("— {want}")))
         {
             self.live_slide = slide_idx;
-            self.blank = false;
+            self.wake_display(cx);
             // Explicit jump: project it now (WI-033).
             self.push_projection(cx);
             cx.notify();
@@ -4055,7 +4144,10 @@ impl Root {
         let path = self.bible_xml_field.read(cx).text();
         let path = path.trim().to_string();
         if path.is_empty() {
-            self.set_status(cx, "Enter the path of the Bible file to import.");
+            // A church should not have to know where its Bible XML sits:
+            // offer the file picker when no path was typed (Electron
+            // parity — `bible-import` does the same fallback).
+            self.import_bible_via_picker(cx);
             return;
         }
         let fallback = std::path::Path::new(&path)
@@ -4516,7 +4608,7 @@ pub(crate) fn btn(
 }
 
 /// One-line floating help: dark chip, light text, small.
-struct TooltipLabel(String);
+pub(crate) struct TooltipLabel(pub String);
 
 impl Render for TooltipLabel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -4834,6 +4926,90 @@ fn split_meta_list(text: &str) -> Vec<String> {
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .collect()
+}
+
+/// Build the agenda item for a Bible reference (queue AND project paths
+/// share it, so +Agenda and Project ⏵ can never disagree on title, kind
+/// or bilingual override). Pure so the Bible flow is unit-testable.
+fn bible_agenda_item(
+    r: &vp_core::schema::BibleRef,
+    second_translation: Option<String>,
+) -> AgendaItem {
+    AgendaItem {
+        id: agenda_ops::new_id("item"),
+        kind: ItemKind::BibleVerses,
+        title: format_header(r),
+        reference: ItemRef::Bible {
+            bible_ref: r.clone(),
+        },
+        flow_type: FlowType::Manual,
+        auto_advance_ms: None,
+        overrides: ItemOverrides {
+            second_translation_id: second_translation,
+            ..Default::default()
+        },
+    }
+}
+
+/// Whether a freeze hold is meaningful right now (pure, tested): freezing
+/// with no projected slide stores `Some((None, 0))` — a frozen BLACK frame
+/// that later makes `wake_display` lie ("Display on" over a black wall
+/// with pushes still withheld). The freeze button refuses instead.
+fn can_freeze(projected_slide_count: usize) -> bool {
+    projected_slide_count > 0
+}
+
+/// Where Go-live leaves the operator's view (pure, tested): with a real
+/// projector window open the operator stays where they are — the room has
+/// its own window, so teleporting to the Projector tab is the "Ctrl+P
+/// leaves control" bug class through the Go-live door. Single-window
+/// fallback still visits the Projector tab so the room view stays visible;
+/// being in the projector view is also what arms the `*` guard, so a stray
+/// Esc/`-` mid-service stays disabled while projecting.
+fn live_mode_target(current: Mode, projector_window_open: bool) -> Mode {
+    if projector_window_open {
+        current
+    } else {
+        Mode::Projector
+    }
+}
+
+/// Pick the bilingual second translation (pure, tested): the operator's
+/// favorite when one is installed and isn't the current translation, else
+/// the first installed id that isn't current. Never the current twice.
+fn prefer_second_translation(
+    current: &str,
+    mut ids: Vec<String>,
+    favorites: &[String],
+) -> Option<String> {
+    ids.sort();
+    if let Some(fav) = favorites
+        .iter()
+        .find(|f| f.as_str() != current && ids.iter().any(|id| id == *f))
+    {
+        return Some(fav.clone());
+    }
+    ids.into_iter().find(|id| id != current)
+}
+
+/// `true` when two Bible references address the same passage (pure:
+/// the Project-no-duplicates rule). Versification rides along — EN vs RU
+/// numbering can genuinely differ, so they are not the same passage.
+fn same_bible_ref(a: &vp_core::schema::BibleRef, b: &vp_core::schema::BibleRef) -> bool {
+    a.translation_id == b.translation_id
+        && a.book == b.book
+        && a.chapter == b.chapter
+        && a.verses == b.verses
+        && a.versification == b.versification
+}
+
+/// `true` when no real translation is installed beyond the built-in samples
+/// (ids starting with `SAMPLE-`): the Bible pane should then say so and
+/// point at Import instead of showing an empty tab strip. Pure, tested.
+fn needs_bible_import(installed_ids: &[String]) -> bool {
+    !installed_ids
+        .iter()
+        .any(|id| !id.starts_with("SAMPLE-"))
 }
 
 pub(crate) fn row(kids: Vec<Div>) -> Div {
@@ -5501,102 +5677,32 @@ impl Root {
     /// a panel below. Empty galleries show a one-line way in (Browse…)
     /// so the tab never reads as broken when the library is empty.
     fn background_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        // Image group: up to 5 file-name buttons (click = assign) + Browse +
-        // Cover/Contain fit. Original shows thumbnail strips; v1 shows
-        // captions (no thumbnail cache) which is the documented gallery UI.
-        let mut image_kids: Vec<Div> = Vec::new();
-        let images: Vec<(String, String, bool)> = self
-            .galleries
-            .filtered_images()
-            .into_iter()
-            .take(5)
-            .map(|e| {
-                let name = e
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| e.id.clone());
-                let assigned = self.bg_file.as_deref() == Some(e.path.as_path());
-                (e.id.clone(), name, assigned)
-            })
-            .collect();
-        if images.is_empty() {
-            image_kids.push(label(ui, "No images yet", 11.));
-        } else {
-            for (id, name, assigned) in images {
-                let short: String = name.chars().take(14).collect();
-                image_kids.push(btn(ui, cx, &short, assigned, move |this, _, _, cx| {
-                    media_gallery::assign_pick(this, cx, MediaFileKind::Image, &id);
-                }));
-            }
-        }
-        image_kids.push(btn(
+        // Image group: the compact 2×5 strip (real thumbnails, numbered,
+        // no filenames) + ▾ arrow into the full gallery below. The strip
+        // lives in `media_gallery` next to the panel so the two cannot
+        // disagree about filtering, pinning or assignment.
+        let image_group = group(
             ui,
-            cx,
-            "Browse…",
-            false,
-            |this, _, _, cx| {
-                media_gallery::browse_assign_background(this, cx);
-            },
-        ));
-        image_kids.push(btn(
+            "Image",
+            vec![media_gallery::gallery_strip(
+                self,
+                ui,
+                cx,
+                MediaFileKind::Image,
+            )],
+        );
+        // Video group: same shape, video kinds (leading ■ sentinel
+        // unassigns back to Base).
+        let video_group = group(
             ui,
-            cx,
-            "Cover",
-            self.bg_fit == BgFit::Cover,
-            |this, _, _, cx| {
-                this.bg_fit = BgFit::Cover;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
-        image_kids.push(btn(
-            ui,
-            cx,
-            "Contain",
-            self.bg_fit == BgFit::Contain,
-            |this, _, _, cx| {
-                this.bg_fit = BgFit::Contain;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
-        // Video group: same shape, video kinds.
-        let mut video_kids: Vec<Div> = Vec::new();
-        let videos: Vec<(String, String, bool)> = self
-            .galleries
-            .filtered_videos()
-            .into_iter()
-            .take(5)
-            .map(|e| {
-                let name = e
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| e.id.clone());
-                let assigned = self.bg_file.as_deref() == Some(e.path.as_path());
-                (e.id.clone(), name, assigned)
-            })
-            .collect();
-        if videos.is_empty() {
-            video_kids.push(label(ui, "No videos yet", 11.));
-        } else {
-            for (id, name, assigned) in videos {
-                let short: String = name.chars().take(14).collect();
-                video_kids.push(btn(ui, cx, &short, assigned, move |this, _, _, cx| {
-                    media_gallery::assign_pick(this, cx, MediaFileKind::Video, &id);
-                }));
-            }
-        }
-        video_kids.push(btn(
-            ui,
-            cx,
-            "Browse…",
-            false,
-            |this, _, _, cx| {
-                media_gallery::browse_assign_background(this, cx);
-            },
-        ));
+            "Video",
+            vec![media_gallery::gallery_strip(
+                self,
+                ui,
+                cx,
+                MediaFileKind::Video,
+            )],
+        );
         // Brightness group: sun + steppers (Luminosité at Images level).
         let mut bright_kids: Vec<Div> = vec![
             btn(ui, cx, "☀ -", false, |this, _, _, cx| {
@@ -5633,16 +5739,57 @@ impl Root {
                 cx.notify();
             }));
         }
-        div()
+        // Strips stack full-width (vendor grid shape): each strip pins
+        // its own 688px (5 enforced columns) and scrolls internally, so the
+        // two never squeeze each other below 5 columns the way a shared row
+        // did. Small groups share one wrapping row beneath.
+        let strips_col = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(image_group)
+            .child(video_group);
+        let small_row = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
-            .child(group(ui, "Image", image_kids))
-            .child(group(ui, "Video", video_kids))
             .child(group(ui, "Brightness", bright_kids))
             .child(group(ui, &self.t("animation"), anim_kids))
-            .child(group(ui, "Aspect ratio", aspect_kids))
+            .child(group(ui, "Aspect ratio", aspect_kids));
+        let groups_col = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(strips_col)
+            .child(small_row);
+        // The open gallery drops its full panel (search, captioned grid,
+        // the seven-row control stack) under the strips; picking assigns
+        // and collapses back unless pinned. The panel gets its own bounded
+        // scroller (the ribbon never scrolls): without it ~800px of chrome
+        // crushes the editor on short windows.
+        let panel_scroll = self.galleries.scroll_panel.clone();
+        match self.galleries.open {
+            Some(kind) => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(groups_col)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .id("gallery-panel-scroll")
+                        .overflow_y_scroll()
+                        .track_scroll(&panel_scroll)
+                        .max_h(px(460.))
+                        .child(media_gallery::gallery_panel(self, ui, cx, kind)),
+                ),
+            None => groups_col,
+        }
     }
 
     fn format_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
@@ -6054,6 +6201,39 @@ impl Root {
             .flex_row()
             .gap_2()
             .items_start()
+            .child(group(ui, "New / Import", vec![
+                btn_tip(
+                    ui,
+                    cx,
+                    "＋ Song",
+                    "Create a new song (opens in the editor)",
+                    false,
+                    |this, _, _, cx| {
+                        this.create_song(cx);
+                    },
+                ),
+                btn_tip(
+                    ui,
+                    cx,
+                    "＋ Songbook",
+                    "Import a songbook file (.json or .vpc) into the library",
+                    false,
+                    |this, _, _, cx| {
+                        this.import_songbook_file(cx);
+                    },
+                ),
+                btn_tip(
+                    ui,
+                    cx,
+                    "＋ Bible",
+                    "Import a new Bible translation (.xml or .vpc)",
+                    false,
+                    |this, _, _, cx| {
+                        this.left_tab = LeftTab::Bibles;
+                        this.import_bible_via_picker(cx);
+                    },
+                ),
+            ]))
             .child(group(ui, "Song", song_kids))
             .child(group(ui, &self.t("styles"), style_kids))
             .child(group(ui, &self.t("font"), font_kids))
@@ -7425,25 +7605,34 @@ impl Root {
         if grid.is_empty() {
             grid.push(label(ui, "(?)", 12.));
         }
-        // Import row: path field + Browse + button, mirroring the .pptx row's shape.
+        // Import row: label + path field + Browse + button. The label names
+        // the formats (discoverability: "import new translation" must be
+        // findable) and Browse imports straight away — no typed path needed.
+        let mut installed: Vec<String> =
+            self.bibles.translations().keys().cloned().collect();
+        installed.sort();
+        let import_hint = if needs_bible_import(&installed) {
+            "Only samples installed — Import a .xml/.vpc translation"
+        } else {
+            "Add another translation (.xml/.vpc)"
+        };
         let import_row = vec![
+            label(ui, "New translation:", 11.),
             div().flex_1().child(self.bible_xml_field.clone()),
             btn(ui, cx, "Browse…", false, |this, _, _, cx| {
-                if let Some(p) = crate::file_picker::pick_file(
-                    "Import Bible (XML or native .vpc)",
-                    &[("XML", &["xml"]), ("VideoPsalm Bible", &["vpc"])],
-                ) {
-                    this.bible_xml_field
-                        .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
-                    // Browse means do it: import straight away.
+                // Browse means do it: import straight away.
+                this.import_bible_via_picker(cx);
+            }),
+            btn_tip(
+                ui,
+                cx,
+                &self.t("import_bible"),
+                "Import a Bible translation file (.xml or .vpc); empty field opens the file picker",
+                false,
+                |this, _, _, cx| {
                     this.import_bible_file(cx);
-                } else {
-                    this.set_status(cx, "Browse cancelled — no file chosen.");
-                }
-            }),
-            btn(ui, cx, &self.t("import_bible"), false, |this, _, _, cx| {
-                this.import_bible_file(cx);
-            }),
+                },
+            ),
         ];
         // Keyword hunt with a real query: the results take over the picker,
         // like the original. This also keeps the empty-state line visible in
@@ -7462,7 +7651,10 @@ impl Root {
             row(trans_row),
             row(fav_row),
         ];
-        let import_body = vec![row(import_row)];
+        let import_body = vec![
+            row(import_row),
+            row(vec![label(ui, import_hint, 11.)]),
+        ];
         let mut pick_body = vec![row(vec![
                 btn(
                     ui,
@@ -7475,10 +7667,32 @@ impl Root {
                         cx.notify();
                     },
                 ),
-                btn(ui, cx, "+Agenda", false, |this, _, _, cx| {
-                    this.add_bible_to_agenda(cx);
-                }),
+                btn_tip(
+                    ui,
+                    cx,
+                    "+Agenda",
+                    "Queue the current passage in the agenda (then Show it from the slides)",
+                    false,
+                    |this, _, _, cx| {
+                        this.add_bible_to_agenda(cx);
+                    },
+                ),
+                btn_tip(
+                    ui,
+                    cx,
+                    "Project ⏵",
+                    "Show this passage on the projector now (queues it and goes live)",
+                    false,
+                    |this, _, _, cx| {
+                        this.project_bible_now(cx);
+                    },
+                ),
             ])];
+        pick_body.push(row(vec![label(
+            ui,
+            "Pick book → chapter → verses, then Project ⏵.",
+            11.,
+        )]));
         pick_body.push(row(vec![
                 btn(ui, cx, &self.t("old_testament"), ot, |this, _, _, cx| {
                     this.testament = Testament::OT;
@@ -8370,6 +8584,12 @@ impl Root {
             // Releasing the hold re-syncs to live (WI-033).
             self.push_projection(cx);
             self.set_status(cx, "Projection live again.");
+        } else if !can_freeze(self.projected_slides.len()) {
+            // Nothing on the wall yet: engaging would store
+            // `Some((None, 0))` — a frozen BLACK frame that later makes
+            // `wake_display` lie ("Display on" over a black wall with
+            // pushes still withheld). Refuse with a status line instead.
+            self.set_status(cx, "Nothing projected — freeze needs a live slide first.");
         } else {
             // The hold freezes the *projected* snapshot, not the live
             // selection (WI-033): mid-edit typing cannot leak onto it.
@@ -8716,7 +8936,7 @@ impl Root {
                     btn(ui, cx, &self.t("next"), false, |this, _, _, cx| {
                         this.next_slide(cx);
                     }),
-                    btn(ui, cx, &self.t("blank"), self.blank, |this, _, _, cx| {
+                    btn_tip(ui, cx, &self.t("blank"), "Turn off display (black) — room sees black; . / , does the same", self.blank, |this, _, _, cx| {
                         this.toggle_base(cx);
                     }),
                     btn(ui, cx, &self.t("hide"), false, |this, _, _, cx| {
@@ -9532,5 +9752,137 @@ mod tests {
             split_meta_list(" a , ,b ,, c "),
             vec!["a", "b", "c"]
         );
+    }
+
+    #[test]
+    fn bible_queue_and_project_share_one_item_shape() {
+        // The "bible is not working" class: +Agenda queued one shape while
+        // Project built another inline. Both now go through
+        // `bible_agenda_item`, so title/kind/override cannot disagree.
+        let r = vp_core::schema::BibleRef {
+            translation_id: "KJV".to_string(),
+            book: "John".to_string(),
+            chapter: 3,
+            verses: vec![16, 17],
+            versification: Versification::En,
+        };
+        let solo = bible_agenda_item(&r, None);
+        assert_eq!(solo.kind, ItemKind::BibleVerses);
+        assert_eq!(solo.title, format_header(&r));
+        assert!(matches!(
+            solo.reference,
+            ItemRef::Bible { .. }
+        ));
+        assert_eq!(solo.overrides.second_translation_id, None);
+        let bi = bible_agenda_item(&r, Some("ASV".to_string()));
+        assert_eq!(
+            bi.overrides.second_translation_id,
+            Some("ASV".to_string())
+        );
+        // Queue and project build the same item for the same input.
+        let again = bible_agenda_item(&r, Some("ASV".to_string()));
+        assert_eq!(bi.title, again.title);
+        assert_eq!(bi.kind, again.kind);
+    }
+
+    #[test]
+    fn bible_import_hint_fires_only_for_samples() {
+        assert!(needs_bible_import(&[]));
+        assert!(needs_bible_import(&["SAMPLE-EN".to_string()]));
+        assert!(needs_bible_import(&[
+            "SAMPLE-EN".to_string(),
+            "SAMPLE-FR".to_string()
+        ]));
+        assert!(!needs_bible_import(&["KJV".to_string()]));
+        assert!(!needs_bible_import(&[
+            "SAMPLE-EN".to_string(),
+            "KJV".to_string()
+        ]));
+    }
+
+    #[test]
+    fn project_reuses_the_queued_passage_instead_of_duplicating() {
+        // Pressing Project ⏵ twice for John 3:16-17 must not twin the
+        // agenda item: same translation/book/chapter/verses = same passage.
+        let r = vp_core::schema::BibleRef {
+            translation_id: "KJV".to_string(),
+            book: "John".to_string(),
+            chapter: 3,
+            verses: vec![16, 17],
+            versification: Versification::En,
+        };
+        let same = vp_core::schema::BibleRef {
+            verses: vec![16, 17],
+            ..r.clone()
+        };
+        assert!(same_bible_ref(&r, &same));
+        let other_verse = vp_core::schema::BibleRef {
+            verses: vec![16],
+            ..r.clone()
+        };
+        assert!(!same_bible_ref(&r, &other_verse));
+        let other_book = vp_core::schema::BibleRef {
+            book: "Psalm".to_string(),
+            chapter: 23,
+            verses: vec![1],
+            ..r.clone()
+        };
+        assert!(!same_bible_ref(&r, &other_book));
+        // Versification rides along: EN vs RU numbering can differ.
+        let ru = vp_core::schema::BibleRef {
+            versification: Versification::Ru,
+            ..r.clone()
+        };
+        assert!(!same_bible_ref(&r, &ru));
+    }
+
+    #[test]
+    fn go_live_stays_put_with_a_window_open() {
+        // Dual-screen: the room has its own window, so Go-live must not
+        // teleport the operator (the Ctrl+P bug class through the Go-live
+        // door). Single-window fallback still visits the Projector tab so
+        // the room view — and the `*`-guarded shortcuts — stay live.
+        for stayed in [Mode::Control, Mode::Projector, Mode::Stage] {
+            assert_eq!(live_mode_target(stayed, true), stayed);
+        }
+        for from in [Mode::Control, Mode::Stage] {
+            assert_eq!(live_mode_target(from, false), Mode::Projector);
+        }
+    }
+
+    #[test]
+    fn bilingual_second_prefers_the_favorite() {
+        let ids = vec!["ASV".to_string(), "KJV".to_string()];
+        // Favorite wins over alphabetical-first.
+        assert_eq!(
+            prefer_second_translation("KJV", ids.clone(), &["ASV".to_string()]),
+            Some("ASV".to_string())
+        );
+        // ...but never the current translation, even when favorited.
+        assert_eq!(
+            prefer_second_translation("KJV", ids.clone(), &["KJV".to_string()]),
+            Some("ASV".to_string())
+        );
+        // No favorite installed: first sorted id that isn't current.
+        assert_eq!(
+            prefer_second_translation("ASV", ids.clone(), &[]),
+            Some("KJV".to_string())
+        );
+        // Nothing else installed: single translation, honestly None.
+        assert_eq!(
+            prefer_second_translation("KJV", vec!["KJV".to_string()], &[]),
+            None
+        );
+        assert_eq!(prefer_second_translation("KJV", vec![], &[]), None);
+    }
+
+    #[test]
+    fn freeze_refuses_with_nothing_on_the_wall() {
+        // Freezing with no projected slide stores `Some((None, 0))` — a
+        // frozen BLACK frame that later makes `wake_display` lie. The
+        // button refuses instead; unfreezing is always allowed (releases).
+        assert!(!can_freeze(0));
+        assert!(can_freeze(1));
+        assert!(can_freeze(40));
     }
 }

@@ -1039,6 +1039,13 @@ pub struct LayoutPrefs {
     pub gallery_images: Vec<String>,
     #[serde(default)]
     pub gallery_videos: Vec<String>,
+    /// Gallery chrome: expanded 2×5-compact → full grid (vendor §9:
+    /// collapsed compact + arrow to expand). Persisted so a large library
+    /// stays in the operator's chosen density across restarts.
+    /// "Keep the gallery opened" pin (RESEARCH §5). Persistence is GAP
+    /// in the vendor docs; v1 persists it so the choice survives restart.
+    #[serde(default)]
+    pub gallery_keep_open: bool,
 }
 
 fn d_bible_search() -> String {
@@ -1092,6 +1099,7 @@ impl Default for LayoutPrefs {
             projector_display: 0,
             gallery_images: Vec::new(),
             gallery_videos: Vec::new(),
+            gallery_keep_open: false,
         }
     }
 }
@@ -1265,6 +1273,7 @@ mod tests {
         p.max_lines = 6;
         p.gallery_images = vec!["/tmp/a.png".to_string()];
         p.gallery_videos = vec!["/tmp/b.mp4".to_string()];
+        p.gallery_keep_open = true;
         let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
         assert_eq!(back, p);
     }
