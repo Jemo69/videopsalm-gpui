@@ -287,10 +287,7 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
             "Cover (crop to fill)",
             root.bg_fit == BgFit::Cover,
             |this, _, _, cx| {
-                this.bg_fit = BgFit::Cover;
-                this.persist_layout_quiet();
-                crate::presentation::publish(this, cx);
-                cx.notify();
+                apply_bg_fit(this, cx, BgFit::Cover);
             },
         ),
         btn(
@@ -299,10 +296,7 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
             "Contain (whole image)",
             root.bg_fit == BgFit::Contain,
             |this, _, _, cx| {
-                this.bg_fit = BgFit::Contain;
-                this.persist_layout_quiet();
-                crate::presentation::publish(this, cx);
-                cx.notify();
+                apply_bg_fit(this, cx, BgFit::Contain);
             },
         ),
     ]));
@@ -554,6 +548,16 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
 /// assigns it and collapses back to the strips unless pinned — the dropdown
 /// semantic, hosted inline in the ribbon. Empty image libraries get a
 /// working Browse button, never a dead end.
+/// Apply a background image fit everywhere at once (pure glue): set,
+/// persist, and re-publish so preview and projector obey immediately —
+/// a silent fit change is the same out-of-sync class as a silent assign.
+pub(crate) fn apply_bg_fit(root: &mut Root, cx: &mut Context<Root>, fit: BgFit) {
+    root.bg_fit = fit;
+    root.persist_layout_quiet();
+    crate::presentation::publish(root, cx);
+    cx.notify();
+}
+
 pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     let count = match kind {
         MediaFileKind::Image => root.galleries.filtered_images().len(),
@@ -630,10 +634,12 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         MediaFileKind::Image => ("gallery-images-compact", root.galleries.scroll_images.clone()),
         MediaFileKind::Video => ("gallery-videos-compact", root.galleries.scroll_videos.clone()),
     };
-    // max_w enforces the 5 columns: every tile is a fixed 128px
+    // min_w AND max_w enforce the 5 columns: every tile is a fixed 128px
     // footprint (see compact_tile_footprint_px), so exactly 5 fit per row
-    // and 10 cells land in exactly 2 rows. Past the cap width the grid's
-    // own x-scroll catches the overflow instead of clipping.
+    // and 10 cells land in exactly 2 rows. A bare max_w is a ceiling, not
+    // a floor — in a squeezed parent the wrap would fall to 4. Narrower
+    // windows than the strip get the grid's own x-scroll instead of
+    // clipping.
     let grid_list = div()
         .flex()
         .flex_row()
@@ -647,6 +653,7 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         .overflow_x_scroll()
         .track_scroll(&handle)
         .max_h(px(184.))
+        .min_w(px(GalleryState::compact_grid_max_w_px()))
         .max_w(px(GalleryState::compact_grid_max_w_px()))
         .children(thumbs);
     let open_here = root.galleries.open == Some(kind);
@@ -688,7 +695,24 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
                     cx.notify();
                 },
             ),
-            label(ui, "numbered previews — hover names the file", 11.),
+            btn(
+                ui,
+                cx,
+                "Cover",
+                root.bg_fit == BgFit::Cover,
+                |this, _, _, cx| {
+                    apply_bg_fit(this, cx, BgFit::Cover);
+                },
+            ),
+            btn(
+                ui,
+                cx,
+                "Contain",
+                root.bg_fit == BgFit::Contain,
+                |this, _, _, cx| {
+                    apply_bg_fit(this, cx, BgFit::Contain);
+                },
+            ),
         ]))
 }
 

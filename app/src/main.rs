@@ -1132,6 +1132,33 @@ impl Root {
         } else if boot_imports > 0 {
             this.status = format!("Installed {boot_imports} Bible translation(s) from bibles/.");
         }
+        // LOCAL DEMO HOOK — NEVER COMMIT. Stages showcase scenes for the
+        // PR video via env: this :0 display cannot take input focus here, so
+        // scenes boot staged. Every pixel below is production render code.
+        if std::env::var("VP_DEMO_OPEN").is_ok() {
+            this.galleries.open = Some(MediaFileKind::Image);
+        }
+        if let Ok(bg) = std::env::var("VP_DEMO_BG") {
+            this.bg_kind = BackgroundKind::Image;
+            this.bg_file = Some(std::path::PathBuf::from(bg));
+        }
+        if std::env::var("VP_DEMO_BIBLE").is_ok() {
+            if let Some(idx) = this
+                .agenda
+                .items
+                .iter()
+                .position(|it| it.title.contains("John 3:16"))
+            {
+                this.show_live(cx, idx);
+            }
+        }
+        if std::env::var("VP_DEMO_BLANK").is_ok() {
+            this.blank = true;
+            this.republish(cx);
+        }
+        if std::env::var("VP_DEMO_PROJECTOR").is_ok() {
+            this.open_projector(cx, false);
+        }
         // The VideoPsalm folder note wins on a fresh boot with media — it is
         // what the operator acted on last (or what auto-import found).
         if let Some(note) = vp_note {
@@ -5739,16 +5766,31 @@ impl Root {
                 cx.notify();
             }));
         }
-        let groups_row = div()
+        // Strips stack full-width (vendor grid shape): each strip pins
+        // its own 688px (5 enforced columns) and scrolls internally, so the
+        // two never squeeze each other below 5 columns the way a shared row
+        // did. Small groups share one wrapping row beneath.
+        let strips_col = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(image_group)
+            .child(video_group);
+        let small_row = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
-            .child(image_group)
-            .child(video_group)
             .child(group(ui, "Brightness", bright_kids))
             .child(group(ui, &self.t("animation"), anim_kids))
             .child(group(ui, "Aspect ratio", aspect_kids));
+        let groups_col = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(strips_col)
+            .child(small_row);
         // The open gallery drops its full panel (search, captioned grid,
         // the seven-row control stack) under the strips; picking assigns
         // and collapses back unless pinned. The panel gets its own bounded
@@ -5760,7 +5802,7 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(groups_row)
+                .child(groups_col)
                 .child(
                     div()
                         .flex()
@@ -5773,7 +5815,7 @@ impl Root {
                         .max_h(px(460.))
                         .child(media_gallery::gallery_panel(self, ui, cx, kind)),
                 ),
-            None => groups_row,
+            None => groups_col,
         }
     }
 
