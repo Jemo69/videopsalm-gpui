@@ -1011,14 +1011,11 @@ impl Root {
         );
         this._subs.push(sub);
         let alert_sub = alert_field.clone();
-        let sub = cx.subscribe(
-            &alert_sub,
-            |this: &mut Root, emitter, _ev: &Changed, cx| {
-                if emitter == this.alert_field && this.alert_visible {
-                    this.republish(cx);
-                }
-            },
-        );
+        let sub = cx.subscribe(&alert_sub, |this: &mut Root, emitter, _ev: &Changed, cx| {
+            if emitter == this.alert_field && this.alert_visible {
+                this.republish(cx);
+            }
+        });
         this._subs.push(sub);
         let sub = cx.subscribe(
             &media_range_field,
@@ -4034,14 +4031,15 @@ impl Root {
         }
     }
 
-    /// Whether the 250ms clock loop has work (pure, tested): a running
-    /// countdown, or a visible overlay — even a static wall clock needs one
-    /// publish so the room stops showing a stale time.
+    /// Start the countdown/stopwatch. Publishes immediately when the room
+    /// shows it (a start from pause at the same displayed second would
+    /// otherwise lag the wall by up to a second); the tick loop owns every
+    /// publish after that.
     fn clock_start(&mut self, cx: &mut Context<Self>) {
         if !self.clock_running {
             self.clock_running = true;
             self.clock_started = Some(Instant::now());
-            self.ensure_clock_tick(cx);
+            self.resync_clock(cx);
             cx.notify();
         }
     }
@@ -4054,8 +4052,9 @@ impl Root {
         if !self.clock_overlay {
             return;
         }
+        let now = self.clock_display();
         self.republish(cx);
-        self.last_published_clock = Some(self.clock_display());
+        self.last_published_clock = Some(now);
         self.ensure_clock_tick(cx);
     }
 
@@ -4093,9 +4092,7 @@ impl Root {
                             let settled = this.clock_overlay
                                 && !this.clock_running
                                 && this.last_published_clock.as_deref() == Some(now.as_str());
-                            if !clock_tick_active(this.clock_running, this.clock_overlay)
-                                || settled
-                            {
+                            if !clock_tick_active(this.clock_running, this.clock_overlay) || settled {
                                 this.clock_ticking = false;
                                 true
                             } else {
@@ -5068,9 +5065,6 @@ fn prefer_second_translation(
     ids.into_iter().find(|id| id != current)
 }
 
-/// `true` when two Bible references address the same passage (pure:
-/// the Project-no-duplicates rule). Versification rides along — EN vs RU
-/// numbering can genuinely differ, so they are not the same passage.
 /// Whether the 250ms clock loop has work (pure, tested): a running
 /// countdown, or a visible overlay — even a static wall clock needs one
 /// publish so the room stops showing a stale time.
@@ -5084,6 +5078,9 @@ fn clock_text_moved(overlay: bool, last: Option<&str>, now: &str) -> bool {
     overlay && last != Some(now)
 }
 
+/// `true` when two Bible references address the same passage (pure:
+/// the Project-no-duplicates rule). Versification rides along — EN vs RU
+/// numbering can genuinely differ, so they are not the same passage.
 fn same_bible_ref(a: &vp_core::schema::BibleRef, b: &vp_core::schema::BibleRef) -> bool {
     a.translation_id == b.translation_id
         && a.book == b.book
@@ -5546,7 +5543,7 @@ impl Root {
                     self.clock_mode == ClockMode::Countdown,
                     |this, _, _, cx| {
                         this.clock_mode = ClockMode::Countdown;
-                        cx.notify();this.resync_clock(cx);
+                        this.resync_clock(cx);
                         cx.notify();
                     },
                 ),
@@ -5625,12 +5622,12 @@ impl Root {
                     label(ui, "clock mode:", 12.),
                     btn(ui, cx, "clock", self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
                         this.clock_mode = ClockMode::Clock;
-                        cx.notify();this.resync_clock(cx);
+                        this.resync_clock(cx);
                         cx.notify();
                     }),
                     btn(ui, cx, "stopwatch", self.clock_mode == ClockMode::Stopwatch, |this, _, _, cx| {
                         this.clock_mode = ClockMode::Stopwatch;
-                        cx.notify();this.resync_clock(cx);
+                        this.resync_clock(cx);
                         cx.notify();
                     }),
                     btn(ui, cx, "whole-song stage", self.whole_song_stage, |this, _, _, cx| {
@@ -9236,7 +9233,7 @@ impl Root {
                         self.clock_mode == ClockMode::Clock,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Clock;
-                            cx.notify();this.resync_clock(cx);
+                            this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -9247,7 +9244,7 @@ impl Root {
                         self.clock_mode == ClockMode::Countdown,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Countdown;
-                            cx.notify();this.resync_clock(cx);
+                            this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -9258,7 +9255,7 @@ impl Root {
                         self.clock_mode == ClockMode::Stopwatch,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Stopwatch;
-                            cx.notify();this.resync_clock(cx);
+                            this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
