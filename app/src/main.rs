@@ -2370,6 +2370,9 @@ impl Root {
             self.agenda_dirty = true;
             self.persist_layout_quiet();
             self.set_status(cx, format!("{what} (agenda default — no chain level)."));
+            // The agenda default style feeds the snapshot too: publish so
+            // preview and room stay one thing.
+            self.republish(cx);
             cx.notify();
             return;
         }
@@ -2387,6 +2390,10 @@ impl Root {
             .collect::<Vec<_>>()
             .join(" + ");
         self.set_status(cx, format!("{what} (stored at {where_})."));
+        // Style edits are wall content with the SAME slides: republish so
+        // the room follows the preview at once. This never moves slide
+        // position and holds under freeze by construction (unlike push).
+        self.republish(cx);
         cx.notify();
     }
 
@@ -6150,6 +6157,8 @@ impl Root {
             color_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.accent_override = Some(sw.into());
                 this.persist_layout_quiet();
+                // Accent tints the wall snapshot: publish with it.
+                this.republish(cx);
                 cx.notify();
             }));
         }
@@ -6161,6 +6170,7 @@ impl Root {
             |this, _, _, cx| {
                 this.accent_override = None;
                 this.persist_layout_quiet();
+                this.republish(cx);
                 cx.notify();
             },
         ));

@@ -344,6 +344,9 @@ impl Root {
                         this.sync_cascade_to_agenda();
                         this.agenda_dirty = true;
                         this.persist_layout_quiet();
+                        // Clearing re-inherits: the wall look changes, so the
+                        // room follows the preview at once (same class).
+                        this.republish(cx);
                         this.set_status(
                             cx,
                             format!(
