@@ -1132,33 +1132,6 @@ impl Root {
         } else if boot_imports > 0 {
             this.status = format!("Installed {boot_imports} Bible translation(s) from bibles/.");
         }
-        // LOCAL DEMO HOOK — NEVER COMMIT. Stages showcase scenes for the
-        // PR video via env: this :0 display cannot take input focus here, so
-        // scenes boot staged. Every pixel below is production render code.
-        if std::env::var("VP_DEMO_OPEN").is_ok() {
-            this.galleries.open = Some(MediaFileKind::Image);
-        }
-        if let Ok(bg) = std::env::var("VP_DEMO_BG") {
-            this.bg_kind = BackgroundKind::Image;
-            this.bg_file = Some(std::path::PathBuf::from(bg));
-        }
-        if std::env::var("VP_DEMO_BIBLE").is_ok() {
-            if let Some(idx) = this
-                .agenda
-                .items
-                .iter()
-                .position(|it| it.title.contains("John 3:16"))
-            {
-                this.show_live(cx, idx);
-            }
-        }
-        if std::env::var("VP_DEMO_BLANK").is_ok() {
-            this.blank = true;
-            this.republish(cx);
-        }
-        if std::env::var("VP_DEMO_PROJECTOR").is_ok() {
-            this.open_projector(cx, false);
-        }
         // The VideoPsalm folder note wins on a fresh boot with media — it is
         // what the operator acted on last (or what auto-import found).
         if let Some(note) = vp_note {

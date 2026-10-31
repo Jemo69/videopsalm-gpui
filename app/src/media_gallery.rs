@@ -421,7 +421,7 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         .child(label(
             ui,
             &format!(
-                "{count} match{}, showing {shown_files}{}",
+                "{count} match{}, showing {shown_files} files{}",
                 if count == 1 { "" } else { "es" },
                 " — full grid",
             ),
@@ -540,14 +540,6 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
 }
 
 
-/// Compact 2×5 strip for the Background ribbon (operator large-library ask
-/// on the vendor §9 collapsed/expanded shape): up to 10 numbered small
-/// previews, no filenames (the filename is the hover tooltip), bounded
-/// scroll, an honest count line, and the ▾ arrow that opens the full
-/// `gallery_panel` below (via `GalleryState::open`). Picking a thumbnail
-/// assigns it and collapses back to the strips unless pinned — the dropdown
-/// semantic, hosted inline in the ribbon. Empty image libraries get a
-/// working Browse button, never a dead end.
 /// Apply a background image fit everywhere at once (pure glue): set,
 /// persist, and re-publish so preview and projector obey immediately —
 /// a silent fit change is the same out-of-sync class as a silent assign.
@@ -558,6 +550,14 @@ pub(crate) fn apply_bg_fit(root: &mut Root, cx: &mut Context<Root>, fit: BgFit) 
     cx.notify();
 }
 
+/// Compact 2×5 strip for the Background ribbon (operator large-library ask
+/// on the vendor §9 collapsed/expanded shape): up to 10 numbered small
+/// previews, no filenames (the filename is the hover tooltip), bounded
+/// scroll, an honest count line, and the ▾ arrow that opens the full
+/// `gallery_panel` below (via `GalleryState::open`). Picking a thumbnail
+/// assigns it and collapses back to the strips unless pinned — the dropdown
+/// semantic, hosted inline in the ribbon. Empty image libraries get a
+/// working Browse button, never a dead end.
 pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     let count = match kind {
         MediaFileKind::Image => root.galleries.filtered_images().len(),
@@ -664,18 +664,21 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
     } else {
         format!("▾ Expand — full gallery ({count})")
     };
+    // Plain content-sized column, deliberately NO overflow_hidden: it
+    // clipped the fixed 688px grid on narrow windows with no scroll to
+    // reach it. The column sizes to its children like every other ribbon
+    // group; the grid's own x/y scrollers stay the bounds that matter.
     div()
         .flex()
         .flex_col()
         .gap(px(6.))
         .flex_1()
         .min_h_0()
-        .overflow_hidden()
         .child(grid_list)
         .child(label(
             ui,
             &format!(
-                "{count} match{}, showing {shown_files} — compact, no names",
+                "{count} match{}, showing {shown_files} files — compact, no names",
                 if count == 1 { "" } else { "es" },
             ),
             11.,
