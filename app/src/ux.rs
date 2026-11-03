@@ -230,9 +230,22 @@ pub fn video_item_file(item: &AgendaItem) -> Option<(String, PathBuf)> {
         _ => None,
     }
 }
-/// Verse numbers leading each Bible slide line (`"16 text..."`).
-///
-/// Pure so per-slide Bible rows are unit-testable: the panel groups verses
+/// One-line verse-order summary for the collapsed disclosure: the full
+/// list when it fits, `first 5 … (N verses)` for long medleys (pure so
+/// the collapse contract is unit-testable).
+pub fn verse_order_summary(current: &[String]) -> String {
+    if current.len() > 6 {
+        format!(
+            "{}, … ({} verses)",
+            current[..5].join(", "),
+            current.len()
+        )
+    } else {
+        current.join(", ")
+    }
+}
+
+/// Verse numbers leading each Bible slide line (`"16 text..."`). the panel groups verses
 /// into projected slides (like songs), and the badge/checkbox derive from the
 /// verses inside the slide rather than from a per-verse row.
 pub fn bible_slide_verses(lines: &[String]) -> Vec<u32> {
@@ -1416,6 +1429,20 @@ mod tests {
                 }
             )),
             None
+        );
+    }
+
+    #[test]
+    fn verse_order_summary_collapses_long_medleys() {
+        let short: Vec<String> = ["V1", "V2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(verse_order_summary(&short), "V1, V2");
+        assert_eq!(verse_order_summary(&[]), "");
+        let six: Vec<String> = (1..=6).map(|n| format!("V{n}")).collect();
+        assert_eq!(verse_order_summary(&six), "V1, V2, V3, V4, V5, V6");
+        let long: Vec<String> = (1..=74).map(|n| format!("{n}")).collect();
+        assert_eq!(
+            verse_order_summary(&long),
+            "1, 2, 3, 4, 5, … (74 verses)"
         );
     }
 

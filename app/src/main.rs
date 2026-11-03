@@ -9166,15 +9166,7 @@ impl Root {
                         // the order is a disclosure: one-line summary shut,
                         // full wrapped list in a capped scroller open.
                         let open = self.verse_order_open;
-                        let summary = if current.len() > 6 {
-                            format!(
-                                "{}, … ({} verses)",
-                                current[..5].join(", "),
-                                current.len()
-                            )
-                        } else {
-                            order_text.clone()
-                        };
+                        let summary = ux::verse_order_summary(&current);
                         let full = order_text.clone();
                         let mut col = div()
                             .flex_1()
