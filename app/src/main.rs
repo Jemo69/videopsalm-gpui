@@ -9181,6 +9181,7 @@ impl Root {
                             .min_w_0()
                             .flex()
                             .flex_col()
+                            .relative()
                             .gap(px(2.))
                             .child(
                                 div()
@@ -9212,8 +9213,17 @@ impl Root {
                                     .child(metadata_box(&summary)),
                             );
                         if open {
+                            // Overlay, not in-flow: the editor panel clips at
+                            // its bottom edge, so an in-flow list is cut off
+                            // instead of shown (the old wall-of-text bug in
+                            // reverse). It drops below the toggle row like a
+                            // dropdown and paints above the rows beneath.
                             col = col.child(
                                 div()
+                                    .absolute()
+                                    .top(px(30.))
+                                    .left(px(0.))
+                                    .right(px(0.))
                                     .flex()
                                     .flex_col()
                                     .min_h_0()
@@ -9221,6 +9231,10 @@ impl Root {
                                     .max_h(px(140.))
                                     .overflow_y_scroll()
                                     .track_scroll(&self.scroll_verse_order)
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(ui.border)
+                                    .bg(ui.panel)
                                     .child(metadata_box(&full)),
                             );
                         }
