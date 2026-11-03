@@ -346,6 +346,12 @@ pub(crate) struct Root {
     /// Ctrl+P — the projector *window* is opened/closed, independently of
     /// which view has focus. (The in-window Projector tab always works.)
     projector_on: bool,
+    /// Fullscreen *intent* for the room window (Go-live opens fullscreen,
+    /// Ctrl+P windowed, flip toggles). The WM `is_fullscreen` flag cannot
+    /// serve this: a monitor-placed window is borderless-inside-the-output
+    /// (never WM-fullscreen), so reopening from WM state would shrink a
+    /// wall-filling projector to a 1280×720 window.
+    projector_fullscreen: bool,
 
     clock_mode: ClockMode,
     clock_total_secs: u64,
@@ -508,6 +514,8 @@ pub(crate) struct Root {
     presentation: Entity<crate::presentation::PresentationState>,
     pub(crate) aspect_ratio: String,
     pub(crate) projector_display: usize,
+    /// Persisted RandR output name for the projector target.
+    pub(crate) projector_monitor: Option<String>,
 
     // Scroll handles. GPUI 0.2.2 *does* provide ScrollHandle + overflow
     // scrolling (the README previously claimed it did not, which is why the
@@ -826,6 +834,7 @@ impl Root {
             shield: false,
             viewer_mode: false,
             projector_on: true,
+            projector_fullscreen: false,
             sel_block: None,
             hidden: HashSet::new(),
             max_lines: 4,
@@ -843,6 +852,7 @@ impl Root {
             presentation: cx.new(|_| crate::presentation::PresentationState::empty()),
             aspect_ratio: "current".to_string(),
             projector_display: 0,
+            projector_monitor: None,
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
@@ -1222,6 +1232,7 @@ impl Root {
             bible_search: self.bible_search.id().to_string(),
             aspect_ratio: self.aspect_ratio.clone(),
             projector_display: self.projector_display,
+            projector_monitor: self.projector_monitor.clone(),
             bg_kind: match self.bg_kind {
                 BackgroundKind::Color => "color".to_string(),
                 BackgroundKind::Image => "image".to_string(),
@@ -1338,6 +1349,7 @@ impl Root {
             self.aspect_ratio = p.aspect_ratio.clone();
         }
         self.projector_display = p.projector_display;
+        self.projector_monitor = p.projector_monitor.clone();
         self.galleries.keep_open = p.gallery_keep_open;
     }
 
@@ -1806,19 +1818,24 @@ impl Root {
                 }
             }
             ItemRef::Bible { bible_ref } => {
-                self.biref = Some(bible_ref.clone());
-                self.book_query = bible_ref.book.clone();
-                self.chapter = bible_ref.chapter;
-                if let Some(b) = match_book(&bible_ref.book) {
-                    self.sel_book = b.number;
-                    self.testament = if b.number <= 39 {
-                        Testament::OT
-                    } else {
-                        Testament::NT
-                    };
+                // Idempotent like the Song arm: a repeated sync for the
+                // already-loaded reference is a no-op, so slide advances
+                // never revert in-progress verse/book browsing.
+                if self.biref.as_ref() != Some(bible_ref) {
+                    self.biref = Some(bible_ref.clone());
+                    self.book_query = bible_ref.book.clone();
+                    self.chapter = bible_ref.chapter;
+                    if let Some(b) = match_book(&bible_ref.book) {
+                        self.sel_book = b.number;
+                        self.testament = if b.number <= 39 {
+                            Testament::OT
+                        } else {
+                            Testament::NT
+                        };
+                    }
+                    let spec = compact_verses(&bible_ref.verses);
+                    self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
                 }
-                let spec = compact_verses(&bible_ref.verses);
-                self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
             }
             _ => {}
         }
@@ -2521,10 +2538,12 @@ impl Root {
             Some((id, path)) if self.media_launched_for.as_deref() != Some(id.as_str()) => {
                 self.media.open(path.clone());
                 self.media.launch_external();
-                self.media_launched_for = Some(id);
                 if let Some(e) = self.media.last_error.clone() {
+                    // Leave the guard unset: a failed launch must retry on
+                    // the next push, not latch silent forever.
                     self.set_status(cx, format!("Video not playing: {e}"));
                 } else {
+                    self.media_launched_for = Some(id);
                     self.set_status(
                         cx,
                         format!(
@@ -2677,17 +2696,36 @@ impl Root {
         }
     }
 
+/// A window counts as fullscreen when it exactly covers a RandR output:
+/// monitor-placed projectors are borderless windows, never WM-fullscreen,
+/// so Go-live must not WM-toggle them onto the primary.
+fn window_covers_monitor(window: &gpui::Window) -> bool {
+    let b = window.bounds();
+    monitors::list().iter().any(|m| {
+        b.origin.x == px(m.x as f32)
+            && b.origin.y == px(m.y as f32)
+            && b.size.width == px(m.w as f32)
+            && b.size.height == px(m.h as f32)
+    })
+}
     /// Open the real second window (B-12). `fullscreen` opens it fullscreen
     /// on the main display; the handle is kept so the Message tab can flip
     /// it later and so a second press focuses instead of duplicating.
     fn open_projector(&mut self, cx: &mut Context<Self>, fullscreen: bool) {
+        // Record intent first: the WM flag cannot serve (a monitor-placed
+        // window is never WM-fullscreen), and reopen paths read this.
+        self.projector_fullscreen = fullscreen;
         // Drop dead handles: closing the projector window via OS chrome
         // leaves Some(handle) behind, and every later Go Live would
         // "focus" a dead window (looks invisible) instead of reopening.
         if let Some(handle) = self.projector_window {
             match handle.update(cx, |_, window, _| {
                 window.activate_window();
-                if fullscreen && !window.is_fullscreen() {
+                // A monitor-placed window already fills its output: only
+                // WM-toggle when it is neither real-fullscreen nor
+                // monitor-covering, or Go Live would convert the RandR
+                // rect into a primary-monitor fullscreen.
+                if fullscreen && !window.is_fullscreen() && !Self::window_covers_monitor(window) {
                     window.toggle_fullscreen();
                 }
             }) {
@@ -2722,26 +2760,34 @@ impl Root {
         // silently opening on the wrong screen.
         let display = cx.displays().get(self.projector_display).map(|d| d.id());
         let monitors = monitors::list();
-        let monitor = monitors.get(self.projector_display).copied();
-        if monitor.is_none() {
+        let monitor = monitors::resolve_target(
+            &monitors,
+            self.projector_monitor.as_deref(),
+            self.projector_display,
+        );
+        // Carried into the deferred open: the synchronous "Opening…"
+        // message below never paints (one notify per update), so the
+        // fallback warning must ride the final message instead.
+        let fallback_note: Option<String> = if monitor.is_none() {
             let found = monitors.len();
             if self.projector_display > 0 || found > 1 {
-                self.set_status(
-                    cx,
-                    if found == 0 {
-                        format!(
-                            "Display {}: no RandR outputs detected — using primary.",
-                            self.projector_display + 1,
-                        )
-                    } else {
-                        format!(
-                            "Display {} not connected (found {found}) — using primary.",
-                            self.projector_display + 1,
-                        )
-                    },
-                );
+                Some(if found == 0 {
+                    format!(
+                        "Display {}: no RandR outputs detected",
+                        self.projector_display + 1,
+                    )
+                } else {
+                    format!(
+                        "Display {} not connected (found {found})",
+                        self.projector_display + 1,
+                    )
+                })
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
         // Deferred past the current update: opening a window builds and
         // first-paints its view synchronously, and that paint must never
         // touch Root (WI-033: the projector reads only the published
@@ -2762,10 +2808,14 @@ impl Root {
                         });
                         this.set_status(
                             cx,
-                            if fullscreen {
+                            if let Some(note) = fallback_note.clone() {
+                                format!("{note} — opened on primary instead.")
+                            } else if fullscreen {
                                 "Projector window opened fullscreen on the chosen display."
+                                    .to_string()
                             } else {
                                 "Projector window opened on the chosen display; fullscreen flips it."
+                                    .to_string()
                             },
                         );
                     });
@@ -2780,22 +2830,20 @@ impl Root {
                 }
             }
         });
-        self.set_status(cx, "Opening projector window…");
     }
 
     /// Pick the projector monitor. When the room window is already open it
     /// moves with the choice: GPUI has no move-window call, so the window
-    /// closes and reopens on the new display, keeping the fullscreen state
-    /// it had. Without this the buttons silently applied to the NEXT open
-    /// only ("still on the first screen").
+    /// closes and reopens on the new display with the stored fullscreen
+    /// intent (WM state cannot serve: a monitor-placed window is never
+    /// WM-fullscreen). Without this the buttons silently applied to the
+    /// NEXT open only ("still on the first screen").
     fn set_projector_display(&mut self, cx: &mut Context<Self>, idx: usize) {
         self.projector_display = idx;
+        self.projector_monitor = monitors::list().get(idx).map(|m| m.name.clone());
         self.persist_layout_quiet();
-        let was_fullscreen = self.projector_window.and_then(|h| {
-            h.update(cx, |_, window, _| window.is_fullscreen())
-                .ok()
-        });
-        if let Some(fullscreen) = was_fullscreen {
+        if self.projector_window.is_some() {
+            let fullscreen = self.projector_fullscreen;
             self.close_projector(cx);
             self.projector_on = true;
             self.open_projector(cx, fullscreen);
@@ -2803,13 +2851,13 @@ impl Root {
         cx.notify();
     }
 
-    /// Flip the open projector window in/out of fullscreen (B-12). The
-    /// single-click monitor switcher from 1.27b is honestly unmet: GPUI picks
-    /// the display at open time, so moving displays is a drag, stated here.
+    /// Flip the open projector window in/out of fullscreen (B-12). Also
+    /// flips the stored intent so monitor switches reopen the same way.
     fn toggle_projector_fullscreen(&mut self, cx: &mut Context<Self>) {
         match self.projector_window {
             Some(handle) => {
                 let _ = handle.update(cx, |_, window, _| window.toggle_fullscreen());
+                self.projector_fullscreen = !self.projector_fullscreen;
                 self.set_status(cx, "Projector fullscreen toggled.");
             }
             None => self.set_status(cx, "No projector window — open it first."),
@@ -3402,6 +3450,43 @@ impl Root {
         }
     }
 
+    /// Add the selected gallery video to the agenda as a standalone Video
+    /// item: projecting it auto-plays the OS player (`push_projection`
+    /// launch). Without a producer the autoplay branch could only fire for
+    /// imported plans — the gallery had no path onto the agenda at all.
+    pub(crate) fn add_video_to_agenda(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .galleries
+            .selection(MediaFileKind::Video)
+            .and_then(|id| self.galleries.assign_path(MediaFileKind::Video, id))
+            .or_else(|| {
+                (self.bg_kind == BackgroundKind::VideoLoop)
+                    .then(|| self.bg_file.clone())
+                    .flatten()
+            });
+        let Some(path) = path else {
+            self.set_status(cx, "Select a video tile first.");
+            return;
+        };
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Video".to_string());
+        self.agenda_dirty = true;
+        let id = agenda_ops::add_item(
+            &mut self.agenda,
+            ItemKind::Video,
+            title.clone(),
+            ItemRef::File {
+                file: path.to_string_lossy().into_owned(),
+            },
+        );
+        self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+        self.sync_editor_to_item(cx, self.sel_item.unwrap_or(usize::MAX));
+        self.set_status(cx, format!("Added {title} — project it to play."));
+        cx.notify();
+    }
+
     /// `Ctrl+N` — add the **Nth** current search result to the agenda.
     ///
     /// 1.10: "When VideoPsalm finds several songs that match the search
@@ -3556,6 +3641,10 @@ impl Root {
                 if idx + 1 < self.agenda.items.len() {
                     self.live_item = Some(idx + 1);
                     self.sel_item = Some(idx + 1);
+                    self.sync_editor_to_item(cx, idx + 1);
+                    if let Some(t) = self.agenda.items.get(idx + 1).map(|it| it.title.clone()) {
+                        self.title_field.update(cx, |f, cx| f.set_text(&t, cx));
+                    }
                     self.live_slide = 0;
                 }
             }
@@ -3565,6 +3654,10 @@ impl Root {
             if idx > 0 {
                 self.live_item = Some(idx - 1);
                 self.sel_item = Some(idx - 1);
+                self.sync_editor_to_item(cx, idx - 1);
+                if let Some(t) = self.agenda.items.get(idx - 1).map(|it| it.title.clone()) {
+                    self.title_field.update(cx, |f, cx| f.set_text(&t, cx));
+                }
                 let prev = self.item_slides(idx - 1).len();
                 self.live_slide = prev.saturating_sub(1);
             }
@@ -3615,6 +3708,7 @@ impl Root {
             } else if let Some(idx) = self.sel_item.or(self.live_item) {
                 if idx + 1 < self.agenda.items.len() {
                     self.sel_item = Some(idx + 1);
+                    self.sync_editor_to_item(cx, idx + 1);
                     let title = self.agenda.items[idx + 1].title.clone();
                     self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
                     let next_verses = self.ordered_item_verses(idx + 1);
@@ -3628,6 +3722,7 @@ impl Root {
         } else if let Some(idx) = self.sel_item.or(self.live_item) {
             if idx > 0 {
                 self.sel_item = Some(idx - 1);
+                self.sync_editor_to_item(cx, idx - 1);
                 let title = self.agenda.items[idx - 1].title.clone();
                 self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
                 let prev_verses = self.ordered_item_verses(idx - 1);
@@ -9107,6 +9202,9 @@ impl Root {
                                         if open { "▾" } else { "▸" },
                                         open,
                                         |this, _, _, cx| {
+                                            // The row behind also toggles on bubble:
+                                            // stop here or the flag flips twice (no-op arrow).
+                                            cx.stop_propagation();
                                             this.verse_order_open = !this.verse_order_open;
                                             cx.notify();
                                         },

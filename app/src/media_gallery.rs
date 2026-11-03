@@ -660,8 +660,13 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
     // Explicit page index: `top_item` is Y-only and stalls on a horizontal
     // row after one jump. Next targets the next page's far edge, Prev the
     // previous page's near edge — `FirstVisible` scrolling moves X exactly
-    // when the target sits outside the view.
-    let pages_here = GalleryState::strip_pages(shown_files);
+    // when the target sits outside the view. Child indices include the
+    // video sentinel at 0 (chrome, not a file), so page math counts cells,
+    // not files.
+    let sentinel_cells = if kind == MediaFileKind::Video { 1 } else { 0 };
+    let shown_cells = shown_files + sentinel_cells;
+    let pages_here = GalleryState::strip_pages(shown_cells);
+    let last_child = shown_cells.saturating_sub(1);
     let cur_page = root
         .galleries
         .strip_page
@@ -686,7 +691,7 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         .child(grid_list)
         .child(btn(ui, cx, "▶", false, move |this, _, _, cx| {
             let to = (cur_page + 1).min(pages_here - 1);
-            let target = ((to + 1) * page).saturating_sub(1).min(shown_files.saturating_sub(1));
+            let target = ((to + 1) * page).saturating_sub(1).min(last_child);
             this.galleries.strip_page.insert(kind, to);
             h_fwd.scroll_to_item(target);
             this.set_status(cx, "Gallery strip scrolled.");
@@ -745,6 +750,15 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
                     false,
                     |this, _, _, cx| {
                         play_selected_video(this, cx);
+                    },
+                ));
+                row_kids.push(btn(
+                    ui,
+                    cx,
+                    "+ Agenda",
+                    false,
+                    |this, _, _, cx| {
+                        this.add_video_to_agenda(cx);
                     },
                 ));
             }

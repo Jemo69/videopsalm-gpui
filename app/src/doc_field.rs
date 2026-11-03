@@ -862,10 +862,30 @@ impl Render for DocField {
             // blank line — that gap *is* the slide boundary, so collapsing it
             // would hide the structure from the operator.
             .children(if empty {
-                // Empty document: solid pipe + hint while focused (the
-                // animated caret only exists on text lines).
+                // Empty document: the same animated `|` as text lines (no
+                // static stare), followed by the static hint.
                 let hint: AnyElement = if focused {
-                    format!("| {placeholder}").into_any_element()
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .child("|")
+                                .with_animation(
+                                    ElementId::Name("lyrics-caret-empty".into()),
+                                    Animation::new(Duration::from_millis(
+                                        (CARET_BLINK_MS * 2) as u64,
+                                    ))
+                                    .repeat(),
+                                    |el, delta| {
+                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                    },
+                                ),
+                        )
+                        .child(format!(" {placeholder}"))
+                        .into_any_element()
                 } else {
                     placeholder.to_string().into_any_element()
                 };
@@ -910,7 +930,9 @@ impl Render for DocField {
                         // way): task + notify loops never re-rendered the
                         // field, so the caret stared instead of blinking.
                         // The animation id tracks the cursor, so a click or
-                        // keystroke remounts it at full opacity first.
+                        // keystroke remounts it at full opacity first. Cost:
+                        // an animation frame repaints while focused —
+                        // accepted, since nothing else repaints a stale caret.
                         let pipe: Option<(String, String)> = if cursor_on_line {
                             let local = (cursor - start).min(line.len());
                             let safe = line

@@ -1075,6 +1075,11 @@ pub struct LayoutPrefs {
     /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
     #[serde(default)]
     pub projector_display: usize,
+    /// RandR output name for the projector target (`DP-1`, `HDMI-1`):
+    /// indexes shift when outputs come and go, names do not. Resolved
+    /// first at open; the index is the fallback.
+    #[serde(default)]
+    pub projector_monitor: Option<String>,
     /// Gallery library paths (persisted so backgrounds survive restart —
     /// lens 2/3: an in-memory-only library meant every background vanished
     /// on relaunch and USB-stick picks ghosted). Missing files are skipped
@@ -1141,6 +1146,7 @@ impl Default for LayoutPrefs {
             bible_search: d_bible_search(),
             aspect_ratio: d_aspect_ratio(),
             projector_display: 0,
+            projector_monitor: None,
             gallery_images: Vec::new(),
             gallery_videos: Vec::new(),
             gallery_keep_open: false,
@@ -1172,8 +1178,9 @@ impl LayoutPrefs {
 }
 
 /// Caret blink cadence shared by the single-line fields and the lyrics
-/// document: each view runs one guarded 530ms loop task that toggles its
-/// caret while focused with a collapsed selection.
+/// document: each caret is a `with_animation` step toggling opacity every
+/// `CARET_BLINK_MS`, id-keyed by cursor so a move remounts it solid. No
+/// tasks, no repaint scheduling — window animation frames repaint.
 pub const CARET_BLINK_MS: u128 = 530;
 
 #[cfg(test)]
