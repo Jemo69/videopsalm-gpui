@@ -121,12 +121,19 @@ impl ExternalPlayer {
     }
 
     /// Launch the OS default handler for the current file (best effort).
-    /// Never performs network access.
+    /// Never performs network access. A missing file is reported
+    /// immediately instead of spawning a handler that can only fail
+    /// silently (a vanished USB stick otherwise reads as "playing").
     pub fn launch_external(&mut self) {
         let Some(path) = self.current.clone() else {
             self.last_error = Some("no media file selected".to_string());
             return;
         };
+        if !path.exists() {
+            self.last_error = Some(format!("file not found: {}", path.display()));
+            self.state = PlaybackState::Stopped;
+            return;
+        }
         #[cfg(target_os = "linux")]
         let mut cmd = std::process::Command::new("xdg-open");
         #[cfg(target_os = "macos")]
@@ -520,6 +527,21 @@ mod tests {
         p.open(PathBuf::from("song.mp3"));
         p.set_range(None, Some(9000));
         assert_eq!(p.range(), (None, Some(9000)));
+    }
+
+    #[test]
+    fn external_player_refuses_missing_file_before_spawn() {
+        // A vanished file must error immediately instead of spawning a
+        // handler that fails silently while the UI claims "playing".
+        let mut p = ExternalPlayer::new(MediaKind::Video);
+        p.open(PathBuf::from("/definitely/not/here/clip.mp4"));
+        p.launch_external();
+        assert_eq!(p.state(), PlaybackState::Stopped);
+        let err = p.last_error.clone().unwrap_or_default();
+        assert!(
+            err.contains("not found"),
+            "missing file must name itself, got: {err}"
+        );
     }
 
     // --- B-32 galleries --------------------------------------------------
