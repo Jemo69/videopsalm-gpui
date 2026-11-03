@@ -85,6 +85,7 @@ impl PresentationState {
                 },
                 standalone: None,
                 video_poster: None,
+                video_frame: None,
                 danger: Rgba {
                     r: 1.0,
                     g: 0.0,

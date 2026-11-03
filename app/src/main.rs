@@ -52,6 +52,7 @@ mod text_field;
 mod ux;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -71,7 +72,7 @@ use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
 use vp_core::geometry::{AspectRatio, FitMode, Viewport, resolve_percent};
 use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
-use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, projector_frame};
+use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, MotionPump, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemOverrides, ItemRef, Song,
 };
@@ -203,6 +204,10 @@ const ENGAGED: Rgba = Rgba {
     b: 0.153,
     a: 1.0,
 };
+
+/// In-app video motion rate: silent piped stills/sec at 960px wide. The tick
+/// polls at the same cadence; higher reads smoother but republishes more.
+const MOTION_FPS: u32 = 8;
 
 /// Blue, for the row that is currently projecting (UX-RESEARCH §10.3:
 /// "highlighted in blue" — since 1.2, and on every skin).
@@ -500,6 +505,16 @@ pub(crate) struct Root {
     /// element instead of a black tile. Filled at assign/play/push time
     /// (never during render), read by `projector_snapshot`.
     video_posters: HashMap<String, PathBuf>,
+    /// Live frame pump for in-app video motion (silent ffmpeg pipe): `Some`
+    /// while a video moves in preview/projector. One pump at a time — a
+    /// standalone clip takes over the background loop.
+    motion: Option<MotionPump>,
+    /// Latest decoded-live frame (JPEG bytes) for the motion render.
+    /// Replaced per tick; the custom loader decodes only this one, so no
+    /// image cache can accumulate across a long play.
+    motion_frame: Option<Arc<Vec<u8>>>,
+    /// Motion tick-loop guard (mirrors `clock_ticking`).
+    motion_ticking: bool,
     pptx_info: String,
 
     // B-32/B-12 media state (galleries, cascade, assigned background file,
@@ -848,6 +863,9 @@ impl Root {
             media: ExternalPlayer::new(MediaKind::Video),
             media_launched_for: None,
             video_posters: HashMap::new(),
+            motion: None,
+            motion_frame: None,
+            motion_ticking: false,
             pptx_info: String::new(),
             galleries: GalleryState::default(),
             cascade: Cascade::default(),
@@ -2545,45 +2563,202 @@ impl Root {
         }
     }
 
+    /// Stop in-app motion, if any (navigation left video, bg changed).
+    /// Returns true when a pump was running. The last frame stays as the
+    /// poster still — the room never flashes to black.
+    pub(crate) fn stop_motion(&mut self) -> bool {
+        if let Some(mut pump) = self.motion.take() {
+            pump.stop();
+            self.motion_frame = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Play `path` in-app when ffmpeg exists, else report why not. True =
+    /// motion pump running (caller marks launched); false = caller falls
+    /// back (poster still + OS player for standalone, still for loops).
+    /// Idempotent: the same live source re-arms the tick only.
+    pub(crate) fn ensure_motion_for(
+        &mut self,
+        cx: &mut Context<Self>,
+        path: &std::path::Path,
+        loop_play: bool,
+    ) -> bool {
+        let same = self.motion.as_mut().is_some_and(|m| {
+            m.source.as_path() == path && m.loop_play == loop_play && m.alive()
+        });
+        if same {
+            self.ensure_motion_tick(cx);
+            return true;
+        }
+        self.stop_motion();
+        match MotionPump::start(path, MOTION_FPS, loop_play, 0.0) {
+            Ok(pump) => {
+                self.motion = Some(pump);
+                self.ensure_motion_tick(cx);
+                self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                true
+            }
+            Err(e) => {
+                self.set_status(cx, format!("In-app motion off ({e})"));
+                false
+            }
+        }
+    }
+
+    /// Pause/resume in-app motion (transport button). True when a pump
+    /// owned the press. Pause kills the pump and freezes the clock; resume
+    /// restarts at the tracked offset — universal, no IPC.
+    pub(crate) fn motion_toggle_pause(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(pump) = self.motion.as_mut() else {
+            return false;
+        };
+        if pump.paused() {
+            let (source, loop_play, pos) =
+                (pump.source.clone(), pump.loop_play, pump.position());
+            self.stop_motion();
+            match MotionPump::start(&source, MOTION_FPS, loop_play, pos) {
+                Ok(next) => {
+                    self.motion = Some(next);
+                    self.ensure_motion_tick(cx);
+                    self.set_status(cx, "Playing in-app.");
+                }
+                Err(e) => self.set_status(cx, format!("Resume failed ({e}).")),
+            }
+        } else {
+            pump.mark_paused();
+            self.stop_motion();
+            self.set_status(cx, "Paused — still frame held.");
+        }
+        cx.notify();
+        true
+    }
+
+    /// 1000/fps tick loop while a pump runs (mirrors `ensure_clock_tick`).
+    /// Each piped frame replaces the live bytes + republishes, so preview
+    /// and projector move together; an ended standalone clip stops the
+    /// pump and keeps its last frame as a still.
+    fn ensure_motion_tick(&mut self, cx: &mut Context<Self>) {
+        if self.motion_ticking || self.motion.is_none() {
+            return;
+        }
+        self.motion_ticking = true;
+        cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
+            let mut async_cx = async_cx.clone();
+            async move {
+                loop {
+                    async_cx
+                        .background_executor()
+                        .timer(Duration::from_millis(1000 / MOTION_FPS as u64))
+                        .await;
+                    let stop = weak
+                        .update(&mut async_cx, |this: &mut Root, cx| {
+                            // Poll first (borrows only the pump), then act:
+                            // method calls below need `this` free.
+                            let mut ended = this.motion.is_none();
+                            let mut fresh: Option<Arc<Vec<u8>>> = None;
+                            if let Some(pump) = this.motion.as_mut() {
+                                if let Some(frame) = pump.read_frame() {
+                                    fresh = Some(Arc::new(frame));
+                                }
+                                if !pump.alive() {
+                                    ended = true;
+                                }
+                            }
+                            if let Some(bytes) = fresh {
+                                this.motion_frame = Some(bytes);
+                                this.republish(cx);
+                            }
+                            if ended {
+                                this.stop_motion();
+                                this.set_status(cx, "Video ended — last frame held.");
+                                this.republish(cx);
+                            }
+                            let done = ended || this.motion.is_none();
+                            if done {
+                                this.motion_ticking = false;
+                            }
+                            cx.notify();
+                            done
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
     fn push_projection(&mut self, cx: &mut Context<Self>) {
         if self.frozen_slide.is_some() {
             return;
         }
         self.projected_item = self.live_item;
-        // Standalone video has no in-app pixels (gpui 0.2.2 ships no video
-        // element — the room tile stays a captioned placeholder), so hand
-        // the file to the OS player when the live item BECOMES a video.
-        // Once per item, not per push: navigation re-pushes constantly.
+        // Standalone video motion comes from the frame pump (silent
+        // ffmpeg stills through an uncached loader), with the OS player as
+        // fallback when mpv is missing. Once per item, not per push:
+        // navigation re-pushes constantly.
         let video = self
             .live_item
             .and_then(|i| self.agenda.items.get(i))
             .and_then(ux::video_item_file);
+        let standalone_live = video.is_some();
         match video {
             Some((id, path)) if self.media_launched_for.as_deref() != Some(id.as_str()) => {
                 self.media.open(path.clone());
                 // Poster first: the room sees the video's picture even
-                // while the OS player opens (or when it can't).
+                // while the pump spins up (or when nothing can play it).
                 self.ensure_video_poster(&path);
-                self.media.launch_external();
-                if let Some(e) = self.media.last_error.clone() {
-                    // Leave the guard unset: a failed launch must retry on
-                    // the next push, not latch silent forever.
-                    self.set_status(cx, format!("Video not playing: {e}"));
-                } else {
+                if self.ensure_motion_for(cx, &path, false) {
                     self.media_launched_for = Some(id);
-                    self.set_status(
-                        cx,
-                        format!(
-                            "Video playing externally — {}.",
-                            path.display()
-                        ),
-                    );
+                } else {
+                    self.media.launch_external();
+                    if let Some(e) = self.media.last_error.clone() {
+                        // Leave the guard unset: a failed launch must retry
+                        // on the next push, not latch silent forever.
+                        self.set_status(cx, format!("Video not playing: {e}"));
+                    } else {
+                        self.media_launched_for = Some(id);
+                        self.set_status(
+                            cx,
+                            format!(
+                                "Video playing externally — {}.",
+                                path.display()
+                            ),
+                        );
+                    }
                 }
             }
             None => {
                 self.media_launched_for = None;
             }
             _ => {}
+        }
+        // Background loop moves behind the lyrics when assigned and no
+        // standalone clip owns the pump; otherwise motion stops and the
+        // poster still stands.
+        if standalone_live {
+            if self.motion.as_ref().is_some_and(|m| m.loop_play) {
+                self.stop_motion();
+            }
+        } else if self.bg_kind == BackgroundKind::VideoLoop {
+            match self.bg_file.clone() {
+                Some(f) if f.exists() => {
+                    self.ensure_video_poster(&f);
+                    if !self.ensure_motion_for(cx, &f, true) {
+                        self.stop_motion();
+                    }
+                }
+                _ => {
+                    self.stop_motion();
+                }
+            }
+        } else {
+            self.stop_motion();
         }
         let live = self.live_slides();
         self.projected_slide = if live.is_empty() {
@@ -2716,6 +2891,7 @@ impl Root {
             footer,
             standalone,
             video_poster,
+            video_frame: self.motion_frame.clone(),
             alert_visible: self.alert_visible,
             alert_text: self.alert_field.read(cx).text(),
             clock_overlay: self.clock_overlay,
@@ -8894,6 +9070,7 @@ impl Root {
                             snap.bg_file.as_ref(),
                             snap.bg_fit,
                             snap.video_poster.as_ref(),
+                            snap.video_frame.as_ref(),
                         )),
                 );
         // Same rule as the projector (projector_window::grades_luminosity_overlay):
@@ -9684,6 +9861,10 @@ impl Root {
                         }
                     }),
                     btn(ui, cx, &self.t("play_pause"), false, |this, _, _, cx| {
+                        // In-app motion owns the press while a pump runs.
+                        if this.motion_toggle_pause(cx) {
+                            return;
+                        }
                         let p = this.media_path_field.read(cx).text();
                         if !p.trim().is_empty()
                             && this
@@ -9702,6 +9883,7 @@ impl Root {
                         cx.notify();
                     }),
                     btn(ui, cx, &self.t("stop"), false, |this, _, _, cx| {
+                        this.stop_motion();
                         this.media.stop();
                         cx.notify();
                     }),
@@ -10031,10 +10213,9 @@ impl Root {
     }
 
     /// Note shown when the style asks for a background kind v1 cannot fully
-    /// render. Images render via `gpui::img`; video loops show the grabbed
-    /// poster still when available, else a captioned tile (motion stays in
-    /// the OS player — gpui 0.2.2 has no video element); only the camera is
-    /// still a solid-color stand-in.
+    /// render. Images render via `gpui::img`; video loops move in-app when
+    /// ffmpeg exists (poster still, else captioned tile, as fallback); only
+    /// the camera is still a solid-color stand-in.
     fn background_note(&self) -> Option<&'static str> {
         match self.bg_kind {
             BackgroundKind::Color => None,

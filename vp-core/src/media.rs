@@ -313,6 +313,205 @@ pub fn ensure_video_poster(path: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
+/// In-app video motion: `ffmpeg` decodes to an MJPEG pipe (`fps` filter,
+/// 960px wide, silent — the app owns all audio) and the tick reads one
+/// frame per beat, shown through an uncached custom image loader. The pipe
+/// applies backpressure by itself: `ffmpeg` blocks when the 64KB buffer
+/// is full, so decode self-throttles to the display rate — no disk growth,
+/// no burst CPU, no unbounded image cache (every repaint decodes only the
+/// current frame; old frames drop with their element). Pause/resume kills
+/// and restarts at the tracked offset (`-ss`) — universal, no IPC.
+///
+/// No ffmpeg / bad file / failed spawn yields `Err` and callers fall back
+/// (poster still + OS player). Pure pieces (argv builder, JPEG split) are
+/// unit-tested; only `start` and `stop` touch processes.
+pub const MOTION_FPS_DEFAULT: u32 = 8;
+
+/// Safety cap for one MJPEG frame (960px stills are ~30–80KB).
+const FRAME_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+pub struct MotionPump {
+    pub source: PathBuf,
+    pub loop_play: bool,
+    pub fps: u32,
+    child: Option<std::process::Child>,
+    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+    pending: Vec<u8>,
+    offset_secs: f64,
+    t0: Option<std::time::Instant>,
+}
+
+/// `ffmpeg` argv for the motion pipe. Pure so the invocation is pinned.
+pub fn motion_ffmpeg_args(
+    path: &std::path::Path,
+    fps: u32,
+    loop_play: bool,
+    start_secs: f64,
+) -> Vec<String> {
+    let mut args = vec!["-v".to_string(), "error".to_string()];
+    if loop_play {
+        args.push("-stream_loop".to_string());
+        args.push("-1".to_string());
+    }
+    if start_secs > 0.0 {
+        args.push("-ss".to_string());
+        args.push(format!("{:.1}", start_secs));
+    }
+    args.push("-i".to_string());
+    args.push(path.to_string_lossy().into_owned());
+    args.push("-map".to_string());
+    args.push("0:v".to_string());
+    args.push("-vf".to_string());
+    args.push(format!("scale=960:-2,fps={}", fps.max(1)));
+    args.push("-f".to_string());
+    args.push("mjpeg".to_string());
+    args.push("-q:v".to_string());
+    args.push("5".to_string());
+    args.push("pipe:1".to_string());
+    args
+}
+
+/// Split the first complete JPEG (`FFD8..FFD9`) off a byte stream.
+/// Returns the frame plus the remaining bytes. Scan data is byte-stuffed
+/// by the encoder, so the first `FFD9` past the header truly ends the
+/// frame. Pure so framing is unit-testable without processes.
+pub fn split_first_jpeg(buf: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let start = buf.windows(2).position(|w| w == [0xFF, 0xD8])?;
+    let end = buf[start + 2..]
+        .windows(2)
+        .position(|w| w == [0xFF, 0xD9])
+        .map(|p| start + 2 + p + 2)?;
+    Some((buf[start..end].to_vec(), buf[end..].to_vec()))
+}
+
+impl MotionPump {
+    fn ffmpeg_present() -> bool {
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Start pumping `path`: silent MJPEG frames on stdout. `start_secs`
+    /// resumes mid-file (pause/resume); 0 plays from the top.
+    pub fn start(path: &std::path::Path, fps: u32, loop_play: bool, start_secs: f64) -> Result<Self, String> {
+        if !path.is_file() {
+            return Err(format!("file not found: {}", path.display()));
+        }
+        if !Self::ffmpeg_present() {
+            return Err("ffmpeg not found — install ffmpeg for in-app video motion.".to_string());
+        }
+        let args = motion_ffmpeg_args(path, fps, loop_play, start_secs);
+        let mut child = std::process::Command::new("ffmpeg")
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("cannot start ffmpeg: {e}"))?;
+        let stdout = child.stdout.take().map(std::io::BufReader::new);
+        Ok(MotionPump {
+            source: path.to_path_buf(),
+            loop_play,
+            fps: fps.max(1),
+            child: Some(child),
+            stdout,
+            pending: Vec::new(),
+            offset_secs: start_secs.max(0.0),
+            t0: Some(std::time::Instant::now()),
+        })
+    }
+
+    /// Read one frame off the pipe (blocks only until bytes arrive;
+    /// `ffmpeg` stays ahead while playing, so this returns promptly).
+    /// `None` on EOF (standalone clip ended) or a dead pipe. Garbage past
+    /// the cap is dropped so a corrupt stream cannot grow memory.
+    pub fn read_frame(&mut self) -> Option<Vec<u8>> {
+        use std::io::Read;
+        // Complete frame already buffered: no IO at all.
+        if let Some((frame, rest)) = split_first_jpeg(&self.pending) {
+            self.pending = rest;
+            return Some(frame);
+        }
+        let out = self.stdout.as_mut()?;
+        let mut chunk = [0u8; 32768];
+        loop {
+            let n = out.read(&mut chunk).ok()?;
+            if n == 0 {
+                return None; // EOF: the clip ended (or ffmpeg died)
+            }
+            self.pending.extend_from_slice(&chunk[..n]);
+            if let Some((frame, rest)) = split_first_jpeg(&self.pending) {
+                self.pending = rest;
+                return Some(frame);
+            }
+            if self.pending.len() > FRAME_MAX_BYTES {
+                self.pending.clear();
+            }
+        }
+    }
+
+    /// True while the ffmpeg child still runs (a finished standalone clip
+    /// reads as ended: last frame stays as a still).
+    pub fn alive(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(c) => c.try_wait().map(|e| e.is_none()).unwrap_or(false),
+            None => false,
+        }
+    }
+
+    /// Approximate play position in seconds (wall clock from (re)start).
+    pub fn position(&self) -> f64 {
+        match self.t0 {
+            Some(t) => self.offset_secs + t.elapsed().as_secs_f64(),
+            None => self.offset_secs,
+        }
+    }
+
+    /// Freeze the clock for a pause (caller stops the child via `stop`).
+    pub fn mark_paused(&mut self) {
+        self.offset_secs = self.position();
+        self.t0 = None;
+    }
+
+    pub fn paused(&self) -> bool {
+        self.t0.is_none()
+    }
+
+    /// Kill ffmpeg and close the pipe. The last shown frame (held by the
+    /// app) stays on screen.
+    pub fn stop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.child = None;
+        self.stdout = None;
+        self.pending.clear();
+    }
+
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        MotionPump {
+            source: PathBuf::from("test.mp4"),
+            loop_play: false,
+            fps: 8,
+            child: None,
+            stdout: None,
+            pending: Vec::new(),
+            offset_secs: 0.0,
+            t0: Some(std::time::Instant::now()),
+        }
+    }
+}
+
+impl Drop for MotionPump {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 impl MediaPlayer for ExternalPlayer {
     fn kind(&self) -> MediaKind {
         self.kind
@@ -731,6 +930,58 @@ mod tests {
     #[test]
     fn ensure_poster_refuses_ghosts_without_spawning() {
         assert!(ensure_video_poster(std::path::Path::new("/definitely/not/here.mp4")).is_none());
+    }
+
+    #[test]
+    fn motion_args_are_silent_piped_stills_with_capped_rate() {
+        let args = motion_ffmpeg_args(std::path::Path::new("/vids/Loop.mp4"), 8, false, 0.0);
+        for need in ["-f", "mjpeg", "pipe:1", "-map", "0:v"] {
+            assert!(args.contains(&need.to_string()), "missing {need}: {args:?}");
+        }
+        assert!(args.iter().any(|a| a.contains("fps=8")), "rate capped: {args:?}");
+        assert!(args.iter().any(|a| a.contains("scale=960")), "width capped: {args:?}");
+        assert!(!args.iter().any(|a| a == "-stream_loop"), "standalone ends: {args:?}");
+        assert!(!args.iter().any(|a| a == "-ss"), "no offset at 0: {args:?}");
+        let looped = motion_ffmpeg_args(std::path::Path::new("/vids/Loop.mp4"), 8, true, 12.5);
+        assert!(looped.contains(&"-stream_loop".to_string()));
+        assert!(looped.contains(&"12.5".to_string()), "resume offset: {looped:?}");
+    }
+
+    #[test]
+    fn jpeg_split_frames_bytes_without_processes() {
+        // Two synthetic frames + leading garbage: split finds FFD8..FFD9
+        // pairs and leaves the remainder for the next read.
+        let f1 = vec![0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9];
+        let f2 = vec![0xFF, 0xD8, 0x03, 0xFF, 0x00, 0xD9, 0xFF, 0xD9];
+        let mut stream = vec![0x99, 0x88];
+        stream.extend_from_slice(&f1);
+        stream.extend_from_slice(&f2);
+        stream.push(0xFF);
+        let (first, rest) = split_first_jpeg(&stream).expect("first frame");
+        assert_eq!(first, f1, "leading garbage skipped, first frame exact");
+        let (second, tail) = split_first_jpeg(&rest).expect("second frame");
+        // Stuffed FF00 is scan data, not a marker: the frame runs to the
+        // real EOI.
+        assert_eq!(second, f2);
+        assert_eq!(tail, vec![0xFF], "trailing partial byte kept");
+        assert!(split_first_jpeg(&tail).is_none());
+        assert!(split_first_jpeg(&[]).is_none());
+    }
+
+    #[test]
+    fn motion_start_refuses_ghosts_and_tracks_pause() {
+        let err = match MotionPump::start(std::path::Path::new("/definitely/not/here.mp4"), 8, false, 0.0) {
+            Ok(_) => panic!("missing file must not spawn"),
+            Err(e) => e,
+        };
+        assert!(err.contains("not found"), "names itself: {err}");
+        let mut pump = MotionPump::for_test();
+        assert!(!pump.alive(), "process-less pump reads as ended");
+        assert!(pump.read_frame().is_none(), "no pipe, no frame");
+        assert!(!pump.paused());
+        pump.mark_paused();
+        assert!(pump.paused());
+        assert!(pump.position() < 1.0, "fresh clock near zero");
     }
 
     #[test]

@@ -38,10 +38,11 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{Animation, AnimationExt, AnyElement, ElementId};
 use gpui::{
-    App, Bounds, Context, DefiniteLength, Div, Entity, JustifyContent, ObjectFit, Render, Rgba,
-    StyledImage, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
-    div, img, point, px, rgb, size,
+    App, Bounds, Context, DefiniteLength, Div, Entity, ImageSource, JustifyContent,
+    ObjectFit, Render, RenderImage, Rgba, StyledImage, Subscription, TitlebarOptions, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, img, point, px, rgb, size,
 };
+use std::sync::Arc;
 use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
 use vp_core::schema::{Align, BackgroundKind, BgFit, ItemKind, ItemRef, VAlign};
@@ -103,13 +104,17 @@ pub struct ProjectorSnapshot {
     /// so the room sees the video's picture. `None` keeps the captioned
     /// tile (no grab yet, no ffmpeg, stale cache).
     pub video_poster: Option<PathBuf>,
+    /// Live motion frame (JPEG bytes) while the pump runs: rendered
+    /// through an uncached custom loader ahead of `video_poster`. `None`
+    /// when no motion is playing.
+    pub video_frame: Option<std::sync::Arc<Vec<u8>>>
 }
 
 /// Standalone agenda media on the projector (RESEARCH §12.1): a slideshow
 /// image or a standalone video *replaces* the slide — no header/body/footer,
 /// no chords. Images render contain (RESEARCH §1.1: the whole image shows);
-/// video renders its grabbed poster still when available, else the captioned
-/// tile (motion stays in the OS player — gpui 0.2.2 has no video element).
+/// video plays its motion in-app when ffmpeg exists (poster still, else the
+/// captioned tile, as fallback).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StandaloneMedia {
     Image(PathBuf),
@@ -206,11 +211,18 @@ pub(crate) fn background_layer(
     file: Option<&PathBuf>,
     fit: BgFit,
     poster: Option<&PathBuf>,
+    frame: Option<&Arc<Vec<u8>>>,
 ) -> Div {
     let object_fit = match fit {
         BgFit::Cover => ObjectFit::Cover,
         BgFit::Contain => ObjectFit::Contain,
     };
+    // Live motion jumps the queue ahead of stills/tiles.
+    if matches!(kind, BackgroundKind::VideoLoop) {
+        if let Some(f) = frame {
+            return motion_img(f, object_fit);
+        }
+    }
     match (kind, file) {
         (BackgroundKind::Color, _) => div().size_full().bg(bg),
         (BackgroundKind::Image, Some(path)) if path.exists() => div()
@@ -263,7 +275,37 @@ fn missing_note(text: &str) -> Div {
 
 /// Render standalone agenda media: the file replaces the slide (§12.1).
 /// Images contain (whole image shows, §1.1); missing files are named aloud.
-fn standalone_layer(m: &StandaloneMedia, poster: Option<&PathBuf>) -> Div {
+/// Live motion frame through an UNCACHED custom loader: each repaint
+/// decodes only the current bytes, so a long play cannot accumulate
+/// images in any cache (one identity per frame would). A corrupt frame
+/// shows nothing for exactly one beat; the next tick brings a new one.
+pub(crate) fn motion_img(frame: &Arc<Vec<u8>>, fit: ObjectFit) -> Div {
+    let owned = frame.clone();
+    let source = ImageSource::Custom(Arc::new(move |_, _| {
+        let decoded =
+            image::load_from_memory_with_format(&owned, image::ImageFormat::Jpeg)
+                .ok()?
+                .into_rgba8();
+        Some(Ok(Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
+            image::Frame::new(decoded),
+            1,
+        )))))
+    }));
+    div()
+        .size_full()
+        .bg(rgb(0x000000))
+        .child(img(source).object_fit(fit).size_full())
+}
+
+fn standalone_layer(
+    m: &StandaloneMedia,
+    poster: Option<&PathBuf>,
+    frame: Option<&Arc<Vec<u8>>>,
+) -> Div {
+    // Live motion jumps the queue: current frame bytes beat stills/tiles.
+    if let (StandaloneMedia::Video(_), Some(f)) = (m, frame) {
+        return motion_img(f, ObjectFit::Contain);
+    }
     match m {
         StandaloneMedia::Image(p) if p.exists() => div()
             .size_full()
@@ -377,7 +419,7 @@ pub(crate) fn render_snapshot(
     let scale = (bh / 1080.0).clamp(0.2, 3.0);
     let bg = apply_luminosity_color(snap.bg_color, snap.luminosity);
     let inner = if let Some(m) = &snap.standalone {
-        standalone_layer(m, snap.video_poster.as_ref())
+        standalone_layer(m, snap.video_poster.as_ref(), snap.video_frame.as_ref())
     } else if snap.frame.black {
         div().size_full().bg(rgb(0x000000))
     } else if !snap.frame.text {
@@ -388,6 +430,7 @@ pub(crate) fn render_snapshot(
             snap.bg_file.as_ref(),
             snap.bg_fit,
             snap.video_poster.as_ref(),
+            snap.video_frame.as_ref(),
         )
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
@@ -458,6 +501,7 @@ pub(crate) fn render_snapshot(
             snap.bg_file.as_ref(),
             snap.bg_fit,
             snap.video_poster.as_ref(),
+            snap.video_frame.as_ref(),
         ));
         // Luminosity over media pixels: gpui::img exposes no brightness
         // filter, so grade honestly by compositing — a translucent overlay

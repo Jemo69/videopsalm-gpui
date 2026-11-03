@@ -1203,6 +1203,11 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
             if kind == MediaFileKind::Video {
                 // Poster still so the loop shows its picture in-app.
                 root.ensure_video_poster(&path);
+                // Background loop moves in-app when mpv exists; without it
+                // the still stands and F5 still reaches the OS player.
+                if !root.ensure_motion_for(cx, &path, true) {
+                    root.stop_motion();
+                }
                 root.media.open(path);
             }
             root.persist_layout_quiet();
@@ -1252,14 +1257,16 @@ pub(crate) fn play_selected_video(root: &mut Root, cx: &mut Context<Root>) {
     match path {
         Some(p) => {
             root.media.open(p.clone());
-            // Poster first so the preview/projector show the video's
-            // picture even while the OS player opens (or when it can't).
             root.ensure_video_poster(&p);
-            root.media.launch_external();
-            if let Some(e) = root.media.last_error.clone() {
-                root.set_status(cx, format!("Video not playing: {e}"));
-            } else {
-                root.set_status(cx, format!("Video playing externally — {}.", p.display()));
+            // In-app motion first (silent stills, no audio path touched);
+            // OS player stays the fallback when mpv is missing.
+            if !root.ensure_motion_for(cx, &p, false) {
+                root.media.launch_external();
+                if let Some(e) = root.media.last_error.clone() {
+                    root.set_status(cx, format!("Video not playing: {e}"));
+                } else {
+                    root.set_status(cx, format!("Video playing externally — {}.", p.display()));
+                }
             }
         }
         None => root.set_status(cx, "Select a video first — click a ▶ tile."),

@@ -1,6 +1,6 @@
 [package]
 name = "perez-rs"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2024"
 description = "Perez: clean-room worship presentation (GPUI control window + projector + stage view)"
 license = "MIT"
@@ -19,3 +19,7 @@ unicode-segmentation = "1"
 # Native file dialogs (Browse buttons). Portal-only on Linux so CI needs no
 # GTK dev packages; Windows/macOS use the OS dialogs unconditionally.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+# JPEG decode for in-app video motion frames (same crate gpui itself uses).
+image = "0.25.10"
+# Single-frame vec for the motion image loader.
+smallvec = "1.16"
