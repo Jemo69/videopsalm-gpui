@@ -686,8 +686,8 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
             ),
             11.,
         ))
-        .child(row(vec![
-            btn(
+        .child(row({
+            let mut row_kids = vec![btn(
                 ui,
                 cx,
                 &toggle_label,
@@ -700,8 +700,21 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
                     };
                     cx.notify();
                 },
-            ),
-            btn(
+            )];
+            // Direct play from the strip: no agenda detour. Plays the
+            // selected tile, else the assigned background video.
+            if kind == MediaFileKind::Video {
+                row_kids.push(btn(
+                    ui,
+                    cx,
+                    "▶ Play",
+                    false,
+                    |this, _, _, cx| {
+                        play_selected_video(this, cx);
+                    },
+                ));
+            }
+            row_kids.push(btn(
                 ui,
                 cx,
                 "Cover",
@@ -709,8 +722,8 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
                 |this, _, _, cx| {
                     apply_bg_fit(this, cx, BgFit::Cover);
                 },
-            ),
-            btn(
+            ));
+            row_kids.push(btn(
                 ui,
                 cx,
                 "Contain",
@@ -718,8 +731,9 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
                 |this, _, _, cx| {
                     apply_bg_fit(this, cx, BgFit::Contain);
                 },
-            ),
-        ]))
+            ));
+            row_kids
+        }))
 }
 
 fn thumb_btn(
@@ -1165,6 +1179,37 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
     crate::presentation::publish(root, cx);
     if !root.galleries.keep_open {
         root.galleries.open = None;
+    }
+    cx.notify();
+}
+
+/// Play the selected video straight from the gallery — no agenda
+/// detour. Clicking a tile only selects + assigns the background loop
+/// (the file loads into the transport stopped), so without this the
+/// operator could stare at a ▶ tile with no way to start it.
+/// Falls back to the assigned background video when nothing is
+/// selected. Images ignore this (they render in-app).
+pub(crate) fn play_selected_video(root: &mut Root, cx: &mut Context<Root>) {
+    let path = root
+        .galleries
+        .selection(MediaFileKind::Video)
+        .and_then(|id| root.galleries.assign_path(MediaFileKind::Video, id))
+        .or_else(|| {
+            (root.bg_kind == BackgroundKind::VideoLoop)
+                .then(|| root.bg_file.clone())
+                .flatten()
+        });
+    match path {
+        Some(p) => {
+            root.media.open(p.clone());
+            root.media.launch_external();
+            if let Some(e) = root.media.last_error.clone() {
+                root.set_status(cx, format!("Video not playing: {e}"));
+            } else {
+                root.set_status(cx, format!("Video playing externally — {}.", p.display()));
+            }
+        }
+        None => root.set_status(cx, "Select a video first — click a ▶ tile."),
     }
     cx.notify();
 }

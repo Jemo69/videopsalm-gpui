@@ -40,7 +40,7 @@ use gpui::{Animation, AnimationExt, AnyElement, ElementId};
 use gpui::{
     App, Bounds, Context, DefiniteLength, Div, Entity, JustifyContent, ObjectFit, Render, Rgba,
     StyledImage, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
-    div, img, px, rgb, size,
+    div, img, point, px, rgb, size,
 };
 use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
@@ -561,9 +561,16 @@ impl Render for ProjectorWindow {
     }
 }
 
-/// Open the second window. `fullscreen` requests a real fullscreen open on
-/// the main display; `WindowHandle::update` + `Window::toggle_fullscreen`
-/// flips it later from the control window.
+/// Open the second window. `fullscreen` requests a real fullscreen open;
+/// `WindowHandle::update` + `Window::toggle_fullscreen` flips it later
+/// from the control window.
+///
+/// `monitor` is the operator's chosen RandR output rectangle (Display
+/// 1/2/3). GPUI's X11 backend enumerates X *screens* — one for a whole
+/// merged dual-monitor desktop — so display ids can never address the
+/// second monitor; an explicit borderless window inside the output rect
+/// is the only placement that actually lands there. `None` keeps the old
+/// display-id path (primary fallback).
 ///
 /// Returns the handle, or a message string: the app crate does not depend on
 /// `anyhow` directly, so gpui's `anyhow::Error` is mapped to text here.
@@ -572,32 +579,48 @@ pub(crate) fn open_projector_window(
     presentation: Entity<PresentationState>,
     fullscreen: bool,
     display: Option<gpui::DisplayId>,
+    monitor: Option<crate::monitors::Monitor>,
 ) -> Result<WindowHandle<ProjectorWindow>, String> {
     // Honor the operator's display choice (WI-033 follow-up): the old code
     // always centered on the primary display, so the monitor buttons were
     // decoration. `None` (or a vanished display) falls back to primary.
     let restore = Bounds::centered(display, size(px(1920.), px(1080.)), cx);
-    let (window_bounds, titlebar) = if fullscreen {
-        // True borderless fullscreen for the congregation: no title bar,
-        // no minimize/maximize/close (WI-033 — the operator asked for
-        // exactly this; the control window keeps the only chrome).
-        // `appears_transparent` hides the system titlebar on Windows.
-        (
-            WindowBounds::Fullscreen(restore),
-            Some(TitlebarOptions {
-                title: None,
-                appears_transparent: true,
-                traffic_light_position: None,
-            }),
-        )
-    } else {
+    let transparent_chrome = Some(TitlebarOptions {
+        title: None,
+        appears_transparent: true,
+        traffic_light_position: None,
+    });
+    let (window_bounds, titlebar) = match (fullscreen, monitor) {
+        // True borderless fullscreen for the congregation, placed by
+        // geometry (not by the WM, which would ignore the output): no
+        // title bar, no minimize/maximize/close (WI-033 — the operator
+        // asked for exactly this; the control window keeps the only
+        // chrome). `appears_transparent` hides the system titlebar.
+        (true, Some(m)) => (
+            WindowBounds::Windowed(Bounds::new(
+                point(px(m.x as f32), px(m.y as f32)),
+                size(px(m.w as f32), px(m.h as f32)),
+            )),
+            transparent_chrome,
+        ),
+        (true, None) => (WindowBounds::Fullscreen(restore), transparent_chrome),
         // Windowed opens deliberately modest (1280×720): a 1920×1080 first
         // window is off-screen on smaller laptop displays (WI-028 — opening
         // it crashed there), and the user maximizes or flips fullscreen
-        // once it is up. Fullscreen keeps the native 1080p request.
-        // Windowed honors the chosen display too — `None` here always
-        // landed on the primary, ignoring the monitor buttons.
-        (
+        // once it is up. It centers inside the chosen output when known.
+        (false, Some(m)) => {
+            let (w, h) = (1280f32, 720f32);
+            let ox = m.x as f32 + ((m.w as f32 - w) / 2.).max(0.);
+            let oy = m.y as f32 + ((m.h as f32 - h) / 2.).max(0.);
+            (
+                WindowBounds::Windowed(Bounds::new(
+                    point(px(ox), px(oy)),
+                    size(px(w), px(h)),
+                )),
+                None,
+            )
+        }
+        (false, None) => (
             WindowBounds::Windowed(Bounds::centered(display, size(px(1280.), px(720.)), cx)),
             None,
         )

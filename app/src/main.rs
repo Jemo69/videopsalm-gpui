@@ -41,6 +41,7 @@ mod file_picker;
 mod icons;
 mod lyrics_doc;
 mod media_gallery;
+mod monitors;
 mod presentation;
 mod preview_resize;
 mod projector_window;
@@ -2713,19 +2714,33 @@ impl Root {
         // update here, and any entity read of Root would re-enter the map.
         let presentation = self.presentation.clone();
         // The operator's chosen display (Settings → projector monitor),
-        // resolved now while we can still read our own fields. A choice
-        // past the last connected display falls back to primary AND says
-        // so, instead of silently opening on the wrong screen.
-        let n_displays = cx.displays().len();
+        // resolved now while we can still read our own fields. GPUI's
+        // `cx.displays()` enumerates X *screens* — one for a whole merged
+        // dual-monitor desktop — so the real geometry comes from RandR
+        // (`monitors::list`, primary first). A choice past the last
+        // connected output falls back to primary AND says so, instead of
+        // silently opening on the wrong screen.
         let display = cx.displays().get(self.projector_display).map(|d| d.id());
-        if display.is_none() && n_displays > 0 {
-            self.set_status(
-                cx,
-                format!(
-                    "Display {} not connected (found {n_displays}) — using primary.",
-                    self.projector_display + 1,
-                ),
-            );
+        let monitors = monitors::list();
+        let monitor = monitors.get(self.projector_display).copied();
+        if monitor.is_none() {
+            let found = monitors.len();
+            if self.projector_display > 0 || found > 1 {
+                self.set_status(
+                    cx,
+                    if found == 0 {
+                        format!(
+                            "Display {}: no RandR outputs detected — using primary.",
+                            self.projector_display + 1,
+                        )
+                    } else {
+                        format!(
+                            "Display {} not connected (found {found}) — using primary.",
+                            self.projector_display + 1,
+                        )
+                    },
+                );
+            }
         }
         // Deferred past the current update: opening a window builds and
         // first-paints its view synchronously, and that paint must never
@@ -2733,7 +2748,7 @@ impl Root {
         // snapshot). Deferral is belt-and-braces on top of the split.
         crash_log::log_line("projector open requested (deferred past update)");
         cx.defer(move |cx: &mut App| {
-            match projector_window::open_projector_window(cx, presentation, fullscreen, display) {
+            match projector_window::open_projector_window(cx, presentation, fullscreen, display, monitor) {
                 Ok(handle) => {
                     let _ = root.update(cx, |this, cx| {
                         this.projector_window = Some(handle);
