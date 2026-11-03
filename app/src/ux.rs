@@ -186,6 +186,38 @@ pub fn style_write_targets(level: &str) -> Vec<vp_core::cascade::Level> {
     }
 }
 
+/// Redirect cross-chain style writes onto the live item's own chain.
+///
+/// A Song-side target (`Songbooks`/`Song`/`Verse`) never reaches a Bible
+/// item (`Chain::Bibles`), and vice versa — so a font/size edit made while
+/// a Bible verse is live appears to do nothing. When none of `targets`
+/// participates in `chain`, song<->bible targets land on the matching rung
+/// (`Song` <-> `Bible`); anything else passes through untouched.
+/// Pure so the redirect contract is unit-testable without a window.
+pub fn redirect_style_targets(
+    chain: vp_core::cascade::Chain,
+    targets: Vec<vp_core::cascade::Level>,
+) -> Vec<vp_core::cascade::Level> {
+    use vp_core::cascade::Level::*;
+    if targets.is_empty() || targets.iter().any(|l| chain.contains(*l)) {
+        return targets;
+    }
+    let song_side = targets
+        .iter()
+        .any(|l| matches!(l, Songbooks | Songbook | Song | SongVerse));
+    let bible_side = targets.iter().any(|l| {
+        matches!(
+            l,
+            Bibles | Bible | Testament | Book | Chapter | Verse
+        )
+    });
+    match chain {
+        vp_core::cascade::Chain::Bibles if song_side => vec![Bible],
+        vp_core::cascade::Chain::Songs if bible_side => vec![Song],
+        _ => targets,
+    }
+}
+
 /// Verse numbers leading each Bible slide line (`"16 text..."`).
 ///
 /// Pure so per-slide Bible rows are unit-testable: the panel groups verses
@@ -1338,6 +1370,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn cross_chain_style_writes_redirect_to_live_chain() {
+        use vp_core::cascade::{Chain, Level::*};
+        // Bible verse live while the Styles dropdown sits on Song/Verse:
+        // the value must land on Bible, where Chain::Bibles resolves it.
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![Song]),
+            vec![Bible]
+        );
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![SongVerse]),
+            vec![Bible]
+        );
+        // ... and the mirror: a Bible target with a song live lands on Song.
+        assert_eq!(
+            redirect_style_targets(Chain::Songs, vec![Bible]),
+            vec![Song]
+        );
+        // On-chain and empty targets pass through untouched.
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![Bible]),
+            vec![Bible]
+        );
+        assert_eq!(
+            redirect_style_targets(Chain::Songs, vec![Song]),
+            vec![Song]
+        );
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![Base]),
+            vec![Base]
+        );
+        assert!(redirect_style_targets(Chain::Bibles, vec![]).is_empty());
+        assert_eq!(
+            redirect_style_targets(Chain::Images, vec![Song]),
+            vec![Song]
+        );
     }
 
     #[test]
