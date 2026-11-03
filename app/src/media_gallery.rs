@@ -87,6 +87,11 @@ pub struct GalleryState {
     /// panel (grid + seven-row stack) gets a bounded box of its own instead
     /// of crushing the editor below on short windows.
     pub scroll_panel: ScrollHandle,
+    /// Compact-strip pager position per gallery: `ScrollHandle::top_item`
+    /// is Y-only, so on the horizontal 1-row strip it stalls after one jump
+    /// — the page index (in `STRIP_PAGE`-tile pages) is tracked explicitly
+    /// and the target item is the page's far edge.
+    pub strip_page: std::collections::HashMap<MediaFileKind, usize>,
 }
 
 impl Default for GalleryState {
@@ -105,6 +110,7 @@ impl Default for GalleryState {
             scroll_images_panel: ScrollHandle::new(),
             scroll_videos_panel: ScrollHandle::new(),
             scroll_panel: ScrollHandle::new(),
+            strip_page: std::collections::HashMap::new(),
         }
     }
 }
@@ -171,11 +177,14 @@ impl GalleryState {
         }
     }
 
-    /// Compact density (operator request for large libraries): 2 rows × 5
-    /// columns of small previews with no filenames; the arrow expands to
-    /// the full captioned grid. (Vendor §9 documents collapsed + expanded
-    /// + remembered size, not this exact density.)
+    /// Compact density: one scrolling row of small previews with no
+    /// filenames; the arrow expands to the full captioned grid.
+    /// (Vendor §9 documents collapsed + expanded + remembered size,
+    /// not this exact density.)
+    /// Compact strip file budget for one row (`STRIP_PAGE`-tile pages).
     pub const COMPACT_CAP: usize = 10;
+    /// Pager step: tiles per strip page (song list's ▲ ▼, sideways).
+    pub const STRIP_PAGE: usize = 4;
     /// Full-grid cap so a big folder stays fast (count line + Search
     /// narrow it further).
     pub const GRID_CAP: usize = 60;
@@ -196,6 +205,12 @@ impl GalleryState {
     pub fn compact_tile_footprint_px() -> f32 {
         112.0 + 12.0 + 2.0 + 2.0
     }
+    /// Pages in a `shown`-cell strip at `STRIP_PAGE` tiles per page
+    /// (pure so the pager contract is unit-testable).
+    pub fn strip_pages(shown: usize) -> usize {
+        (shown.max(1) + Self::STRIP_PAGE - 1) / Self::STRIP_PAGE
+    }
+
     /// Which entry positions to render (pure, tested): the first `limit`
     /// entries, plus the assigned one when it falls outside — the
     /// highlighted thumbnail (§3/S3) must always be visible, never silently
@@ -642,19 +657,43 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         .children(thumbs);
     let h_back = handle.clone();
     let h_fwd = handle.clone();
+    // Explicit page index: `top_item` is Y-only and stalls on a horizontal
+    // row after one jump. Next targets the next page's far edge, Prev the
+    // previous page's near edge — `FirstVisible` scrolling moves X exactly
+    // when the target sits outside the view. Child indices include the
+    // video sentinel at 0 (chrome, not a file), so page math counts cells,
+    // not files.
+    let sentinel_cells = if kind == MediaFileKind::Video { 1 } else { 0 };
+    let shown_cells = shown_files + sentinel_cells;
+    let pages_here = GalleryState::strip_pages(shown_cells);
+    let last_child = shown_cells.saturating_sub(1);
+    let cur_page = root
+        .galleries
+        .strip_page
+        .get(&kind)
+        .copied()
+        .unwrap_or(0)
+        .min(pages_here - 1);
+    let page = GalleryState::STRIP_PAGE;
     let strip_row = div()
         .flex()
         .flex_row()
         .gap_1()
         .items_center()
         .child(btn(ui, cx, "◀", false, move |this, _, _, cx| {
-            h_back.scroll_to_item(h_back.top_item().saturating_sub(4));
+            let to = cur_page.saturating_sub(1).min(pages_here - 1);
+            let target = to * page;
+            this.galleries.strip_page.insert(kind, to);
+            h_back.scroll_to_item(target);
             this.set_status(cx, "Gallery strip scrolled.");
             cx.notify();
         }))
         .child(grid_list)
         .child(btn(ui, cx, "▶", false, move |this, _, _, cx| {
-            h_fwd.scroll_to_item(h_fwd.top_item().saturating_add(4));
+            let to = (cur_page + 1).min(pages_here - 1);
+            let target = ((to + 1) * page).saturating_sub(1).min(last_child);
+            this.galleries.strip_page.insert(kind, to);
+            h_fwd.scroll_to_item(target);
             this.set_status(cx, "Gallery strip scrolled.");
             cx.notify();
         }));
@@ -711,6 +750,15 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
                     false,
                     |this, _, _, cx| {
                         play_selected_video(this, cx);
+                    },
+                ));
+                row_kids.push(btn(
+                    ui,
+                    cx,
+                    "+ Agenda",
+                    false,
+                    |this, _, _, cx| {
+                        this.add_video_to_agenda(cx);
                     },
                 ));
             }
@@ -1485,6 +1533,18 @@ mod tests {
             GalleryState::compact_file_limit(MediaFileKind::Video) + 1,
             GalleryState::COMPACT_CAP
         );
+    }
+
+    #[test]
+    fn strip_pager_pages_tile_counts() {
+        // Explicit page index: `top_item` is Y-only and stalls on a
+        // horizontal row, so the pager walks `STRIP_PAGE`-tile pages.
+        assert_eq!(GalleryState::STRIP_PAGE, 4);
+        assert_eq!(GalleryState::strip_pages(0), 1);
+        assert_eq!(GalleryState::strip_pages(1), 1);
+        assert_eq!(GalleryState::strip_pages(4), 1);
+        assert_eq!(GalleryState::strip_pages(5), 2);
+        assert_eq!(GalleryState::strip_pages(10), 3);
     }
 
     #[test]

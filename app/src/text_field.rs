@@ -668,23 +668,26 @@ impl Element for TextElement {
 impl Render for TextField {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Window-driven caret: an overlay I-beam with a stepping opacity
-        // animation (530ms each way), positioned from the previous frame's
-        // shaped line. Task + notify loops never re-rendered the field;
+        // animation (530ms each way). It lives INSIDE a relative wrapper
+        // around the text element, positioned at text-relative x from the
+        // previous frame's shaped line — window-space bounds would double
+        // the offset. Task + notify loops never re-rendered the field;
         // element animation frames always repaint. The id tracks the
-        // cursor, so a move remounts the caret solid first.
+        // cursor, so a move remounts the caret solid first. Empty fields
+        // get the caret at x = 0 (placeholder origin).
         let focused = self.focus_handle.is_focused(window);
         let caret_overlay: Option<AnyElement> = {
-            if focused && self.selected_range.is_empty() && !self.content.is_empty() {
-                match (self.last_layout.clone(), self.last_bounds) {
-                    (Some(line), Some(bounds)) => {
+            if focused && self.selected_range.is_empty() {
+                match self.last_layout.clone() {
+                    Some(line) => {
                         let at = self.cursor_offset().min(line.len());
                         let x = line.x_for_index(at);
                         Some(
                             div()
                                 .absolute()
-                                .left(bounds.left() + x)
-                                .top(bounds.top())
-                                .bottom(bounds.bottom())
+                                .left(x)
+                                .top(px(0.))
+                                .bottom(px(0.))
                                 .w(px(2.))
                                 .bg(gpui::blue())
                                 .with_animation(
@@ -750,9 +753,12 @@ impl Render for TextField {
                     // ink must be hardcoded dark — inheriting the theme fg
                     // paints near-white text on this white field.
                     .text_color(rgb(0x18181B))
-                    .relative()
-                    .child(TextElement { input: cx.entity() })
-                    .children(caret_overlay),
+                    .child(
+                        div()
+                            .relative()
+                            .child(TextElement { input: cx.entity() })
+                            .children(caret_overlay),
+                    ),
             )
     }
 }

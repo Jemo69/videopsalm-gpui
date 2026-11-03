@@ -8,9 +8,10 @@
 //! chosen one. No network, one local subprocess, graceful `None` when
 //! `xrandr` is missing (single-display fallback).
 
-/// One connected output rectangle, in screen pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One connected output, in screen pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Monitor {
+    pub name: String,
     pub x: i32,
     pub y: i32,
     pub w: i32,
@@ -29,8 +30,7 @@ pub fn list() -> Vec<Monitor> {
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut monitors = parse_listmonitors(&text);
-    // Primary first: Display 1 is the primary in every OS numbering.
-    monitors.sort_by_key(|m| !m.primary);
+    sort_primary_first(&mut monitors);
     monitors
 }
 
@@ -50,8 +50,10 @@ fn parse_listmonitors(text: &str) -> Vec<Monitor> {
         let Some(_index) = parts.next() else { continue };
         let Some(flags) = parts.next() else { continue };
         let Some(geom) = parts.next() else { continue };
+        let name = parts.next().unwrap_or("").to_string();
         let Some(rect) = parse_geometry(geom) else { continue };
         out.push(Monitor {
+            name,
             x: rect.0,
             y: rect.1,
             w: rect.2,
@@ -62,6 +64,23 @@ fn parse_listmonitors(text: &str) -> Vec<Monitor> {
     out
 }
 
+/// Primary-first ordering shared by `list` (pure so tests pin it
+/// instead of re-asserting their own sort).
+pub fn sort_primary_first(monitors: &mut [Monitor]) {
+    monitors.sort_by_key(|m| !m.primary);
+}
+
+/// Resolve the projector target: a persisted output name first (stable
+/// across hotplug reorderings), then the position index, then `None`.
+/// Pure so the fallback chain is unit-testable.
+pub fn resolve_target(monitors: &[Monitor], name: Option<&str>, idx: usize) -> Option<Monitor> {
+    if let Some(want) = name.filter(|n| !n.is_empty()) {
+        if let Some(m) = monitors.iter().find(|m| m.name == want) {
+            return Some(m.clone());
+        }
+    }
+    monitors.get(idx).cloned()
+}
 /// Parse `1920/510x1080/290+0+0` → `(x, y, w, h)`. Pure for tests.
 fn parse_geometry(geom: &str) -> Option<(i32, i32, i32, i32)> {
     // Strip the `/mm` physical sizes: `1920/510x1080/290+0+0`.
@@ -89,22 +108,44 @@ mod tests {
         assert_eq!(ms.len(), 2);
         assert_eq!(
             ms[0],
-            Monitor { x: 0, y: 0, w: 1920, h: 1080, primary: true }
+            Monitor { name: "DP-1".to_string(), x: 0, y: 0, w: 1920, h: 1080, primary: true }
         );
         assert_eq!(
             ms[1],
-            Monitor { x: 1920, y: 0, w: 1920, h: 1080, primary: false }
+            Monitor { name: "HDMI-1".to_string(), x: 1920, y: 0, w: 1920, h: 1080, primary: false }
         );
     }
 
     #[test]
-    fn list_sorts_primary_first() {
-        // `list` itself shells out; the ordering rule is what matters and
-        // is covered by construction here: primary sorts before secondary.
+    fn resolves_by_name_then_index() {
+        let ms = parse_listmonitors(TWO_MONITORS);
+        // Name wins even when the index points elsewhere (hotplug reorder).
+        assert_eq!(
+            resolve_target(&ms, Some("HDMI-1"), 0).map(|m| m.name),
+            Some("HDMI-1".to_string())
+        );
+        // Unknown name falls back to the index.
+        assert_eq!(
+            resolve_target(&ms, Some("GONE"), 1).map(|m| m.name),
+            Some("HDMI-1".to_string())
+        );
+        // No name: plain index, out-of-range is None.
+        assert_eq!(
+            resolve_target(&ms, None, 0).map(|m| m.name),
+            Some("DP-1".to_string())
+        );
+        assert_eq!(resolve_target(&ms, None, 9), None);
+    }
+
+    #[test]
+    fn primary_first_ordering_is_stable() {
+        // The rule `list` applies, exercised directly: primary sorts
+        // before secondary regardless of input order.
         let mut ms = parse_listmonitors(TWO_MONITORS);
         ms.reverse();
-        ms.sort_by_key(|m| !m.primary);
+        sort_primary_first(&mut ms);
         assert!(ms[0].primary);
+        assert_eq!(ms[0].name, "DP-1");
     }
 
     #[test]

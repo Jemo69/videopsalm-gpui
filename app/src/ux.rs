@@ -230,9 +230,22 @@ pub fn video_item_file(item: &AgendaItem) -> Option<(String, PathBuf)> {
         _ => None,
     }
 }
-/// Verse numbers leading each Bible slide line (`"16 text..."`).
-///
-/// Pure so per-slide Bible rows are unit-testable: the panel groups verses
+/// One-line verse-order summary for the collapsed disclosure: the full
+/// list when it fits, `first 5 … (N verses)` for long medleys (pure so
+/// the collapse contract is unit-testable).
+pub fn verse_order_summary(current: &[String]) -> String {
+    if current.len() > 6 {
+        format!(
+            "{}, … ({} verses)",
+            current[..5].join(", "),
+            current.len()
+        )
+    } else {
+        current.join(", ")
+    }
+}
+
+/// Verse numbers leading each Bible slide line (`"16 text..."`). the panel groups verses
 /// into projected slides (like songs), and the badge/checkbox derive from the
 /// verses inside the slide rather than from a per-verse row.
 pub fn bible_slide_verses(lines: &[String]) -> Vec<u32> {
@@ -1075,6 +1088,11 @@ pub struct LayoutPrefs {
     /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
     #[serde(default)]
     pub projector_display: usize,
+    /// RandR output name for the projector target (`DP-1`, `HDMI-1`):
+    /// indexes shift when outputs come and go, names do not. Resolved
+    /// first at open; the index is the fallback.
+    #[serde(default)]
+    pub projector_monitor: Option<String>,
     /// Gallery library paths (persisted so backgrounds survive restart —
     /// lens 2/3: an in-memory-only library meant every background vanished
     /// on relaunch and USB-stick picks ghosted). Missing files are skipped
@@ -1141,6 +1159,7 @@ impl Default for LayoutPrefs {
             bible_search: d_bible_search(),
             aspect_ratio: d_aspect_ratio(),
             projector_display: 0,
+            projector_monitor: None,
             gallery_images: Vec::new(),
             gallery_videos: Vec::new(),
             gallery_keep_open: false,
@@ -1172,8 +1191,9 @@ impl LayoutPrefs {
 }
 
 /// Caret blink cadence shared by the single-line fields and the lyrics
-/// document: each view runs one guarded 530ms loop task that toggles its
-/// caret while focused with a collapsed selection.
+/// document: each caret is a `with_animation` step toggling opacity every
+/// `CARET_BLINK_MS`, id-keyed by cursor so a move remounts it solid. No
+/// tasks, no repaint scheduling — window animation frames repaint.
 pub const CARET_BLINK_MS: u128 = 530;
 
 #[cfg(test)]
@@ -1409,6 +1429,20 @@ mod tests {
                 }
             )),
             None
+        );
+    }
+
+    #[test]
+    fn verse_order_summary_collapses_long_medleys() {
+        let short: Vec<String> = ["V1", "V2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(verse_order_summary(&short), "V1, V2");
+        assert_eq!(verse_order_summary(&[]), "");
+        let six: Vec<String> = (1..=6).map(|n| format!("V{n}")).collect();
+        assert_eq!(verse_order_summary(&six), "V1, V2, V3, V4, V5, V6");
+        let long: Vec<String> = (1..=74).map(|n| format!("{n}")).collect();
+        assert_eq!(
+            verse_order_summary(&long),
+            "1, 2, 3, 4, 5, … (74 verses)"
         );
     }
 
