@@ -196,7 +196,7 @@ use crate::cascade::{Cascade, Chain, Level, Provenance};
 /// (RESEARCH §1: "Three media families, each with its own gallery" — images,
 /// videos, webcam; the webcam is a *toggle*, not a gallery item, so it is
 /// deliberately absent here).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MediaFileKind {
     #[default]
     Image,
