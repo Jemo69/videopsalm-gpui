@@ -495,6 +495,11 @@ pub(crate) struct Root {
     /// re-pushes on every navigation, so without this the player would
     /// relaunch on each slide step. Reset when live leaves video.
     media_launched_for: Option<String>,
+    /// Poster stills per video file path (`videopsalm-posters` cache): the
+    /// preview/projector show the video's picture through the in-app `img`
+    /// element instead of a black tile. Filled at assign/play/push time
+    /// (never during render), read by `projector_snapshot`.
+    video_posters: HashMap<String, PathBuf>,
     pptx_info: String,
 
     // B-32/B-12 media state (galleries, cascade, assigned background file,
@@ -842,6 +847,7 @@ impl Root {
             split_bible_verses: false,
             media: ExternalPlayer::new(MediaKind::Video),
             media_launched_for: None,
+            video_posters: HashMap::new(),
             pptx_info: String::new(),
             galleries: GalleryState::default(),
             cascade: Cascade::default(),
@@ -2521,6 +2527,24 @@ impl Root {
     fn republish(&mut self, cx: &mut Context<Self>) {
         crate::presentation::publish(self, cx);
     }
+    /// Grab (or reuse) the poster still for a video file so preview and
+    /// projector show its picture. Runs `ffmpeg` at most once per file
+    /// version (mtime-checked cache); call at assign/play/push time, never
+    /// during render. Silent when grabs fail — the captioned tile stands.
+    pub(crate) fn ensure_video_poster(&mut self, path: &std::path::Path) {
+        let key = path.to_string_lossy().into_owned();
+        if self
+            .video_posters
+            .get(&key)
+            .is_some_and(|p| vp_core::media::poster_is_fresh(path, p))
+        {
+            return;
+        }
+        if let Some(poster) = vp_core::media::ensure_video_poster(path) {
+            self.video_posters.insert(key, poster);
+        }
+    }
+
     fn push_projection(&mut self, cx: &mut Context<Self>) {
         if self.frozen_slide.is_some() {
             return;
@@ -2537,6 +2561,9 @@ impl Root {
         match video {
             Some((id, path)) if self.media_launched_for.as_deref() != Some(id.as_str()) => {
                 self.media.open(path.clone());
+                // Poster first: the room sees the video's picture even
+                // while the OS player opens (or when it can't).
+                self.ensure_video_poster(&path);
                 self.media.launch_external();
                 if let Some(e) = self.media.last_error.clone() {
                     // Leave the guard unset: a failed launch must retry on
@@ -2659,6 +2686,20 @@ impl Root {
                 .get(it)
                 .and_then(|a| projector_window::standalone_for(&a.kind, &a.reference))
         });
+        // The video picture, when grabbed: standalone video first, else the
+        // video-loop background. Map lookup only (grabs happen at
+        // assign/play/push time) — render never spawns `ffmpeg`.
+        let poster_source: Option<PathBuf> = match &standalone {
+            Some(projector_window::StandaloneMedia::Video(p)) => Some(p.clone()),
+            _ => match self.bg_kind {
+                BackgroundKind::VideoLoop => self.bg_file.clone(),
+                _ => None,
+            },
+        };
+        let video_poster = poster_source.as_ref().and_then(|p| {
+            let key = p.to_string_lossy().into_owned();
+            self.video_posters.get(&key).cloned()
+        });
         ProjectorSnapshot {
             bg_kind: self.bg_kind,
             bg_file: self.bg_file.clone(),
@@ -2674,6 +2715,7 @@ impl Root {
             lines,
             footer,
             standalone,
+            video_poster,
             alert_visible: self.alert_visible,
             alert_text: self.alert_field.read(cx).text(),
             clock_overlay: self.clock_overlay,
@@ -3008,27 +3050,52 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// projector follows too. Punches through the shield exactly like an
     /// agenda double-click (`select_agenda`).
     fn play_browser_song(&mut self, cx: &mut Context<Self>, idx: usize) {
-        let Some(song) = self.songs.get(idx).cloned() else {
+        if self.songs.get(idx).is_none() {
             return;
-        };
+        }
         if self.shield {
             self.set_status(cx, "Shield punched through by double-click.");
         }
-        let missing = !self.agenda.items.iter().any(
-            |it| matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id),
-        );
-        if missing {
-            self.agenda_dirty = true;
-            agenda_ops::add_item(
-                &mut self.agenda,
-                ItemKind::Song,
-                song.title.clone(),
-                ItemRef::Song {
-                    song_id: song.id.clone(),
-                },
-            );
+        if self.ensure_browser_song_in_agenda(idx).is_some() {
+            self.select_song_ex(cx, idx, true);
         }
-        self.select_song_ex(cx, idx, true);
+    }
+
+    /// Project one slide row of a browser song (the transient library
+    /// preview has no agenda index of its own): same membership step as
+    /// [`Self::play_browser_song`], then straight to that slide.
+    fn play_browser_song_slide(&mut self, cx: &mut Context<Self>, idx: usize, slide: usize) {
+        if self.songs.get(idx).is_none() {
+            return;
+        }
+        if self.shield {
+            self.set_status(cx, "Shield punched through by double-click.");
+        }
+        if let Some(ag_idx) = self.ensure_browser_song_in_agenda(idx) {
+            self.sync_editor_to_item(cx, ag_idx);
+            self.goto_item_slide(cx, ag_idx, slide);
+        }
+    }
+
+    /// Agenda membership for a library song, shared by direct-play paths:
+    /// returns the agenda index (added when absent). Never projects.
+    fn ensure_browser_song_in_agenda(&mut self, idx: usize) -> Option<usize> {
+        let song = self.songs.get(idx).cloned()?;
+        if let Some(ag_idx) = self.agenda.items.iter().position(
+            |it| matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id),
+        ) {
+            return Some(ag_idx);
+        }
+        self.agenda_dirty = true;
+        let id = agenda_ops::add_item(
+            &mut self.agenda,
+            ItemKind::Song,
+            song.title.clone(),
+            ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+        );
+        self.agenda.items.iter().position(|i| i.id == id)
     }
 
     /// Transpose the current song by `steps` semitones, or set the display
@@ -3475,6 +3542,11 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                     },
                 );
                 self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+                // The panel now points at the new item: keep the editor on
+                // the same song or editor and slides desync again.
+                if let Some(pos) = self.sel_item {
+                    self.sync_editor_to_item(cx, pos);
+                }
                 self.set_status(cx, format!("Added {}", song.title));
             }
         }
@@ -8219,6 +8291,29 @@ impl Root {
     /// Every slide keeps its footer ref line (translation / authors).
     fn slides_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let target = self.sel_item.or(self.live_item);
+        // Which song (if any) the agenda target points at; Bible and other
+        // targets keep the panel regardless of the library selection.
+        let agenda_target = target
+            .and_then(|ti| self.agenda.items.get(ti))
+            .map(|it| match &it.reference {
+                ItemRef::Song { song_id } => ux::AgendaTarget::Song {
+                    song_id: song_id.clone(),
+                },
+                _ => ux::AgendaTarget::Other,
+            });
+        let sel_id = self
+            .sel_song
+            .and_then(|si| self.songs.get(si))
+            .map(|s| s.id.clone());
+        // The editor already follows the browser selection: when it names a
+        // different song than the agenda target (or there is no target),
+        // the panel renders that song transiently instead of a stale agenda
+        // item — editor and slides never show two different songs.
+        if ux::library_preview_wins(sel_id.as_deref(), agenda_target.as_ref()) {
+            if let Some(si) = self.sel_song {
+                return self.library_song_panel(ui, cx, si);
+            }
+        }
         let Some(item_idx) = target else {
             return section(
                 ui,
@@ -8314,6 +8409,161 @@ impl Root {
             &self.scroll_shortcuts,
             "scroll:shortcuts",
         )
+    }
+
+    /// Transient preview of a library song that is NOT the agenda target:
+    /// same rows as [`Self::song_blocks`] (checkbox, letter badge, wrapped
+    /// text) so the slides panel stays in step with the editor while
+    /// browsing. Checkbox state is keyed under a `browser:{song}` id so it
+    /// never collides with real agenda items; clicking a row adds the song
+    /// when absent and projects that slide. The live row highlights when
+    /// the live item is this same song.
+    fn library_song_panel(&mut self, ui: &UI, cx: &mut Context<Root>, si: usize) -> Div {
+        let Some(song) = self.songs.get(si).cloned() else {
+            return section(ui, &self.t("slides"), vec![label(ui, "(no verses)", 13.)]);
+        };
+        let transient = AgendaItem {
+            id: format!("browser:{}", song.id),
+            kind: ItemKind::Song,
+            title: song.title.clone(),
+            reference: ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+            flow_type: FlowType::Default,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let header_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.header.template.as_str())
+            .filter(|t| !t.is_empty());
+        let footer_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.footer.template.as_str())
+            .filter(|t| !t.is_empty());
+        let slides = compute_item_slides_templated(
+            &transient,
+            &self.song_map(),
+            &self.bibles,
+            &self.opts(),
+            true,
+            self.whole_ref_header,
+            header_tpl,
+            footer_tpl,
+        );
+        if slides.is_empty() {
+            return section(ui, &self.t("slides"), vec![label(ui, "(no verses)", 13.)]);
+        }
+        let book = library::list_songbooks(&self.db)
+            .unwrap_or_default()
+            .iter()
+            .find(|b| b.id == song.songbook_id)
+            .map(|b| b.name.clone())
+            .filter(|n| !n.is_empty())
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        let title = format!("♪ {}{}", song.title, book);
+        let tags: std::collections::HashMap<String, String> = song
+            .verses
+            .iter()
+            .map(|v| {
+                let tag = v
+                    .lines
+                    .first()
+                    .map(|l| l.trim())
+                    .filter(|l| {
+                        !l.is_empty() && l.lines().count() == 1 && lyrics_doc::is_tag_line(l)
+                    })
+                    .unwrap_or_default()
+                    .to_string();
+                (v.id.clone(), tag)
+            })
+            .collect();
+        let live_song = self
+            .live_item
+            .and_then(|li| self.agenda.items.get(li))
+            .and_then(|it| match &it.reference {
+                ItemRef::Song { song_id } => Some(song_id.clone()),
+                _ => None,
+            });
+        let live_here = live_song.as_deref() == Some(song.id.as_str());
+        let item_id = transient.id.clone();
+        let mut out: Vec<Div> = Vec::new();
+        for (i, slide) in slides.iter().enumerate() {
+            let Some(vid) = slide_verse_id(&slide.header) else {
+                continue;
+            };
+            let hidden = self.is_hidden(&item_id, &vid);
+            let preview: String = slide.lines.join(" / ");
+            let live_now = live_here && self.live_slide == i;
+            let selected = self.sel_block.as_deref() == Some(vid.as_str());
+            let row_bg = if live_now { ui.selection } else { ui.panel };
+            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
+            let border_c = if selected {
+                ui.engaged
+            } else if live_now {
+                ui.selection
+            } else {
+                row_bg
+            };
+            let check = if hidden { "☐" } else { "☑" };
+            let tag = tags.get(&vid).cloned().unwrap_or_default();
+            let badge = lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone());
+            let vid2 = vid.clone();
+            let id2 = item_id.clone();
+            let vid3 = vid.clone();
+            out.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(row_bg)
+                    .text_color(row_ink)
+                    .border_2()
+                    .border_color(border_c)
+                    .child(btn(ui, cx, check, false, move |this, _, _, cx| {
+                        let hide = !this.is_hidden(&id2, &vid2);
+                        this.set_hidden(&id2, &vid2, hide);
+                        this.sel_block = Some(vid2.clone());
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .child(badge),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .whitespace_normal()
+                            .child(preview),
+                    )
+                    // Single click projects (UX-RESEARCH 3.2): the song
+                    // joins the agenda on demand, like double-click.
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.play_browser_song_slide(cx, si, i);
+                            this.sel_block = Some(vid3.clone());
+                            this.focus_root(window);
+                        }),
+                    ),
+            );
+        }
+        section_scrolled(ui, &title, Vec::new(), out, &self.scroll_slides, "scroll:slides")
     }
 
     /// Song slides: one row per projected slide — `[☑] badge <full text>`.
@@ -8643,6 +8893,7 @@ impl Root {
                             snap.bg_kind,
                             snap.bg_file.as_ref(),
                             snap.bg_fit,
+                            snap.video_poster.as_ref(),
                         )),
                 );
         // Same rule as the projector (projector_window::grades_luminosity_overlay):
@@ -9780,8 +10031,9 @@ impl Root {
     }
 
     /// Note shown when the style asks for a background kind v1 cannot fully
-    /// render. Images render via `gpui::img`; video loops show a captioned
-    /// placeholder tile (gpui 0.2.2 has no video element); only the camera is
+    /// render. Images render via `gpui::img`; video loops show the grabbed
+    /// poster still when available, else a captioned tile (motion stays in
+    /// the OS player — gpui 0.2.2 has no video element); only the camera is
     /// still a solid-color stand-in.
     fn background_note(&self) -> Option<&'static str> {
         match self.bg_kind {

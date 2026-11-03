@@ -219,6 +219,32 @@ pub fn redirect_style_targets(
     }
 }
 
+/// What the agenda target contributes to the slides-panel source decision.
+/// Only the song identity matters: Bible and other targets always keep
+/// the panel (a stale song selection must never cover them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgendaTarget {
+    Song { song_id: String },
+    Other,
+}
+
+/// Slides-panel source when the library selection disagrees with the agenda
+/// target: the editor already follows the browser song, so the panel must
+/// render that song too — otherwise editor and slides show two different
+/// songs (Stage 04: never desync). True = render the transient library
+/// preview instead of the agenda target. Pure so the contract is
+/// unit-testable without a window.
+pub fn library_preview_wins(sel_song_id: Option<&str>, target: Option<&AgendaTarget>) -> bool {
+    let Some(sel) = sel_song_id else {
+        return false;
+    };
+    match target {
+        None => true,
+        Some(AgendaTarget::Song { song_id }) => song_id != sel,
+        Some(AgendaTarget::Other) => false,
+    }
+}
+
 /// File a live video agenda item should hand to the OS player: `(item id,
 /// path)`. `None` for anything that is not a standalone `Video` + file
 /// reference. Pure so the auto-launch decision is unit-testable.
@@ -1319,6 +1345,31 @@ mod tests {
         dup.sort_unstable();
         dup.dedup();
         assert_eq!(dup.len(), levels.len());
+    }
+
+    #[test]
+    fn library_preview_wins_only_for_a_different_song() {
+        use AgendaTarget::*;
+        // No library selection -> agenda target always stands.
+        assert!(!library_preview_wins(None, None));
+        assert!(!library_preview_wins(
+            None,
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Nothing on the agenda -> library preview is the only content.
+        assert!(library_preview_wins(Some("a"), None));
+        // Same song -> agenda item stands (checkbox state, live cue live there).
+        assert!(!library_preview_wins(
+            Some("a"),
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Different song -> editor already shows it, panel must follow.
+        assert!(library_preview_wins(
+            Some("b"),
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Bible/other targets always win over a stale song selection.
+        assert!(!library_preview_wins(Some("b"), Some(&Other)));
     }
 
     #[test]

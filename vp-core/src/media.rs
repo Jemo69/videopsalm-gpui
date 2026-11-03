@@ -218,6 +218,101 @@ pub fn missing_handler_error(path: &std::path::Path) -> Option<String> {
     }
 }
 
+/// Poster-frame cache for videos: one still per source file so the
+/// preview/projector show the video's picture (like a photo) through the
+/// existing in-app `img` element instead of a black tile. Offline, local
+/// `ffmpeg` only; no ffmpeg, no readable file, or a failed grab yields
+/// `None` and callers keep the captioned tile. Pure pieces (command
+/// builder, freshness) are unit-tested; only `ensure_video_poster`
+/// touches processes.
+///
+/// Cache key: hash of the source path string. Freshness: the poster must
+/// exist and be newer than the source file (re-cut videos re-grab).
+pub fn poster_cache_dir() -> PathBuf {
+    std::env::temp_dir().join("videopsalm-posters")
+}
+
+/// Stable cache path for a source file (no IO performed). Pure.
+pub fn poster_cache_path(path: &std::path::Path) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut h);
+    let mut ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext.len() > 4 {
+        ext.truncate(4);
+    }
+    poster_cache_dir().join(format!("{:016x}{}.jpg", h.finish(), ext))
+}
+
+/// `ffmpeg` argv for grabbing one still (`seek_secs` after open-seek for
+/// speed). Pure so the invocation is pinned by tests.
+pub fn poster_ffmpeg_args(path: &std::path::Path, out: &std::path::Path, seek_secs: u32) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-v".into(),
+        "error".into(),
+        "-ss".into(),
+        seek_secs.to_string(),
+        "-i".into(),
+        path.to_string_lossy().into_owned(),
+        "-frames:v".into(),
+        "1".into(),
+        "-q:v".into(),
+        "5".into(),
+        out.to_string_lossy().into_owned(),
+    ]
+}
+
+/// True when `poster` exists and is at least as new as the source file.
+/// Missing files read as stale (never fresh). Filesystem-light: two stats.
+pub fn poster_is_fresh(path: &std::path::Path, poster: &std::path::Path) -> bool {
+    let (Ok(src), Ok(dst)) = (std::fs::metadata(path), std::fs::metadata(poster)) else {
+        return false;
+    };
+    if !src.is_file() || !dst.is_file() {
+        return false;
+    }
+    let (Ok(a), Ok(b)) = (src.modified(), dst.modified()) else {
+        return false;
+    };
+    b >= a
+}
+
+/// Best-effort still grab: fresh cache hit returns immediately, else run
+/// `ffmpeg` (1s seek, retried at 0s for sub-second clips) and return the
+/// poster path on success. `None` keeps the captioned tile.
+pub fn ensure_video_poster(path: &std::path::Path) -> Option<PathBuf> {
+    if !path.is_file() {
+        return None;
+    }
+    let out = poster_cache_path(path);
+    if poster_is_fresh(path, &out) {
+        return Some(out);
+    }
+    if let Some(parent) = out.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return None;
+        }
+    }
+    for seek in [1u32, 0u32] {
+        let args = poster_ffmpeg_args(path, &out, seek);
+        let ok = std::process::Command::new("ffmpeg")
+            .args(&args)
+            .output()
+            .map(|o| o.status.success() && out.is_file())
+            .unwrap_or(false);
+        if ok {
+            return Some(out);
+        }
+    }
+    None
+}
+
 impl MediaPlayer for ExternalPlayer {
     fn kind(&self) -> MediaKind {
         self.kind
@@ -590,6 +685,52 @@ mod tests {
         p.open(PathBuf::from("song.mp3"));
         p.set_range(None, Some(9000));
         assert_eq!(p.range(), (None, Some(9000)));
+    }
+
+    #[test]
+    fn poster_cache_path_is_stable_and_scoped() {
+        let a = poster_cache_path(std::path::Path::new("/vids/Loop.mp4"));
+        let b = poster_cache_path(std::path::Path::new("/vids/Loop.mp4"));
+        let c = poster_cache_path(std::path::Path::new("/vids/Other.mp4"));
+        assert_eq!(a, b, "same source = same cache file");
+        assert_eq!(a.parent(), b.parent(), "same cache dir");
+        assert_ne!(a, c, "different source = different cache file");
+        assert_eq!(a.extension().and_then(|e| e.to_str()), Some("mp4.jpg").map(|s| s.rsplit('.').next().unwrap_or(s)), "jpg still");
+    }
+
+    #[test]
+    fn poster_ffmpeg_args_grab_one_quiet_frame() {
+        let args = poster_ffmpeg_args(
+            std::path::Path::new("/vids/Loop.mp4"),
+            std::path::Path::new("/tmp/x.jpg"),
+            1,
+        );
+        assert_eq!(args[0], "-y");
+        assert!(args.contains(&"-frames:v".to_string()));
+        assert!(args.contains(&"1".to_string()));
+        assert!(args.contains(&"/vids/Loop.mp4".to_string()));
+        assert!(args.contains(&"/tmp/x.jpg".to_string()));
+    }
+
+    #[test]
+    fn poster_freshness_follows_mtimes() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("vp-poster-src.bin");
+        let dst = dir.join("vp-poster-dst.jpg");
+        std::fs::write(&src, b"v1").unwrap();
+        assert!(!poster_is_fresh(&src, &dst), "missing poster is stale");
+        std::fs::write(&dst, b"old").unwrap();
+        // Same-second mtimes compare equal-or-newer: fresh after rewrite.
+        std::fs::write(&dst, b"new").unwrap();
+        assert!(poster_is_fresh(&src, &dst), "poster rewritten after source is fresh");
+        assert!(!poster_is_fresh(std::path::Path::new("/definitely/missing.bin"), &dst));
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+    }
+
+    #[test]
+    fn ensure_poster_refuses_ghosts_without_spawning() {
+        assert!(ensure_video_poster(std::path::Path::new("/definitely/not/here.mp4")).is_none());
     }
 
     #[test]
