@@ -124,6 +124,9 @@ impl ExternalPlayer {
     /// Never performs network access. A missing file is reported
     /// immediately instead of spawning a handler that can only fail
     /// silently (a vanished USB stick otherwise reads as "playing").
+    /// On Linux a known-absent handler (`xdg-mime` reports no default app
+    /// for the type) is also loud for the same reason: spawning `xdg-open`
+    /// with no handler exits silently while the UI would claim "playing".
     pub fn launch_external(&mut self) {
         let Some(path) = self.current.clone() else {
             self.last_error = Some("no media file selected".to_string());
@@ -131,6 +134,11 @@ impl ExternalPlayer {
         };
         if !path.exists() {
             self.last_error = Some(format!("file not found: {}", path.display()));
+            self.state = PlaybackState::Stopped;
+            return;
+        }
+        if let Some(err) = missing_handler_error(&path) {
+            self.last_error = Some(err);
             self.state = PlaybackState::Stopped;
             return;
         }
@@ -152,6 +160,61 @@ impl ExternalPlayer {
             }
             Err(e) => self.last_error = Some(format!("cannot open {path:?}: {e}")),
         }
+    }
+}
+
+/// MIME type for a media file extension (case-insensitive, dot optional).
+/// Small table of the formats the galleries accept; unknown extensions
+/// yield `None` (unknown = try the spawn, never block it). Pure so the
+/// mapping is unit-testable without touching the OS mime database.
+pub fn mime_for_extension(ext: &str) -> Option<&'static str> {
+    match ext.trim_start_matches('.').to_ascii_lowercase().as_str() {
+        "mp4" | "m4v" => Some("video/mp4"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
+        "mov" => Some("video/quicktime"),
+        "wmv" => Some("video/x-ms-wmv"),
+        "webm" => Some("video/webm"),
+        "mpg" | "mpeg" => Some("video/mpeg"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "ogg" | "oga" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        _ => None,
+    }
+}
+
+/// Best-effort "does the OS have an app for this file" (Linux only).
+/// Returns `Some(loud error)` when we KNOW there is no handler
+/// (`xdg-mime query default` prints nothing for the type); `None` when a
+/// handler exists or we cannot tell (unknown extension, `xdg-mime`
+/// missing/broken, non-Linux) — unknown never blocks the spawn, it keeps
+/// the old try-it behavior. Takes `Path` so tests stay filesystem-light.
+pub fn missing_handler_error(path: &std::path::Path) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let ext = path.extension()?.to_str()?;
+        let mime = mime_for_extension(ext)?;
+        let out = std::process::Command::new("xdg-mime")
+            .args(["query", "default", mime])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None; // xdg-mime broken -> don't block the spawn
+        }
+        let handler = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if handler.is_empty() {
+            return Some(format!(
+                "no app handles {mime} files — install VLC or mpv to play {}.",
+                path.display()
+            ));
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
     }
 }
 
@@ -527,6 +590,38 @@ mod tests {
         p.open(PathBuf::from("song.mp3"));
         p.set_range(None, Some(9000));
         assert_eq!(p.range(), (None, Some(9000)));
+    }
+
+    #[test]
+    fn mime_table_maps_gallery_formats_case_insensitively() {
+        assert_eq!(mime_for_extension("mp4"), Some("video/mp4"));
+        assert_eq!(mime_for_extension("MKV"), Some("video/x-matroska"));
+        assert_eq!(mime_for_extension(".mov"), Some("video/quicktime"));
+        assert_eq!(mime_for_extension("mp3"), Some("audio/mpeg"));
+        assert_eq!(mime_for_extension("wav"), Some("audio/wav"));
+        assert_eq!(mime_for_extension("xyz"), None);
+        assert_eq!(mime_for_extension(""), None);
+    }
+
+    #[test]
+    fn unknown_extension_never_blocks_the_spawn() {
+        // No mapping -> no opinion -> None on every OS, no subprocess.
+        assert!(missing_handler_error(std::path::Path::new("/tmp/clip.zzz9")).is_none());
+        // And end to end: an existing mystery file must never report the
+        // "no app handles" error (whatever xdg-open then does is its own
+        // loudSpawn result, not a handler verdict).
+        let dir = std::env::temp_dir();
+        let file = dir.join("vp-mystery-blob.zzz9");
+        std::fs::write(&file, b"not media").unwrap();
+        let mut p = ExternalPlayer::new(MediaKind::Video);
+        p.open(file.clone());
+        p.launch_external();
+        let err = p.last_error.clone().unwrap_or_default();
+        assert!(
+            !err.contains("no app handles"),
+            "unknown type must not claim a missing handler, got: {err}"
+        );
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

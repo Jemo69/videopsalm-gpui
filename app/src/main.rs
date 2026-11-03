@@ -3001,6 +3001,36 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         cx.notify();
     }
 
+    /// Double-click a browser song: play it NOW with no agenda detour.
+    /// A single click only selects (the editor follows); this path ensures
+    /// agenda membership (adds the song when absent, like `+Agenda`) and
+    /// then projects slide 0 through the punch-through path, so the
+    /// projector follows too. Punches through the shield exactly like an
+    /// agenda double-click (`select_agenda`).
+    fn play_browser_song(&mut self, cx: &mut Context<Self>, idx: usize) {
+        let Some(song) = self.songs.get(idx).cloned() else {
+            return;
+        };
+        if self.shield {
+            self.set_status(cx, "Shield punched through by double-click.");
+        }
+        let missing = !self.agenda.items.iter().any(
+            |it| matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id),
+        );
+        if missing {
+            self.agenda_dirty = true;
+            agenda_ops::add_item(
+                &mut self.agenda,
+                ItemKind::Song,
+                song.title.clone(),
+                ItemRef::Song {
+                    song_id: song.id.clone(),
+                },
+            );
+        }
+        self.select_song_ex(cx, idx, true);
+    }
+
     /// Transpose the current song by `steps` semitones, or set the display
     /// notation when `notation` is given.
     ///
@@ -7550,8 +7580,14 @@ impl Root {
                 .child(title)
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.select_song(cx, i);
+                    cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
+                        // Double-click plays the song NOW (no agenda
+                        // detour): single click only selects, like before.
+                        if ev.click_count >= 2 {
+                            this.play_browser_song(cx, i);
+                        } else {
+                            this.select_song(cx, i);
+                        }
                         this.focus_root(window);
                     }),
                 ),
