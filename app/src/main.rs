@@ -511,9 +511,6 @@ pub(crate) struct Root {
     scroll_agenda: ScrollHandle,
     scroll_songs: ScrollHandle,
     scroll_books: ScrollHandle,
-    /// Songbook group list (WI-033): capped in its own scroller so a long
-    /// book list can never squeeze the songs list to zero height.
-    scroll_songbooks: ScrollHandle,
     scroll_slides: ScrollHandle,
     scroll_shortcuts: ScrollHandle,
     /// Bible keyword-hit list (R-6): every hit renders inside a bounded
@@ -841,7 +838,6 @@ impl Root {
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
-            scroll_songbooks: ScrollHandle::new(),
             scroll_slides: ScrollHandle::new(),
             scroll_shortcuts: ScrollHandle::new(),
             scroll_bible_hits: ScrollHandle::new(),
@@ -2381,7 +2377,21 @@ impl Root {
     /// edit changed the default": nothing is ever silently global, except
     /// Alert/Clock, which have no chain levels and stay agenda-global.
     fn write_style_attr(&mut self, cx: &mut Context<Self>, what: &str, apply: impl Fn(&mut LevelValues)) {
-        let targets = ux::style_write_targets(&self.style_level);
+        let mut targets = ux::style_write_targets(&self.style_level);
+        // Chain-aware redirect: a Song-side write target never reaches a Bible
+        // item (Chain::Bibles) and vice versa, which is why font/size edits
+        // made while a Bible verse was live appeared to do nothing. Follow
+        // the live (else selected) item's chain; the status line reports
+        // where the value actually went.
+        let live_kind = self
+            .live_item
+            .or(self.sel_item)
+            .and_then(|i| self.agenda.items.get(i).map(|it| it.kind));
+        if let Some(kind) = live_kind {
+            if let Some(chain) = Self::chain_for_kind(&kind) {
+                targets = ux::redirect_style_targets(chain, targets);
+            }
+        }
         if targets.is_empty() {
             self.agenda_dirty = true;
             self.persist_layout_quiet();
@@ -6972,7 +6982,7 @@ impl Root {
     /// number grid with highlighted selection).
     fn browser_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let songs_active = self.left_tab == LeftTab::Songs;
-        let mut kids: Vec<Div> = vec![row(vec![
+        let mut kids: Vec<Div> = vec![row_wrap(vec![
             btn(
                 ui,
                 cx,
@@ -7013,13 +7023,13 @@ impl Root {
         if songs_active {
             // LAYOUT.md / song-search-box.png: magnifier + scope `▾` at the
             // LEFT inside the box, clear `✕` at the right.
-            kids.push(row(vec![
+            kids.push(row_wrap(vec![
                 label(ui, "⌕", 14.),
                 btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
                     this.show_scope_grid = !this.show_scope_grid;
                     cx.notify();
                 }),
-                div().flex_1().child(self.search_field.clone()),
+                div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
                 btn(ui, cx, "×", false, |this, _, _, cx| {
                     this.search_field
                         .update(cx, |field, cx| field.set_text("", cx));
@@ -7029,25 +7039,34 @@ impl Root {
             if self.show_scope_grid {
                 kids.push(self.search_scope_panel(ui, cx));
             }
-            // The book groups live in their own capped scroller (WI-033):
-            // with many songbooks the fixed rows used to eat the whole
-            // panel and squeeze the songs list to zero height — now the
-            // groups scroll in ~5 rows and the songs always keep space.
+            // Single scroller for books + songs: the old split (capped book
+            // box + nested Songs section) squeezed the song list to zero
+            // height on short windows, so scoped songs were unreachable.
+            // One scroll region always reaches every row, like the Bibles
+            // browser below.
+            let mut body: Vec<Div> = Vec::new();
+            body.extend(self.songbook_rows(ui, cx));
+            body.extend(self.songs_browser(ui, cx));
             kids.push(
-                div().flex().flex_col().flex_none().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .min_h_0()
-                        .id("scroll:songbooks")
-                        .max_h(px(110.))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll_songbooks)
-                        .children(self.songbook_rows(ui, cx)),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .flex_1()
+                            .min_h_0()
+                            .id("scroll:songs")
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_songs)
+                            .children(body),
+                    ),
             );
-            kids.extend(self.songs_browser(ui, cx));
         } else {
             // Vendor 3-state magnifier (bible-search-mode-toggle.png,
             // bible-translation-tabs.png): reference -> keyword ->
@@ -7059,7 +7078,7 @@ impl Root {
             } else {
                 "Select verses by their reference"
             };
-            kids.push(row(vec![
+            kids.push(row_wrap(vec![
                 btn_tip(
                     ui,
                     cx,
@@ -7070,7 +7089,7 @@ impl Root {
                         this.cycle_bible_search(cx);
                     },
                 ),
-                div().flex_1().child(self.search_field.clone()),
+                div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
                 btn(ui, cx, "×", false, |this, _, _, cx| {
                     this.search_field
                         .update(cx, |field, cx| field.set_text("", cx));
@@ -7194,9 +7213,11 @@ impl Root {
         let mut header = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_1()
             .items_center()
             .px_1()
+            .min_w_0()
             .text_size(px(12.))
             .text_color(ui.accent)
             .child("▤ songbooks")
@@ -7396,11 +7417,16 @@ impl Root {
             0 => self.t("no_results"),
             n => format!("{} match(es)", n),
         };
-        vec![section_scrolled(
-            ui,
-            &self.t("songs"),
-            vec![
-                label(ui, &hint, 12.),
+        // Flat rows: the caller (`browser_panel`) puts these in the single
+        // books+songs scroller, so everything stays reachable on short
+        // windows (no nested fixed header squeezing the list to zero).
+        let mut out = vec![
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(ui.accent)
+                .child(format!("▤ {} ▤", self.t("songs"))),
+            label(ui, &hint, 12.),
                 row_wrap(vec![
                     btn_tip(
                         ui,
@@ -7473,8 +7499,7 @@ impl Root {
                             this.import_songbook_file(cx);
                         },
                     ),
-                    // Pager: wheel scrolls, but nothing on screen says so —
-                    // these always move the list (WI-031).
+                    // Pager (WI-031): wheel scrolls, but nothing on screen says so.
                     btn_tip(
                         ui,
                         cx,
@@ -7500,11 +7525,9 @@ impl Root {
                         },
                     ),
                 ]),
-            ],
-            rows,
-            &self.scroll_songs,
-            "scroll:songs",
-        )]
+        ];
+        out.extend(rows);
+        out
     }
 
     /// Bible picker: translation badge + switch, bilingual + favorites,
