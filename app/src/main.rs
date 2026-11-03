@@ -9178,7 +9178,10 @@ impl Root {
                         let full = order_text.clone();
                         let mut col = div()
                             .flex_1()
-                            .min_w_0()
+                            // Guaranteed room for ▸/▾ + the summary: the
+                            // References field would otherwise squeeze the
+                            // column to zero and the toggle vanished with it.
+                            .min_w(px(190.))
                             .flex()
                             .flex_col()
                             .relative()
