@@ -9439,7 +9439,9 @@ impl Root {
                         },
                     ),
                 ]),
-                // B-12: Single-click monitor switcher
+                // B-12: Single-click monitor switcher (same move-on-pick
+                // contract as the Settings buttons: an open room window
+                // follows the choice).
                 row(vec![
                     label(ui, "projector monitor:", 12.),
                     btn(
@@ -9448,8 +9450,7 @@ impl Root {
                         "Display 1 (Primary)",
                         self.projector_display == 0,
                         |this, _, _, cx| {
-                            this.projector_display = 0;
-                            this.persist_layout_quiet();
+                            this.set_projector_display(cx, 0);
                             this.set_status(cx, "Projector target set to Display 1 (Primary).");
                         },
                     ),
@@ -9459,8 +9460,7 @@ impl Root {
                         "Display 2 (External)",
                         self.projector_display == 1,
                         |this, _, _, cx| {
-                            this.projector_display = 1;
-                            this.persist_layout_quiet();
+                            this.set_projector_display(cx, 1);
                             this.set_status(cx, "Projector target set to Display 2 (External).");
                         },
                     ),
@@ -9470,8 +9470,7 @@ impl Root {
                         "Display 3",
                         self.projector_display == 2,
                         |this, _, _, cx| {
-                            this.projector_display = 2;
-                            this.persist_layout_quiet();
+                            this.set_projector_display(cx, 2);
                             this.set_status(cx, "Projector target set to Display 3.");
                         },
                     ),
