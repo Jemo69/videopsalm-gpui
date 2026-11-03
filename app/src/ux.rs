@@ -17,8 +17,9 @@
 //! * [`LayoutPrefs`] — file-backed panel-layout persistence.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use vp_core::bible_data::VerseHit;
-use vp_core::schema::ItemKind;
+use vp_core::schema::{AgendaItem, ItemKind, ItemRef};
 
 // ---------------------------------------------------------------------------
 // Ribbon tabs
@@ -218,6 +219,17 @@ pub fn redirect_style_targets(
     }
 }
 
+/// File a live video agenda item should hand to the OS player: `(item id,
+/// path)`. `None` for anything that is not a standalone `Video` + file
+/// reference. Pure so the auto-launch decision is unit-testable.
+pub fn video_item_file(item: &AgendaItem) -> Option<(String, PathBuf)> {
+    match (&item.kind, &item.reference) {
+        (ItemKind::Video, ItemRef::File { file }) => {
+            Some((item.id.clone(), PathBuf::from(file)))
+        }
+        _ => None,
+    }
+}
 /// Verse numbers leading each Bible slide line (`"16 text..."`).
 ///
 /// Pure so per-slide Bible rows are unit-testable: the panel groups verses
@@ -1160,63 +1172,9 @@ impl LayoutPrefs {
 }
 
 /// Caret blink cadence shared by the single-line fields and the lyrics
-/// document: solid for the first interval after any cursor move or focus
-/// gain, then toggling on/off. Pure and unit-testable — each widget only adds
-/// the repaint timer (`poll` says *when*, the widget schedules it).
+/// document: each view runs one guarded 530ms loop task that toggles its
+/// caret while focused with a collapsed selection.
 pub const CARET_BLINK_MS: u128 = 530;
-
-/// Blink phase for one editor. `poll` resets the phase whenever the cursor
-/// moves or focus is (re)gained, so typing or clicking always shows a solid
-/// caret first instead of landing mid-blink.
-#[derive(Clone, Debug)]
-pub struct CaretBlink {
-    epoch: Option<std::time::Instant>,
-    last_cursor: usize,
-    last_focused: bool,
-}
-
-impl CaretBlink {
-    pub fn new() -> Self {
-        CaretBlink {
-            epoch: None,
-            last_cursor: usize::MAX,
-            last_focused: false,
-        }
-    }
-
-    /// Returns `(visible, repaint_in)`: whether the caret draws this frame,
-    /// and how long until the next phase flip (the widget should repaint
-    /// then). `None` repaint while unfocused or while a range is selected —
-    /// nothing blinks then, so no timer runs.
-    pub fn poll(
-        &mut self,
-        now: std::time::Instant,
-        focused: bool,
-        collapsed: bool,
-        cursor: usize,
-    ) -> (bool, Option<std::time::Duration>) {
-        if !focused || !collapsed {
-            self.epoch = None;
-            self.last_focused = focused;
-            self.last_cursor = cursor;
-            return (false, None);
-        }
-        if self.epoch.is_none() || !self.last_focused || cursor != self.last_cursor {
-            self.epoch = Some(now);
-        }
-        self.last_focused = true;
-        self.last_cursor = cursor;
-        let elapsed = now
-            .saturating_duration_since(self.epoch.unwrap_or(now))
-            .as_millis();
-        let visible = (elapsed / CARET_BLINK_MS) % 2 == 0;
-        let next_in = CARET_BLINK_MS - (elapsed % CARET_BLINK_MS) + 8;
-        (
-            visible,
-            Some(std::time::Duration::from_millis(next_in as u64)),
-        )
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1411,6 +1369,50 @@ mod tests {
     }
 
     #[test]
+    fn video_item_file_only_fires_for_standalone_video() {
+        use vp_core::schema::{FlowType, ItemKind, ItemOverrides, ItemRef};
+        let mk = |kind: ItemKind, reference: ItemRef| AgendaItem {
+            id: "item-1".to_string(),
+            kind,
+            title: "Clip".to_string(),
+            reference,
+            flow_type: FlowType::default(),
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        // Video + file: the OS player target.
+        let v = mk(
+            ItemKind::Video,
+            ItemRef::File {
+                file: "clip.mp4".to_string(),
+            },
+        );
+        assert_eq!(
+            video_item_file(&v),
+            Some(("item-1".to_string(), PathBuf::from("clip.mp4")))
+        );
+        // Anything else: no launch (image, song, URL video).
+        assert_eq!(
+            video_item_file(&mk(
+                ItemKind::Image,
+                ItemRef::File {
+                    file: "pic.jpg".to_string()
+                }
+            )),
+            None
+        );
+        assert_eq!(
+            video_item_file(&mk(
+                ItemKind::Video,
+                ItemRef::Url {
+                    url: "https://example.com/v".to_string()
+                }
+            )),
+            None
+        );
+    }
+
+    #[test]
     fn transitions_match_style_schema_values() {
         assert_eq!(transitions(), ["none", "fade", "slide", "zoom"]);
     }
@@ -1429,34 +1431,6 @@ mod tests {
         assert!(fams.contains(&"Verdana"));
         assert!(fams.contains(&"Arial"));
         assert!(fams.len() >= 6);
-    }
-
-    #[test]
-    fn caret_blink_starts_solid_then_toggles() {
-        use std::time::{Duration, Instant};
-        let mut b = CaretBlink::new();
-        let t0 = Instant::now();
-        // Focus gain: solid caret, with a repaint scheduled.
-        let (vis, rep) = b.poll(t0, true, true, 5);
-        assert!(vis);
-        assert!(rep.is_some());
-        // Same cursor shortly after: still solid.
-        let (vis, _) = b.poll(t0 + Duration::from_millis(100), true, true, 5);
-        assert!(vis);
-        // Past one interval: hidden, still scheduling.
-        let (vis, rep) = b.poll(t0 + Duration::from_millis(600), true, true, 5);
-        assert!(!vis);
-        assert!(rep.is_some());
-        // Cursor move resets to solid.
-        let (vis, _) = b.poll(t0 + Duration::from_millis(610), true, true, 6);
-        assert!(vis);
-        // Blur or selection: hidden, no timer.
-        let (vis, rep) = b.poll(t0, false, true, 6);
-        assert!(!vis);
-        assert!(rep.is_none());
-        let (vis, rep) = b.poll(t0, true, false, 6);
-        assert!(!vis);
-        assert!(rep.is_none());
     }
 
     #[test]

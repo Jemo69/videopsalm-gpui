@@ -595,8 +595,10 @@ pub(crate) fn open_projector_window(
         // window is off-screen on smaller laptop displays (WI-028 — opening
         // it crashed there), and the user maximizes or flips fullscreen
         // once it is up. Fullscreen keeps the native 1080p request.
+        // Windowed honors the chosen display too — `None` here always
+        // landed on the primary, ignoring the monitor buttons.
         (
-            WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(720.)), cx)),
+            WindowBounds::Windowed(Bounds::centered(display, size(px(1280.), px(720.)), cx)),
             None,
         )
     };

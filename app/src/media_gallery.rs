@@ -182,7 +182,7 @@ impl GalleryState {
 
     /// File cells the compact strip holds for `kind`: the video sentinel
     /// (§7, chrome not a file) occupies one of the 10 cells, so 9 files +
-    /// sentinel = a true 2×5 strip. Images hold 10 files.
+    /// sentinel = the full row. Images hold 10 files.
     pub fn compact_file_limit(kind: MediaFileKind) -> usize {
         match kind {
             MediaFileKind::Image => Self::COMPACT_CAP,
@@ -190,25 +190,12 @@ impl GalleryState {
         }
     }
 
-    /// Compact strip columns: exactly 5, enforced by width (not by hope).
-    pub const COMPACT_COLUMNS: usize = 5;
     /// One tile's footprint: 112px preview + 12px padding + 2px border.
     /// (Assigned tiles draw a 2px border instead of 1px; the footprint
-    /// budgets the wider one so highlighting never re-wraps the row.)
+    /// budgets the wider one so highlighting never shifts the row.)
     pub fn compact_tile_footprint_px() -> f32 {
         112.0 + 12.0 + 2.0 + 2.0
     }
-    /// Strip grid cap: 5 footprints + 4 gaps + side padding. Ten cells fit
-    /// in exactly 2 rows; a sixth tile in any row overflows the cap, so the
-    /// wrap is deterministic at any window width that fits the strip (past
-    /// it, the grid's own x-scroll catches the overflow instead of
-    /// clipping).
-    pub fn compact_grid_max_w_px() -> f32 {
-        Self::COMPACT_COLUMNS as f32 * Self::compact_tile_footprint_px()
-            + (Self::COMPACT_COLUMNS as f32 - 1.0) * 8.0
-            + 2.0 * 8.0
-    }
-
     /// Which entry positions to render (pure, tested): the first `limit`
     /// entries, plus the assigned one when it falls outside — the
     /// highlighted thumbnail (§3/S3) must always be visible, never silently
@@ -222,7 +209,7 @@ impl GalleryState {
         if let Some(a) = assigned_pos {
             if a < total && !out.contains(&a) {
                 // Room for the pin: drop the last unassigned cell so the
-                // strip stays exactly 2×5.
+                // strip stays exactly 10 cells.
                 out.pop();
                 out.push(a);
             }
@@ -309,7 +296,7 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
     // stay in sync via republish-on-assign below.
     // The video gallery leads with the black sentinel (§7, chrome — not a
     // file, never counted against the cap).
-    // Full captioned grid (the ribbon's compact strip below is the 2×5
+    // Full captioned grid (the ribbon's compact strip below is the 10-cell
     // density; an open panel always shows names). The video gallery leads
     // with the black sentinel (§7, chrome — not a file, never counted).
     let mut thumbs: Vec<Div> = Vec::new();
@@ -407,7 +394,7 @@ pub(crate) fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
     // `grid_list` is Stateful (it has an id so it can scroll) while the
     // count/overflow lines are plain Divs — wrap so the column has one
     // child type. The overflow note lives HERE, not in the wrapping grid
-    // (as a grid cell it became a wide 12th tile and broke the 2×5).
+    // (as a grid cell it became a wide 12th tile and broke the 10-cell row).
     // Counts name matches, never rendered tiles: "200 match" with 10
     // tiles shown is honest; "200 shown" was the lie.
     let mut grid_body: Div = div()
@@ -550,14 +537,15 @@ pub(crate) fn apply_bg_fit(root: &mut Root, cx: &mut Context<Root>, fit: BgFit) 
     cx.notify();
 }
 
-/// Compact 2×5 strip for the Background ribbon (operator large-library ask
-/// on the vendor §9 collapsed/expanded shape): up to 10 numbered small
-/// previews, no filenames (the filename is the hover tooltip), bounded
-/// scroll, an honest count line, and the ▾ arrow that opens the full
-/// `gallery_panel` below (via `GalleryState::open`). Picking a thumbnail
-/// assigns it and collapses back to the strips unless pinned — the dropdown
-/// semantic, hosted inline in the ribbon. Empty image libraries get a
-/// working Browse button, never a dead end.
+/// Compact single-row strip for the Background ribbon (1.29 §9 shape):
+/// up to 10 numbered small previews in one horizontal row with ◀ ▶
+/// pagers, no filenames (the filename is the hover tooltip), an honest
+/// count line, and the ▾ arrow that opens the full `gallery_panel` below
+/// (via `GalleryState::open`). Image and Video strips sit side by side
+/// in the ribbon row. Picking a thumbnail assigns it and collapses back
+/// to the strips unless pinned — the dropdown semantic, hosted inline in
+/// the ribbon. Empty image libraries get a working Browse button, never
+/// a dead end.
 pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
     let count = match kind {
         MediaFileKind::Image => root.galleries.filtered_images().len(),
@@ -583,7 +571,7 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
     };
     let total = entries.len();
     // Compact video leaves one cell for the sentinel: 9 files + sentinel =
-    // exactly 2×5. The assigned thumbnail pins into view when outside.
+    // 10 cells in the row. The assigned thumbnail pins into view when outside.
     let file_limit = GalleryState::compact_file_limit(kind);
     let assigned_pos = entries.iter().position(|(_, _, a, _)| *a);
     let positions = GalleryState::visible_positions(total, file_limit, assigned_pos);
@@ -634,28 +622,42 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         MediaFileKind::Image => ("gallery-images-compact", root.galleries.scroll_images.clone()),
         MediaFileKind::Video => ("gallery-videos-compact", root.galleries.scroll_videos.clone()),
     };
-    // min_w AND max_w enforce the 5 columns: every tile is a fixed 128px
-    // footprint (see compact_tile_footprint_px), so exactly 5 fit per row
-    // and 10 cells land in exactly 2 rows. A bare max_w is a ceiling, not
-    // a floor — in a squeezed parent the wrap would fall to 4. Narrower
-    // windows than the strip get the grid's own x-scroll instead of
-    // clipping.
+    // 1.29 single-row strip: tiles flow in one horizontal row with ◀ ▶
+    // pagers (the song list's ▲ ▼, sideways), so Image and Video sit side
+    // by side in one ribbon row instead of stacking full-width grids.
+    // The row shrinks with the group (min_w_0) and x-scrolls past narrow
+    // windows instead of clipping.
     let grid_list = div()
         .flex()
         .flex_row()
-        .flex_wrap()
         .gap(px(8.))
         .p(px(8.))
         .flex_1()
+        .min_w_0()
         .min_h_0()
         .id(scroll_id)
-        .overflow_y_scroll()
         .overflow_x_scroll()
         .track_scroll(&handle)
-        .max_h(px(184.))
-        .min_w(px(GalleryState::compact_grid_max_w_px()))
-        .max_w(px(GalleryState::compact_grid_max_w_px()))
+        .max_h(px(112.))
         .children(thumbs);
+    let h_back = handle.clone();
+    let h_fwd = handle.clone();
+    let strip_row = div()
+        .flex()
+        .flex_row()
+        .gap_1()
+        .items_center()
+        .child(btn(ui, cx, "◀", false, move |this, _, _, cx| {
+            h_back.scroll_to_item(h_back.top_item().saturating_sub(4));
+            this.set_status(cx, "Gallery strip scrolled.");
+            cx.notify();
+        }))
+        .child(grid_list)
+        .child(btn(ui, cx, "▶", false, move |this, _, _, cx| {
+            h_fwd.scroll_to_item(h_fwd.top_item().saturating_add(4));
+            this.set_status(cx, "Gallery strip scrolled.");
+            cx.notify();
+        }));
     let open_here = root.galleries.open == Some(kind);
     let toggle_label: String = if open_here {
         "▴ Collapse".to_string()
@@ -665,16 +667,17 @@ pub(crate) fn gallery_strip(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: 
         format!("▾ Expand — full gallery ({count})")
     };
     // Plain content-sized column, deliberately NO overflow_hidden: it
-    // clipped the fixed 688px grid on narrow windows with no scroll to
-    // reach it. The column sizes to its children like every other ribbon
-    // group; the grid's own x/y scrollers stay the bounds that matter.
+    // clipped the fixed grid on narrow windows with no scroll to reach
+    // it. The column sizes to its children like every other ribbon
+    // group; the row's own x-scroller stays the bound that matters.
     div()
         .flex()
         .flex_col()
         .gap(px(6.))
         .flex_1()
         .min_h_0()
-        .child(grid_list)
+        .min_w_0()
+        .child(strip_row)
         .child(label(
             ui,
             &format!(
@@ -1404,13 +1407,14 @@ mod tests {
     }
 
     #[test]
-    fn compact_defaults_to_two_by_five_with_full_grid_on_expand() {
+    fn compact_defaults_to_single_row_with_full_grid_on_expand() {
         // Operator ask on the vendor §9 collapsed/expanded shape: collapsed
-        // = 2 rows × 5 small previews (no names); the arrow expands to the
-        // full captioned grid (capped for speed, Search narrows the rest).
+        // = one scrolling row of small previews (no names), ◀ ▶ paged;
+        // the arrow expands to the full captioned grid (capped for speed,
+        // Search narrows the rest).
         let s = GalleryState::default();
         assert_eq!(s.open, None, "strips are the default — large libraries stay calm");
-        assert_eq!(GalleryState::COMPACT_CAP, 10, "2 rows × 5");
+        assert_eq!(GalleryState::COMPACT_CAP, 10, "one row of 10");
         assert_eq!(GalleryState::GRID_CAP, 60);
         // Per-kind compact budgets (video leaves a cell for the sentinel).
         assert_eq!(GalleryState::compact_file_limit(MediaFileKind::Image), 10);
@@ -1424,20 +1428,13 @@ mod tests {
     }
 
     #[test]
-    fn compact_strip_columns_are_enforced_by_width() {
-        // Exactly 5 columns × 2 rows = the 10-cell strip, by arithmetic,
-        // not by hope: every tile kind shares one fixed footprint and the
-        // grid caps at 5 footprints + gaps + padding.
-        assert_eq!(GalleryState::COMPACT_COLUMNS, 5);
+    fn compact_strip_is_one_scrolling_row() {
+        // The 1.29 ribbon shape: a single horizontal row (x-scroll + ◀ ▶
+        // pagers, like the song list's ▲ ▼ sideways), not a wrapped grid —
+        // so Image and Video sit side by side in one ribbon row. Tiles keep
+        // one fixed footprint; the row, not a width cap, is the bound.
         assert_eq!(GalleryState::compact_tile_footprint_px(), 128.0);
-        assert_eq!(
-            GalleryState::compact_grid_max_w_px(),
-            5.0 * 128.0 + 4.0 * 8.0 + 2.0 * 8.0
-        );
-        // Five tiles fit; six never do.
-        assert!(5.0 * 128.0 + 4.0 * 8.0 + 16.0 <= GalleryState::compact_grid_max_w_px());
-        assert!(6.0 * 128.0 + 5.0 * 8.0 + 16.0 > GalleryState::compact_grid_max_w_px());
-        // Ten cells (image files, or 9 video files + sentinel) are two rows.
+        // Ten cells (image files, or 9 video files + sentinel) are one row.
         assert_eq!(GalleryState::COMPACT_CAP, 10);
         assert_eq!(
             GalleryState::compact_file_limit(MediaFileKind::Video) + 1,
@@ -1448,7 +1445,7 @@ mod tests {
     #[test]
     fn sentinel_never_counts_against_the_compact_cap() {
         // The black sentinel (§7) is chrome, not a file: video compact
-        // holds 9 files + sentinel = exactly 10 cells (2×5).
+        // holds 9 files + sentinel = exactly 10 cells in the row.
         assert_eq!(
             GalleryState::compact_file_limit(MediaFileKind::Image),
             10

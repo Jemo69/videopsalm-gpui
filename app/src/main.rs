@@ -484,6 +484,10 @@ pub(crate) struct Root {
     split_bible_verses: bool,
 
     pub(crate) media: ExternalPlayer,
+    /// Item id of the video already handed to the OS player: projecting
+    /// re-pushes on every navigation, so without this the player would
+    /// relaunch on each slide step. Reset when live leaves video.
+    media_launched_for: Option<String>,
     pptx_info: String,
 
     // B-32/B-12 media state (galleries, cascade, assigned background file,
@@ -522,6 +526,8 @@ pub(crate) struct Root {
     scroll_bible_browser: ScrollHandle,
     /// Collapsible Bibles-browser sections (translations / import / picker).
     /// Session-only disclosure state, like `agenda_file_open`.
+    verse_order_open: bool,
+    scroll_verse_order: ScrollHandle,
     bible_sec_trans: bool,
     bible_sec_import: bool,
     bible_sec_pick: bool,
@@ -825,6 +831,7 @@ impl Root {
             max_chars: 40,
             split_bible_verses: false,
             media: ExternalPlayer::new(MediaKind::Video),
+            media_launched_for: None,
             pptx_info: String::new(),
             galleries: GalleryState::default(),
             cascade: Cascade::default(),
@@ -842,6 +849,8 @@ impl Root {
             scroll_shortcuts: ScrollHandle::new(),
             scroll_bible_hits: ScrollHandle::new(),
             scroll_bible_browser: ScrollHandle::new(),
+            verse_order_open: false,
+            scroll_verse_order: ScrollHandle::new(),
             bible_sec_trans: true,
             bible_sec_import: false,
             bible_sec_pick: true,
@@ -1773,6 +1782,47 @@ impl Root {
         self.sel_block = Some(verse_no.to_string());
     }
 
+    /// Load the agenda item's song/Bible into the centre editor so the
+    /// editor never shows a different item than the slides panel and the
+    /// preview (the "editor out of sync" class: projection paths that
+    /// move `sel_item` without coming through `select_agenda` left the old
+    /// song in the editor). Idempotent: a repeated call for the already
+    /// loaded song is a no-op, so slide advances within the same item can
+    /// call it freely without clobbering in-progress edits.
+    fn sync_editor_to_item(&mut self, cx: &mut Context<Self>, idx: usize) {
+        let Some(item) = self.agenda.items.get(idx).cloned() else {
+            return;
+        };
+        match &item.reference {
+            ItemRef::Song { song_id } => {
+                if let Some(si) = self.songs.iter().position(|s| &s.id == song_id) {
+                    if self.sel_song != Some(si) {
+                        self.sel_song = Some(si);
+                        let doc = lyrics_doc::document_from_verses(&self.songs[si].verses);
+                        self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
+                        self.sync_song_meta_fields(cx);
+                    }
+                }
+            }
+            ItemRef::Bible { bible_ref } => {
+                self.biref = Some(bible_ref.clone());
+                self.book_query = bible_ref.book.clone();
+                self.chapter = bible_ref.chapter;
+                if let Some(b) = match_book(&bible_ref.book) {
+                    self.sel_book = b.number;
+                    self.testament = if b.number <= 39 {
+                        Testament::OT
+                    } else {
+                        Testament::NT
+                    };
+                }
+                let spec = compact_verses(&bible_ref.verses);
+                self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
+            }
+            _ => {}
+        }
+    }
+
     /// Selecting an agenda item drives the CENTER slides panel AND keeps the
     /// centre editor in sync with the selected song/Bible item: preload
     /// the title edit field, clear the block highlight, and load the song's
@@ -1807,35 +1857,8 @@ impl Root {
         if let Some(item) = self.agenda.items.get(idx).cloned() {
             let title = item.title.clone();
             self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
-            match &item.reference {
-                ItemRef::Song { song_id } => {
-                    if let Some(si) = self.songs.iter().position(|s| &s.id == song_id) {
-                        if self.sel_song != Some(si) {
-                            self.sel_song = Some(si);
-                            let doc = lyrics_doc::document_from_verses(&self.songs[si].verses);
-                            self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
-                            self.sync_song_meta_fields(cx);
-                        }
-                    }
-                }
-                ItemRef::Bible { bible_ref } => {
-                    self.biref = Some(bible_ref.clone());
-                    self.book_query = bible_ref.book.clone();
-                    self.chapter = bible_ref.chapter;
-                    if let Some(b) = match_book(&bible_ref.book) {
-                        self.sel_book = b.number;
-                        self.testament = if b.number <= 39 {
-                            Testament::OT
-                        } else {
-                            Testament::NT
-                        };
-                    }
-                    let spec = compact_verses(&bible_ref.verses);
-                    self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
-                }
-                _ => {}
-            }
         }
+        self.sync_editor_to_item(cx, idx);
         if punch_through {
             self.goto_item_slide(cx, idx, 0);
         } else {
@@ -2485,6 +2508,36 @@ impl Root {
             return;
         }
         self.projected_item = self.live_item;
+        // Standalone video has no in-app pixels (gpui 0.2.2 ships no video
+        // element — the room tile stays a captioned placeholder), so hand
+        // the file to the OS player when the live item BECOMES a video.
+        // Once per item, not per push: navigation re-pushes constantly.
+        let video = self
+            .live_item
+            .and_then(|i| self.agenda.items.get(i))
+            .and_then(ux::video_item_file);
+        match video {
+            Some((id, path)) if self.media_launched_for.as_deref() != Some(id.as_str()) => {
+                self.media.open(path.clone());
+                self.media.launch_external();
+                self.media_launched_for = Some(id);
+                if let Some(e) = self.media.last_error.clone() {
+                    self.set_status(cx, format!("Video not playing: {e}"));
+                } else {
+                    self.set_status(
+                        cx,
+                        format!(
+                            "Video playing externally — {}.",
+                            path.display()
+                        ),
+                    );
+                }
+            }
+            None => {
+                self.media_launched_for = None;
+            }
+            _ => {}
+        }
         let live = self.live_slides();
         self.projected_slide = if live.is_empty() {
             0
@@ -2660,8 +2713,20 @@ impl Root {
         // update here, and any entity read of Root would re-enter the map.
         let presentation = self.presentation.clone();
         // The operator's chosen display (Settings → projector monitor),
-        // resolved now while we can still read our own fields.
+        // resolved now while we can still read our own fields. A choice
+        // past the last connected display falls back to primary AND says
+        // so, instead of silently opening on the wrong screen.
+        let n_displays = cx.displays().len();
         let display = cx.displays().get(self.projector_display).map(|d| d.id());
+        if display.is_none() && n_displays > 0 {
+            self.set_status(
+                cx,
+                format!(
+                    "Display {} not connected (found {n_displays}) — using primary.",
+                    self.projector_display + 1,
+                ),
+            );
+        }
         // Deferred past the current update: opening a window builds and
         // first-paints its view synchronously, and that paint must never
         // touch Root (WI-033: the projector reads only the published
@@ -2683,9 +2748,9 @@ impl Root {
                         this.set_status(
                             cx,
                             if fullscreen {
-                                "Projector window opened fullscreen (second display: drag it over)."
+                                "Projector window opened fullscreen on the chosen display."
                             } else {
-                                "Projector window opened — drag it to the second display; fullscreen flips it."
+                                "Projector window opened on the chosen display; fullscreen flips it."
                             },
                         );
                     });
@@ -2701,6 +2766,26 @@ impl Root {
             }
         });
         self.set_status(cx, "Opening projector window…");
+    }
+
+    /// Pick the projector monitor. When the room window is already open it
+    /// moves with the choice: GPUI has no move-window call, so the window
+    /// closes and reopens on the new display, keeping the fullscreen state
+    /// it had. Without this the buttons silently applied to the NEXT open
+    /// only ("still on the first screen").
+    fn set_projector_display(&mut self, cx: &mut Context<Self>, idx: usize) {
+        self.projector_display = idx;
+        self.persist_layout_quiet();
+        let was_fullscreen = self.projector_window.and_then(|h| {
+            h.update(cx, |_, window, _| window.is_fullscreen())
+                .ok()
+        });
+        if let Some(fullscreen) = was_fullscreen {
+            self.close_projector(cx);
+            self.projector_on = true;
+            self.open_projector(cx, fullscreen);
+        }
+        cx.notify();
     }
 
     /// Flip the open projector window in/out of fullscreen (B-12). The
@@ -3558,6 +3643,7 @@ impl Root {
         }
         let idx = next as usize;
         self.sel_item = Some(idx);
+        self.sync_editor_to_item(cx, idx);
         let title = self.agenda.items[idx].title.clone();
         self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
         self.set_status(cx, "Next agenda item (not displayed).");
@@ -3752,6 +3838,13 @@ impl Root {
         if item_idx >= self.agenda.items.len() {
             return;
         }
+        // Projection moves the selection too, so the editor follows the
+        // item like every other selection path (see `sync_editor_to_item`):
+        // verse shortcuts and slide clicks land here directly, and without
+        // this the editor kept showing the previous song while slides and
+        // preview moved on. The sync is idempotent, so advancing slides
+        // within the same item never touches in-progress edits.
+        self.sync_editor_to_item(cx, item_idx);
         self.live_item = Some(item_idx);
         self.sel_item = Some(item_idx);
         if let Some(item) = self.agenda.items.get(item_idx) {
@@ -5667,19 +5760,13 @@ impl Root {
                 row(vec![
                     label(ui, "projector monitor:", 12.),
                     btn(ui, cx, "Display 1", self.projector_display == 0, |this, _, _, cx| {
-                        this.projector_display = 0;
-                        this.persist_layout_quiet();
-                        cx.notify();
+                        this.set_projector_display(cx, 0);
                     }),
                     btn(ui, cx, "Display 2", self.projector_display == 1, |this, _, _, cx| {
-                        this.projector_display = 1;
-                        this.persist_layout_quiet();
-                        cx.notify();
+                        this.set_projector_display(cx, 1);
                     }),
                     btn(ui, cx, "Display 3", self.projector_display == 2, |this, _, _, cx| {
-                        this.projector_display = 2;
-                        this.persist_layout_quiet();
-                        cx.notify();
+                        this.set_projector_display(cx, 2);
                     }),
                     btn(ui, cx, "✖ Close projector", false, |this, _, _, cx| {
                         this.close_projector(cx);
@@ -5814,7 +5901,7 @@ impl Root {
     /// a panel below. Empty galleries show a one-line way in (Browse…)
     /// so the tab never reads as broken when the library is empty.
     fn background_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        // Image group: the compact 2×5 strip (real thumbnails, numbered,
+        // Image group: the compact single-row strip (real thumbnails, numbered,
         // no filenames) + ▾ arrow into the full gallery below. The strip
         // lives in `media_gallery` next to the panel so the two cannot
         // disagree about filtering, pinning or assignment.
@@ -5879,31 +5966,33 @@ impl Root {
                 cx.notify();
             }));
         }
-        // Strips stack full-width (vendor grid shape): each strip pins
-        // its own 688px (5 enforced columns) and scrolls internally, so the
-        // two never squeeze each other below 5 columns the way a shared row
-        // did. Small groups share one wrapping row beneath.
-        let strips_col = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(image_group)
-            .child(video_group);
-        let small_row = div()
+        // 1.29 single ribbon row: Image | Video | Brightness | Animation |
+        // Aspect ratio side by side (wrapping on narrow windows), not
+        // stacked full-width grids. Each strip flexes with at least a
+        // 3-tile window; its own x-scroller + ◀ ▶ catch the overflow.
+        let ribbon_row = div()
             .flex()
             .flex_row()
             .flex_wrap()
             .gap_2()
             .items_start()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(320.))
+                    .min_h_0()
+                    .child(image_group),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(320.))
+                    .min_h_0()
+                    .child(video_group),
+            )
             .child(group(ui, "Brightness", bright_kids))
             .child(group(ui, &self.t("animation"), anim_kids))
             .child(group(ui, "Aspect ratio", aspect_kids));
-        let groups_col = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(strips_col)
-            .child(small_row);
         // The open gallery drops its full panel (search, captioned grid,
         // the seven-row control stack) under the strips; picking assigns
         // and collapses back unless pinned. The panel gets its own bounded
@@ -5915,7 +6004,7 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(groups_col)
+                .child(ribbon_row)
                 .child(
                     div()
                         .flex()
@@ -5928,7 +6017,7 @@ impl Root {
                         .max_h(px(460.))
                         .child(media_gallery::gallery_panel(self, ui, cx, kind)),
                 ),
-            None => groups_col,
+            None => ribbon_row,
         }
     }
 
@@ -8962,7 +9051,68 @@ impl Root {
                     label(ui, "References:", 12.),
                     div().flex_1().child(self.references_field.clone()),
                     label(ui, "Verse order:", 12.),
-                    metadata_box(&order_text),
+                    {
+                        // Long medleys string 70+ ids into a wall of text, so
+                        // the order is a disclosure: one-line summary shut,
+                        // full wrapped list in a capped scroller open.
+                        let open = self.verse_order_open;
+                        let summary = if current.len() > 6 {
+                            format!(
+                                "{}, … ({} verses)",
+                                current[..5].join(", "),
+                                current.len()
+                            )
+                        } else {
+                            order_text.clone()
+                        };
+                        let full = order_text.clone();
+                        let mut col = div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1()
+                                    .cursor_pointer()
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.verse_order_open = !this.verse_order_open;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(btn(
+                                        ui,
+                                        cx,
+                                        if open { "▾" } else { "▸" },
+                                        open,
+                                        |this, _, _, cx| {
+                                            this.verse_order_open = !this.verse_order_open;
+                                            cx.notify();
+                                        },
+                                    ))
+                                    .child(metadata_box(&summary)),
+                            );
+                        if open {
+                            col = col.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_h_0()
+                                    .id("scroll:verse-order")
+                                    .max_h(px(140.))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll_verse_order)
+                                    .child(metadata_box(&full)),
+                            );
+                        }
+                        col
+                    },
                     btn(ui, cx, "×", false, move |this, _, _, cx| {
                         if let Some(id) = owner_clear.clone() {
                             if let Some(it) =
