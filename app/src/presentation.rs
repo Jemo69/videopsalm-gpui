@@ -33,6 +33,7 @@ impl PresentationState {
             snapshot: ProjectorSnapshot {
                 bg_kind: vp_core::schema::BackgroundKind::Color,
                 bg_file: None,
+                bg_website: None,
                 bg_fit: vp_core::schema::BgFit::Cover,
                 bg_color: Rgba {
                     r: 0.0,

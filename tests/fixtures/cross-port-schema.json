@@ -45,7 +45,8 @@
       "color",
       "image",
       "videoLoop",
-      "camera"
+      "camera",
+      "website"
     ],
     "transitions": [
       "none",
@@ -381,7 +382,8 @@
           "y": 0,
           "w": 10000,
           "h": 10000
-        }
+        },
+        "website": null
       },
       "transition": "none"
     },
@@ -437,7 +439,8 @@
           "y": 0,
           "w": 10000,
           "h": 10000
-        }
+        },
+        "website": null
       },
       "transition": "fade"
     },
@@ -493,7 +496,8 @@
           "y": 0,
           "w": 10000,
           "h": 10000
-        }
+        },
+        "website": null
       },
       "transition": "slide"
     },
@@ -549,9 +553,67 @@
           "y": 0,
           "w": 10000,
           "h": 10000
-        }
+        },
+        "website": null
       },
       "transition": "zoom"
+    },
+    {
+      "level": "Song",
+      "body": {
+        "font": "Sans",
+        "size": 48.0,
+        "color": "#FFFFFF",
+        "align": "center",
+        "margins": {
+          "top": 40.0,
+          "right": 60.0,
+          "bottom": 40.0,
+          "left": 60.0
+        },
+        "rect": {
+          "x": 0,
+          "y": 1000,
+          "w": 9000,
+          "h": 8000
+        }
+      },
+      "header": {
+        "template": "{{title}}",
+        "font": "Sans",
+        "size": 28.0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 1200
+        }
+      },
+      "footer": {
+        "template": "{{page}}",
+        "font": "Sans",
+        "size": 24.0,
+        "rect": {
+          "x": 2000,
+          "y": 9000,
+          "w": 8000,
+          "h": 1000
+        }
+      },
+      "background": {
+        "kind": "website",
+        "color": "#000000",
+        "image": null,
+        "videoLoop": null,
+        "website": "https://example.com/live",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 10000,
+          "h": 10000
+        }
+      },
+      "transition": "none"
     }
   ],
   "agenda": {
@@ -886,7 +948,8 @@
           "kind": "color",
           "color": "#000000",
           "image": null,
-          "videoLoop": null
+          "videoLoop": null,
+          "website": null
         },
         "transition": "none"
       },

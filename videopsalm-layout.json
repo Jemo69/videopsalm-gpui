@@ -2,8 +2,8 @@
   "theme_id": "light",
   "lang": "en",
   "ribbon": "text",
-  "accent_override": null,
-  "fg_override": null,
+  "accent_override": "#22C55E",
+  "fg_override": "#F97316",
   "style_level": "Song",
   "max_lines": 4,
   "max_chars": 40,
@@ -14,10 +14,11 @@
   "show_number": true,
   "show_chords_proj": false,
   "clock_overlay": false,
-  "bg_kind": "color",
+  "bg_kind": "image",
   "bg_fit": "cover",
-  "bg_file": "",
-  "font_family": "Sans",
+  "bg_file": "/home/jemo/.local/share/videopsalm/Media/Images/Untitled (3) (2).png",
+  "bg_website": "",
+  "font_family": "JetBrainsMonoNL Nerd Font Propo",
   "font_size": 44.0,
   "bold": false,
   "italic": false,
@@ -37,6 +38,14 @@
   "bible_search": "keyword",
   "aspect_ratio": "current",
   "projector_display": 0,
-  "gallery_images": [],
-  "gallery_videos": []
+  "projector_monitor": null,
+  "gallery_images": [
+    "/home/jemo/.local/share/videopsalm/Media/Images/Untitled (3) (2).png"
+  ],
+  "gallery_videos": [],
+  "gallery_keep_open": false,
+  "live_web": false,
+  "left_w": 360.0,
+  "right_w": 560.0,
+  "ribbon_hidden": false
 }

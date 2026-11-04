@@ -1200,6 +1200,9 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
         Some(path) => {
             root.bg_kind = GalleryState::assigned_kind(kind);
             root.bg_file = Some(path.clone());
+            // A file background replaces any website background (one
+            // background at a time — the projector reads a single kind).
+            root.bg_website = None;
             if kind == MediaFileKind::Video {
                 // Poster still so the loop shows its picture in-app.
                 root.ensure_video_poster(&path);
@@ -1223,6 +1226,7 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
             // Black sentinel (§7): unassign; the level falls through to Base.
             root.bg_kind = BackgroundKind::Color;
             root.bg_file = None;
+            root.bg_website = None;
             root.persist_layout_quiet();
             root.set_status(
                 cx,
@@ -1292,6 +1296,7 @@ pub(crate) fn delete_selected(root: &mut Root, cx: &mut Context<Root>, kind: Med
         if root.bg_file.as_deref() == Some(path.as_path()) {
             root.bg_kind = BackgroundKind::Color;
             root.bg_file = None;
+            root.bg_website = None;
         }
     }
     root.galleries.library.remove(&id);

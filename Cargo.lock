@@ -3816,6 +3816,7 @@ dependencies = [
  "smallvec",
  "unicode-segmentation",
  "vp-core",
+ "vp-ndi",
 ]
 
 [[package]]
@@ -6095,6 +6096,14 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha1_smol",
+]
+
+[[package]]
+name = "vp-ndi"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

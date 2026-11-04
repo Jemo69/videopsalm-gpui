@@ -57,6 +57,10 @@ use crate::rich_view;
 pub struct ProjectorSnapshot {
     pub bg_kind: BackgroundKind,
     pub bg_file: Option<PathBuf>,
+    /// Website background URL (`BackgroundKind::Website`). `None` = unset;
+    /// shown as a titled tile behind the lyrics — gpui 0.2.2 has no
+    /// web-view element, so the live page opens in the OS browser.
+    pub bg_website: Option<String>,
     /// Background image fit (WI-025): cover crops, contain letterboxes.
     pub bg_fit: BgFit,
     pub bg_color: Rgba,
@@ -212,6 +216,7 @@ pub(crate) fn background_layer(
     fit: BgFit,
     poster: Option<&PathBuf>,
     frame: Option<&Arc<Vec<u8>>>,
+    website: Option<&str>,
 ) -> Div {
     let object_fit = match fit {
         BgFit::Cover => ObjectFit::Cover,
@@ -262,6 +267,18 @@ pub(crate) fn background_layer(
         // No capture-device support in v1 (RESEARCH §12.6): plain color on
         // the slide; the control window says so.
         (BackgroundKind::Camera, _) => div().size_full().bg(bg),
+        // Website background: no web-view in gpui 0.2.2, so the URL shows
+        // as a titled tile *behind* the lyrics (the sacred screen never
+        // carries browser chrome or error text). The live page opens via
+        // the control window's Open button / OS handler.
+        (BackgroundKind::Website, _) => match website {
+            Some(url) if !url.trim().is_empty() => div().size_full().bg(bg).child(
+                missing_note(&format!("\u{1F310} {}", url.trim())),
+            ),
+            _ => div().size_full().bg(bg).child(missing_note(
+                "(website background: paste a URL in Background > Website)",
+            )),
+        },
     }
 }
 
@@ -431,6 +448,7 @@ pub(crate) fn render_snapshot(
             snap.bg_fit,
             snap.video_poster.as_ref(),
             snap.video_frame.as_ref(),
+            snap.bg_website.as_deref(),
         )
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
@@ -502,6 +520,7 @@ pub(crate) fn render_snapshot(
             snap.bg_fit,
             snap.video_poster.as_ref(),
             snap.video_frame.as_ref(),
+            snap.bg_website.as_deref(),
         ));
         // Luminosity over media pixels: gpui::img exposes no brightness
         // filter, so grade honestly by compositing — a translucent overlay
@@ -884,6 +903,7 @@ mod tests {
         assert!(grades_luminosity_overlay(BackgroundKind::VideoLoop));
         assert!(!grades_luminosity_overlay(BackgroundKind::Color));
         assert!(!grades_luminosity_overlay(BackgroundKind::Camera));
+        assert!(!grades_luminosity_overlay(BackgroundKind::Website));
     }
 
     #[test]
