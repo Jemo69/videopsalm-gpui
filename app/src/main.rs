@@ -5956,6 +5956,16 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 /// Like [`row`], but children flow onto the next line instead of clipping
 /// past a fixed-width panel (the 360px agenda column plus Browse buttons
 /// overflowed and clipped button labels — WI-024).
+///
+/// The lyrics document must yield vertical space before the footer does:
+/// the footer (References/Author/…) always stays visible while the
+/// document scrolls internally. Without `min_h_0` a tall wrapped footer
+/// pushes the Save row beneath the panel fold with no way to reach it.
+fn document_wrap(doc: gpui::Entity<DocField>) -> Div {
+    div().flex_1().min_h_0().overflow_hidden().child(doc)
+}
+/// past a fixed-width panel (the 360px agenda column plus Browse buttons
+/// overflowed and clipped button labels — WI-024).
 pub(crate) fn row_wrap(kids: Vec<Div>) -> Div {
     let mut r = div().flex().flex_row().flex_wrap().gap_1().items_center();
     for k in kids {
@@ -10270,7 +10280,7 @@ impl Root {
                 label(ui, "Title:", 12.),
                 div().flex_1().child(self.song_title_field.clone()),
             ]))
-            .child(document)
+            .child(document_wrap(document))
             // English 1.29 uses five editable footer fields: References and
             // Author/Composer on the left; Verse order and Copyright on the
             // right. Verse order is LIVE: the agenda item's override when one
@@ -10438,7 +10448,7 @@ impl Root {
                 label(ui, "Copyright:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.copyright_field.clone()),
             ]))
-            .child(row(vec![
+            .child(row_wrap(vec![
                 label(ui, "Composer:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.composer_field.clone()),
                 // Explicit affordance: footer fields persist via song Save.
