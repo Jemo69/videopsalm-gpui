@@ -10300,9 +10300,9 @@ impl Root {
                 let owner_down = owner.clone();
                 let default_up = default_order.clone();
                 let default_down = default_order.clone();
-                row(vec![
+                row_wrap(vec![
                     label(ui, "References:", 12.),
-                    div().flex_1().child(self.references_field.clone()),
+                    div().flex_1().min_w(px(140.)).child(self.references_field.clone()),
                     label(ui, "Verse order:", 12.),
                     {
                         // Long medleys string 70+ ids into a wall of text, so
@@ -10432,15 +10432,15 @@ impl Root {
                     }),
                 ])
             })
-            .child(row(vec![
+            .child(row_wrap(vec![
                 label(ui, "Author:", 12.),
-                div().flex_1().child(self.author_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.author_field.clone()),
                 label(ui, "Copyright:", 12.),
-                div().flex_1().child(self.copyright_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.copyright_field.clone()),
             ]))
             .child(row(vec![
                 label(ui, "Composer:", 12.),
-                div().flex_1().child(self.composer_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.composer_field.clone()),
                 // Explicit affordance: footer fields persist via song Save.
                 // The Song ribbon group owns the canonical Save; this footer
                 // copy is the same action, so `*` in the header can never
