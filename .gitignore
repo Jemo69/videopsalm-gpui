@@ -1,0 +1,11 @@
+# Build output
+target/
+dist/
+node_modules/
+
+# Scratch captures / binaries (never commit — see AGENTS.md)
+shots/
+
+# Local editor / OS noise
+.DS_Store
+*.orig

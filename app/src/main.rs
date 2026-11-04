@@ -490,6 +490,14 @@ pub(crate) struct Root {
     right_w: f32,
     /// In-progress column-divider drag: (col, start_w, press_x_px).
     col_drag: Option<(u8, f32, f32)>,
+    /// Adjustable section heights. The agenda/browser split (left column)
+    /// and the slides/preview split (right column) resize by dragging the
+    /// dividers between them. `None` = automatic (status-quo layout);
+    /// `Some(h)` = fixed pixels. Persisted in layout, clamped per split.
+    agenda_h: Option<f32>,
+    preview_h: Option<f32>,
+    /// In-progress row-divider drag: (which, start_h, press_y_px).
+    row_drag: Option<(u8, f32, f32)>,
     /// When the ribbon was last collapsed (hover-reveal guard).
     collapsed_at: Option<std::time::Instant>,
     /// The current song has unsaved lyrics.
@@ -720,6 +728,22 @@ pub(crate) fn clamp_col_width(w: f32) -> f32 {
     w.clamp(220.0, 720.0)
 }
 
+/// Row-divider payload: 0 = agenda/browser split, 1 = slides/preview split.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RowSplit(u8);
+
+/// Adjustable section heights, clamped so neither pane can vanish nor push
+/// its sibling off the window. 0 splits agenda/browser (100..520 px),
+/// 1 splits slides/preview (160..560 px). Pure so the drag math is
+/// unit-tested without a window.
+pub(crate) fn clamp_row_height(which: u8, h: f32) -> f32 {
+    if which == 0 {
+        h.clamp(100.0, 520.0)
+    } else {
+        h.clamp(160.0, 560.0)
+    }
+}
+
 impl Root {
     /// Single choke point for every ribbon collapse/expand path (Hide
     /// button, tab double-click, Ctrl+F1, hover strip). All three old
@@ -732,9 +756,11 @@ impl Root {
         if collapsed {
             self.dismiss_popups(cx);
             self.collapsed_at = Some(std::time::Instant::now());
-            self.set_status(cx, "Ribbon hidden — hover the top edge to reveal it.");
+            let msg = self.t("ribbon_hidden_msg");
+            self.set_status(cx, msg);
         } else {
-            self.set_status(cx, "Ribbon shown.");
+            let msg = self.t("ribbon_shown_msg");
+            self.set_status(cx, msg);
         }
         self.ribbon_collapsed = collapsed;
         self.persist_layout_quiet();
@@ -758,13 +784,12 @@ impl Root {
     fn col_press(&mut self, cx: &mut Context<Self>, col: u8, press_x: f32) {
         let start_w = if col == 0 { self.left_w } else { self.right_w };
         self.col_drag = Some((col, start_w, press_x));
-        self.set_status(
-            cx,
-            format!(
-                "Resizing {} panel — drag to adjust (220–720 px).",
-                if col == 0 { "left" } else { "right" }
-            ),
-        );
+        let msg = self.t(if col == 0 {
+            "resizing_left_msg"
+        } else {
+            "resizing_right_msg"
+        });
+        self.set_status(cx, msg);
         cx.notify();
     }
 
@@ -831,7 +856,8 @@ impl Root {
                         }
                         this.col_drag = None;
                         this.persist_layout_quiet();
-                        this.set_status(cx, "Panel width reset to default.");
+                        let msg = this.t("panel_reset_msg");
+                        this.set_status(cx, msg);
                         cx.notify();
                     } else {
                         this.col_press(cx, col, f32::from(ev.position.x));
@@ -840,6 +866,105 @@ impl Root {
             )
             .on_drag(
                 ColSplit(col),
+                move |_v, _off, _win: &mut Window, _cx: &mut App| ghost.clone(),
+            )
+    }
+
+    /// Press on a row divider: record which split + starting height +
+    /// cursor y. Mirrors [`Self::col_press`]; status names the split.
+    fn row_press(&mut self, cx: &mut Context<Self>, which: u8, press_y: f32) {
+        let start_h = match which {
+            0 => self.agenda_h.unwrap_or(300.0),
+            _ => self.preview_h.unwrap_or(300.0),
+        };
+        self.row_drag = Some((which, start_h, press_y));
+        let msg = self.t(if which == 0 {
+            "resizing_agenda_msg"
+        } else {
+            "resizing_preview_msg"
+        });
+        self.set_status(cx, msg);
+        cx.notify();
+    }
+
+    /// Feed one divider move: height follows the cursor, clamped per split.
+    /// Persists continuously (not only on release): a lost mouse-up — or
+    /// a crash mid-drag — must never lose the operator's layout.
+    fn row_move(&mut self, cx: &mut Context<Self>, cur_y: f32) {
+        if let Some((which, start_h, press_y)) = self.row_drag {
+            // Dragging down grows the top pane: the agenda grows, while
+            // the preview (bottom pane) shrinks.
+            let raw = if which == 0 {
+                start_h + (cur_y - press_y)
+            } else {
+                start_h - (cur_y - press_y)
+            };
+            let h = clamp_row_height(which, raw);
+            if which == 0 {
+                self.agenda_h = Some(h);
+            } else {
+                self.preview_h = Some(h);
+            }
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// Release a divider: persist — heights survive restart.
+    fn row_end(&mut self, cx: &mut Context<Self>) {
+        if self.row_drag.is_some() {
+            self.row_drag = None;
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// The grab strip between stacked sections (agenda/browser,
+    /// slides/preview). Row-resize cursor, hover accent, double-click
+    /// resets to automatic. Same contract as [`Self::divider`], rotated.
+    fn hdivider(&mut self, ui: &UI, cx: &mut Context<Self>, which: u8) -> impl gpui::IntoElement {
+        let ghost = self.drag_ghost.clone();
+        let grabbed = self.row_drag.is_some_and(|(w, _, _)| w == which);
+        let strip = div()
+            .w_full()
+            .h(px(14.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(gpui::CursorStyle::ResizeRow)
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border);
+        let strip = if grabbed {
+            strip.bg(ui.accent)
+        } else {
+            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+        };
+        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        strip
+            .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
+            .child(div().text_size(px(12.)).text_color(grip_color).child("⋯".to_string()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
+                    if ev.click_count == 2 {
+                        if which == 0 {
+                            this.agenda_h = None;
+                        } else {
+                            this.preview_h = None;
+                        }
+                        this.row_drag = None;
+                        this.persist_layout_quiet();
+                        let msg = this.t("panel_height_reset_msg");
+                        this.set_status(cx, msg);
+                        cx.notify();
+                    } else {
+                        this.row_press(cx, which, f32::from(ev.position.y));
+                    }
+                }),
+            )
+            .on_drag(
+                RowSplit(which),
                 move |_v, _off, _win: &mut Window, _cx: &mut App| ghost.clone(),
             )
     }
@@ -1076,6 +1201,9 @@ impl Root {
             left_w: 360.0,
             right_w: 560.0,
             col_drag: None,
+            agenda_h: None,
+            preview_h: None,
+            row_drag: None,
             collapsed_at: None,
             song_dirty: false,
             song_tab: 0,
@@ -1518,6 +1646,8 @@ impl Root {
                 .collect(),
             gallery_keep_open: self.galleries.keep_open,
             live_web: self.live_web_on,
+            agenda_h: self.agenda_h,
+            preview_h: self.preview_h,
             left_w: self.left_w,
             right_w: self.right_w,
             ribbon_hidden: self.ribbon_collapsed,
@@ -1630,6 +1760,10 @@ impl Root {
         // Live web view restores off for old files (serde default); an
         // operator who turned it on gets it back, everyone else untouched.
         self.live_web_on = p.live_web;
+        // Pinned section heights: validated on load so a hand-edited file
+        // can never collapse a pane; `None` stays automatic.
+        self.agenda_h = p.agenda_h.map(|h| clamp_row_height(0, h));
+        self.preview_h = p.preview_h.map(|h| clamp_row_height(1, h));
         // VJSM parity: adjustable section widths survive restart.
         self.left_w = p.left_w.clamp(220.0, 720.0);
         self.right_w = p.right_w.clamp(220.0, 720.0);
@@ -5367,6 +5501,13 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         }
         // An open popup menu yields Escape to dismiss. Also before the
         // typing gate, so a stranded menu never traps the operator.
+        // The settings modal behaves the same way (it is not part of
+        // `dismiss_popups`: a press inside the modal must not close it).
+        if keystroke == "escape" && self.show_message_settings {
+            self.show_message_settings = false;
+            cx.notify();
+            return;
+        }
         if keystroke == "escape" && self.dismiss_popups(cx) {
             return;
         }
@@ -6043,6 +6184,11 @@ impl Render for Root {
                 .border_color(ui.border)
                 .child(format!("{} {}", self.t("status"), self.status)),
         )
+        // Settings modal paints last: topmost, over ribbon, panels and
+        // the status line.
+        .when(self.show_message_settings, |d| {
+            d.child(self.message_settings(&ui, cx))
+        })
     }
 }
 
@@ -6272,6 +6418,9 @@ impl Root {
                     label(ui, &self.t("ribbon_collapsed_hint"), 12.),
                     btn(ui, cx, &self.t("ribbon_expand"), false, |this, _, _, cx| {
                         this.set_ribbon_collapsed(cx, false);
+                        // The strip itself also expands on mouse-up: stop
+                        // here or one click persists + notifies twice.
+                        cx.stop_propagation();
                     }),
                 ])
                 .into_any_element();
@@ -6510,7 +6659,7 @@ impl Root {
                 ),
             ],
         );
-        let mut ribbon = div()
+        let ribbon = div()
             .flex()
             .flex_row()
             .gap_2()
@@ -6520,23 +6669,52 @@ impl Root {
             .child(countdown_group)
             .child(stage_group)
             .child(display_group);
-        if self.show_message_settings {
-            ribbon = ribbon.child(self.message_settings(ui, cx));
-        }
         ribbon
     }
 
-    /// Rarely-changed Message-tab knobs, hidden behind `Settings…` so the
-    /// ribbon reads like 1.29: alert styling, clock mode/design, stage view
-    /// visibility toggles, projector monitor, workspace/theme/language and
-    /// the Edit-mode switch. Operators set these once; the ribbon keeps
-    /// only Display/Clear/Start/Stop.
+    /// Settings as a modal popup (not an inline ribbon strip): rarely-changed
+    /// knobs — alert styling, clock mode/design, stage view toggles,
+    /// projector monitor, workspace/theme/language, Edit-mode switch.
+    /// Operators set these once; the modal keeps them out of the way.
+    /// Backdrop click, `✕` and `Esc` close; clicks inside the card never
+    /// bubble out (stop propagation like the ribbon dropdowns).
     fn message_settings(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        section(
-            ui,
-            "Stage view · clock · alert options (Settings)",
-            vec![
-                row(vec![
+        let card = div()
+            .w(px(700.))
+            .max_w_full()
+            .bg(ui.panel)
+            .text_color(ui.fg)
+            .rounded_md()
+            .border_2()
+            .border_color(ui.accent)
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Settings".to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(btn(ui, cx, "✕ Close", false, |this, _, _, cx| {
+                        this.show_message_settings = false;
+                        cx.notify();
+                    })),
+            )
+            .child(label(ui, "Stage view · clock · alert options", 12.))
+            .child(row(vec![
                     label(ui, "clock mode:", 12.),
                     btn(ui, cx, "clock", self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
                         this.clock_mode = ClockMode::Clock;
@@ -6556,8 +6734,8 @@ impl Root {
                         this.whole_ref_header = !this.whole_ref_header;
                         cx.notify();
                     }),
-                ]),
-                row(vec![
+                ]))
+            .child(row(vec![
                     label(ui, "projector monitor:", 12.),
                     btn(ui, cx, "Display 1", self.projector_display == 0, |this, _, _, cx| {
                         this.set_projector_display(cx, 0);
@@ -6571,8 +6749,8 @@ impl Root {
                     btn(ui, cx, "✖ Close projector", false, |this, _, _, cx| {
                         this.close_projector(cx);
                     }),
-                ]),
-                row(vec![
+                ]))
+            .child(row(vec![
                     label(ui, "workspace:", 12.),
                     btn(ui, cx, "Control", self.mode == Mode::Control, |this, _, _, cx| {
                         this.ui_go(Mode::Control, cx);
@@ -6604,13 +6782,37 @@ impl Root {
                     btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
                         this.toggle_viewer_mode(cx);
                     }),
-                ]),
-                row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
+                ]))
+            .child(row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
                     this.show_message_settings = false;
                     cx.notify();
-                })]),
-            ],
-        )
+                })]));
+        // Outside-click catcher: dim full-area backdrop UNDER the card.
+        // A press outside the card lands here and dismisses (the card
+        // itself stops propagation, like the ribbon dropdowns).
+        div()
+            .absolute()
+            .left(px(0.))
+            .top(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .bg(Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.55,
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.show_message_settings = false;
+                    cx.notify();
+                }),
+            )
+            .child(card)
     }
 
     #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
@@ -7517,17 +7719,10 @@ impl Root {
             // 50/50 and squeezing the songs list to ~50px (the "not
             // scrollable / feels bad" complaint — the list scrolled, but its
             // window was two rows tall). A short agenda fits content; a long
-            // one scrolls inside the cap.
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .min_h_0()
-                    .max_h(px(360.))
-                    .overflow_hidden()
-                    .child(self.agenda_panel(ui, cx)),
-            )
+            // one scrolls inside the cap. Dragging the divider below pins a
+            // fixed height instead (`agenda_h`), persisted like the widths.
+            .child(self.agenda_wrap(ui, cx))
+            .child(self.hdivider(ui, cx, 0))
             .child(
                 div()
                     .flex()
@@ -7583,10 +7778,16 @@ impl Root {
                     this.col_move(cx, f32::from(ev.event.position.x));
                 },
             ))
+            .on_drag_move::<RowSplit>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<RowSplit>, _win, cx| {
+                    this.row_move(cx, f32::from(ev.event.position.y));
+                },
+            ))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _ev, _win, cx| {
                     this.col_end(cx);
+                    this.row_end(cx);
                 }),
             )
             .child(left)
@@ -7605,7 +7806,8 @@ impl Root {
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
             )
-            // Right: slides + strip above, preview below.
+            // Right: slides + strip above, preview below, split by a
+            // draggable divider (`preview_h`: automatic until dragged).
             .child(
                 div()
                     .flex()
@@ -7615,7 +7817,8 @@ impl Root {
                     .min_h_0()
                     .overflow_hidden()
                     .child(slides_and_commands)
-                    .child(self.preview_big_panel(ui, cx, vw, vh))
+                    .child(self.hdivider(ui, cx, 1))
+                    .child(self.preview_wrap(ui, cx, vw, vh))
                     // Contextual help (`F1`): on demand under the slide
                     // side, never a permanent third of the slide panel.
                     .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
@@ -7625,6 +7828,28 @@ impl Root {
             root = root.child(layer);
         }
         root
+    }
+
+    /// Agenda wrapper: automatic (content up to the 360 px cap) until the
+    /// operator drags the divider below it, then the pinned height.
+    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        wrap = match self.agenda_h {
+            Some(h) => wrap.h(px(h)),
+            None => wrap.flex_none().max_h(px(360.)),
+        };
+        wrap.child(self.agenda_panel(ui, cx))
+    }
+
+    /// Preview wrapper: automatic (content-sized) until the operator drags
+    /// the divider above it, then the pinned height (letterboxed inside).
+    fn preview_wrap(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
+        let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        wrap = match self.preview_h {
+            Some(h) => wrap.h(px(h)),
+            None => wrap.flex_none(),
+        };
+        wrap.child(self.preview_big_panel(ui, cx, vw, vh))
     }
 
     /// LEFT-top agenda panel: items with kind badges + add / save /
@@ -11491,6 +11716,17 @@ mod tests {
         assert_eq!(clamp_col_width(0.0), 220.0);
         assert_eq!(clamp_col_width(5000.0), 720.0);
         assert_eq!(clamp_col_width(-40.0), 220.0);
+    }
+
+    #[test]
+    fn row_heights_clamp_so_no_pane_can_vanish_or_push_out_its_sibling() {
+        // 0 = agenda/browser split (100..520), 1 = slides/preview (160..560).
+        assert_eq!(clamp_row_height(0, 300.0), 300.0);
+        assert_eq!(clamp_row_height(0, 0.0), 100.0);
+        assert_eq!(clamp_row_height(0, 5000.0), 520.0);
+        assert_eq!(clamp_row_height(1, 300.0), 300.0);
+        assert_eq!(clamp_row_height(1, 0.0), 160.0);
+        assert_eq!(clamp_row_height(1, 5000.0), 560.0);
     }
 
     #[test]

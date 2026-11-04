@@ -1143,6 +1143,13 @@ pub struct LayoutPrefs {
     /// old layout files load with the offline tiles, never a browser.
     #[serde(default)]
     pub live_web: bool,
+    /// Pinned agenda-list height in px (`None` = automatic content height).
+    /// Dragged row splits persist; pre-existing files load automatic.
+    #[serde(default)]
+    pub agenda_h: Option<f32>,
+    /// Pinned preview height in px (`None` = automatic). Same contract.
+    #[serde(default)]
+    pub preview_h: Option<f32>,
     /// Adjustable section widths (VJSM parity): dragged dividers persist.
     #[serde(default = "d_left_w")]
     pub left_w: f32,
@@ -1216,6 +1223,8 @@ impl Default for LayoutPrefs {
             gallery_videos: Vec::new(),
             gallery_keep_open: false,
             live_web: false,
+            agenda_h: None,
+            preview_h: None,
             left_w: d_left_w(),
             right_w: d_right_w(),
             ribbon_hidden: false,

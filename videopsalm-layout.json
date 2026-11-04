@@ -1,7 +1,7 @@
 {
   "theme_id": "light",
   "lang": "en",
-  "ribbon": "text",
+  "ribbon": "message",
   "accent_override": "#22C55E",
   "fg_override": "#F97316",
   "style_level": "Song",
@@ -45,6 +45,8 @@
   "gallery_videos": [],
   "gallery_keep_open": false,
   "live_web": false,
+  "agenda_h": null,
+  "preview_h": null,
   "left_w": 360.0,
   "right_w": 560.0,
   "ribbon_hidden": false
