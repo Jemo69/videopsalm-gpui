@@ -447,8 +447,8 @@ pub(crate) struct Root {
     /// panel is for slide rows.
     show_shortcuts: bool,
     /// Ribbon collapsed via `Ctrl+F1` (show-or-hide-the-toolbar, §8.4).
-    /// Session-only: the original's collapse is a window state, not a saved
-    /// layout, and the sibling feel lane owns ribbon presentation.
+    /// Persisted under the `ribbon_hidden` layout key: the operator's
+    /// workspace choice survives restart (hover or Expand re-opens).
     ribbon_collapsed: bool,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
@@ -490,9 +490,8 @@ pub(crate) struct Root {
     right_w: f32,
     /// In-progress column-divider drag: (col, start_w, press_x_px).
     col_drag: Option<(u8, f32, f32)>,
-    /// VJSM parity: ribbon auto-hide. `true` collapses the ribbon to a
-    /// hover strip; raising the cursor to the top reveals it again.
-    ribbon_hidden: bool,
+    /// When the ribbon was last collapsed (hover-reveal guard).
+    collapsed_at: Option<std::time::Instant>,
     /// The current song has unsaved lyrics.
     song_dirty: bool,
     /// Lyrics-editor sub-tab: `0` = Lyrics, `1` = Files, `2` = Chords.
@@ -722,6 +721,39 @@ pub(crate) fn clamp_col_width(w: f32) -> f32 {
 }
 
 impl Root {
+    /// Single choke point for every ribbon collapse/expand path (Hide
+    /// button, tab double-click, Ctrl+F1, hover strip). All three old
+    /// triggers disagreed on side effects — now collapse always dismisses
+    /// popups, stamps the guard clock, and persists; expand only persists.
+    /// The guard clock fixes the Hide-click loop: clicking Hide mounts the
+    /// strip directly under the cursor, whose hover(true) would otherwise
+    /// re-expand instantly. Hover expands only 800 ms after a collapse.
+    fn set_ribbon_collapsed(&mut self, cx: &mut Context<Self>, collapsed: bool) {
+        if collapsed {
+            self.dismiss_popups(cx);
+            self.collapsed_at = Some(std::time::Instant::now());
+            self.set_status(cx, "Ribbon hidden — hover the top edge to reveal it.");
+        } else {
+            self.set_status(cx, "Ribbon shown.");
+        }
+        self.ribbon_collapsed = collapsed;
+        self.persist_layout_quiet();
+        cx.notify();
+    }
+
+    /// True when a hover-reveal may expand the ribbon. Two gates, both
+    /// load-bearing: the 800 ms grace ignores the Hide click itself
+    /// (the strip mounts under the cursor), and a RESTARTED-collapsed
+    /// ribbon (`collapsed_at == None`) is armed — otherwise anyone who
+    /// quits collapsed gets a dead hover strip for the whole session.
+    /// GPUI only delivers hover on false→true transitions, so reveal is
+    /// inherently exit-then-reenter: the grace vetoes the first entry,
+    /// a later re-entry reveals. Pure so the rule is unit-tested.
+    fn hover_reveal_armed(collapsed: bool, at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+        const GRACE_MS: u128 = 800;
+        collapsed && at.map(|t| now.duration_since(t).as_millis() > GRACE_MS).unwrap_or(true)
+    }
+
     /// Press on a column divider: record col + starting width + cursor x.
     fn col_press(&mut self, cx: &mut Context<Self>, col: u8, press_x: f32) {
         let start_w = if col == 0 { self.left_w } else { self.right_w };
@@ -1044,7 +1076,7 @@ impl Root {
             left_w: 360.0,
             right_w: 560.0,
             col_drag: None,
-            ribbon_hidden: false,
+            collapsed_at: None,
             song_dirty: false,
             song_tab: 0,
             song_misc: false,
@@ -1488,7 +1520,7 @@ impl Root {
             live_web: self.live_web_on,
             left_w: self.left_w,
             right_w: self.right_w,
-            ribbon_hidden: self.ribbon_hidden,
+            ribbon_hidden: self.ribbon_collapsed,
         }
     }
 
@@ -1601,7 +1633,9 @@ impl Root {
         // VJSM parity: adjustable section widths survive restart.
         self.left_w = p.left_w.clamp(220.0, 720.0);
         self.right_w = p.right_w.clamp(220.0, 720.0);
-        self.ribbon_hidden = p.ribbon_hidden;
+        // The collapse state persists under the same key (one mechanism,
+        // not two: the old `ribbon_collapsed` was session-only).
+        self.ribbon_collapsed = p.ribbon_hidden;
     }
 
     /// True while the shield is armed: browsing songs must not repopulate the
@@ -5378,8 +5412,8 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             PresKey::ToggleMode => self.toggle_viewer_mode(cx),
             PresKey::StartPres => self.start_presentation(cx),
             PresKey::ToggleRibbon => {
-                self.ribbon_collapsed = !self.ribbon_collapsed;
-                cx.notify();
+                let to = !self.ribbon_collapsed;
+                self.set_ribbon_collapsed(cx, to);
             }
             PresKey::KeyTips => {
                 self.show_keytips = !self.show_keytips;
@@ -6183,27 +6217,54 @@ impl Root {
     /// Viewer mode removes the **whole** ribbon, tab row included: only the
     /// ribbon *bodies* used to be gated on `viewer_mode`, so a live tab row
     /// stayed on screen and gave away that this was a hide-toggle.
-    fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> gpui::AnyElement {
         if self.viewer_mode {
-            return div().w(px(0.)).h(px(0.));
+            return div().w(px(0.)).h(px(0.)).into_any_element();
         }
         // `Ctrl+F1` collapse (show-or-hide-the-toolbar, RESEARCH-weebly §8.4).
         // A slim re-expand row stands in for the article's white arrow; the
         // tab row itself is untouched.
         if self.ribbon_collapsed {
+            // VJSM parity: raising the cursor to the top reveals the
+            // ribbon — hover anywhere on the slim strip re-expands, no
+            // click needed. The `Expand` button stays as the touch/click
+            // path (hover never fires for it).
             return div()
+                .id("ribbon-collapsed-strip")
                 .flex()
                 .flex_row()
                 .gap_1()
                 .px(px(6.))
+                .py(px(2.))
                 .items_center()
-                .children(vec![
-                    label(ui, "ribbon collapsed", 12.),
-                    btn(ui, cx, "expand (Ctrl+F1)", false, |this, _, _, cx| {
-                        this.ribbon_collapsed = false;
-                        cx.notify();
+                .bg(rgb(0x1E6CC8))
+                .cursor_pointer()
+                // The whole strip is the affordance, not just the button:
+                // a hand cursor that only works on 120 px is a lie.
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, false);
                     }),
-                ]);
+                )
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered
+                        && Root::hover_reveal_armed(
+                            this.ribbon_collapsed,
+                            this.collapsed_at,
+                            std::time::Instant::now(),
+                        )
+                    {
+                        this.set_ribbon_collapsed(cx, false);
+                    }
+                }))
+                .children(vec![
+                    label(ui, &self.t("ribbon_collapsed_hint"), 12.),
+                    btn(ui, cx, &self.t("ribbon_expand"), false, |this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, false);
+                    }),
+                ])
+                .into_any_element();
         }
         let tabs: Vec<Div> = RibbonTab::all()
             .into_iter()
@@ -6238,8 +6299,8 @@ impl Root {
                         cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
                             if ev.click_count >= 2 {
                                 // Double-click tab header toggles ribbon collapse (B-14).
-                                this.ribbon_collapsed = !this.ribbon_collapsed;
-                                cx.notify();
+                                let to = !this.ribbon_collapsed;
+                                this.set_ribbon_collapsed(cx, to);
                             } else {
                                 this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
                                 this.persist_layout_quiet();
@@ -6264,7 +6325,13 @@ impl Root {
                     .flex_row()
                     .gap_1()
                     .items_center()
-                    .children(tabs),
+                    .children(tabs)
+                    // VJSM parity: an explicit Hide button. Double-click
+                    // and Ctrl+F1 already collapsed, but neither is
+                    // discoverable — the original has a visible Hide affordance.
+                    .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, true);
+                    })),
             )
             .child(self.format_ribbon(ui, cx))
             // The `Message` tab mirrors 1.29: Alert message | Clock |
@@ -6284,6 +6351,7 @@ impl Root {
             .when(self.show_style_explorer, |d| {
                 d.child(self.style_explorer(ui, cx))
             })
+            .into_any_element()
     }
 
     /// Utility actions formerly rendered in a custom top row. VideoPsalm keeps
@@ -11413,6 +11481,25 @@ mod tests {
         assert_eq!(clamp_col_width(0.0), 220.0);
         assert_eq!(clamp_col_width(5000.0), 720.0);
         assert_eq!(clamp_col_width(-40.0), 220.0);
+    }
+
+    #[test]
+    fn hover_reveal_ignores_the_collapse_click_itself() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        // Expanded: never armed.
+        assert!(!Root::hover_reveal_armed(false, None, now));
+        assert!(!Root::hover_reveal_armed(false, Some(now), now));
+        // Collapsed 50 ms ago (the Hide click mounting the strip under
+        // the cursor): the immediate hover(true) must NOT re-expand.
+        let just = now - Duration::from_millis(50);
+        assert!(!Root::hover_reveal_armed(true, Some(just), now));
+        // Collapsed 2 s ago, cursor returns: reveal fires.
+        let old = now - Duration::from_secs(2);
+        assert!(Root::hover_reveal_armed(true, Some(old), now));
+        // Restarted while collapsed: no timestamp, but the strip must
+        // still reveal (otherwise hover is dead for the whole session).
+        assert!(Root::hover_reveal_armed(true, None, now));
     }
 
     #[test]
