@@ -7693,7 +7693,9 @@ impl Root {
             .flex_row()
             .gap_1()
             .flex_1()
+            .min_w_0()
             .min_h_0()
+            .overflow_hidden()
             .child(
                 div()
                     .flex()
@@ -7713,7 +7715,9 @@ impl Root {
             .flex_col()
             .gap_2()
             .w(px(left_w))
+            .min_w_0()
             .min_h_0()
+            .overflow_hidden()
             // Agenda caps at ~360px so the song/Bible browser below keeps a
             // usable viewport: both panels were flex_1, splitting the column
             // 50/50 and squeezing the songs list to ~50px (the "not
@@ -7814,6 +7818,7 @@ impl Root {
                     .flex_col()
                     .gap_2()
                     .w(px(right_w))
+                    .min_w_0()
                     .min_h_0()
                     .overflow_hidden()
                     .child(slides_and_commands)
@@ -10296,8 +10301,10 @@ impl Root {
             .flex()
             .flex_col()
             .gap_1()
-            .w(px(40.))
+            .w(px(44.))
+            .min_w(px(44.))
             .flex_none()
+            .overflow_hidden()
             .items_center()
             .children(col)
     }
