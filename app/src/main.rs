@@ -6783,6 +6783,28 @@ impl Root {
                         this.toggle_viewer_mode(cx);
                     }),
                 ]))
+            .child(row(vec![
+                    label(ui, "default font size:", 12.),
+                    btn(ui, cx, "A-", false, |this, _, _, cx| {
+                        this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+                        this.mirror_font_to_style();
+                        let sz = this.font_size;
+                        this.persist_layout_quiet();
+                        this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                            v.size = Some(sz);
+                        });
+                    }),
+                    label(ui, &format!("A {}", self.font_size.round() as i32), 12.),
+                    btn(ui, cx, "A+", false, |this, _, _, cx| {
+                        this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
+                        this.mirror_font_to_style();
+                        let sz = this.font_size;
+                        this.persist_layout_quiet();
+                        this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                            v.size = Some(sz);
+                        });
+                    }),
+                ]))
             .child(row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
                     this.show_message_settings = false;
                     cx.notify();
