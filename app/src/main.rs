@@ -6659,17 +6659,19 @@ impl Root {
                 ),
             ],
         );
-        let ribbon = div()
+        div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
+            .min_w_0()
+            .overflow_hidden()
             .child(alert_group)
             .child(clock_group)
             .child(countdown_group)
             .child(stage_group)
-            .child(display_group);
-        ribbon
+            .child(display_group)
     }
 
     /// Settings as a modal popup (not an inline ribbon strip): rarely-changed
@@ -7467,11 +7469,16 @@ impl Root {
                 cx.notify();
             }),
         ];
-        div()
+        // Single scroll-free row that wraps on narrow windows: every group
+        // stays reachable without hiding controls behind a scroller.
+        let ribbon_groups = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
+            .min_w_0()
+            .overflow_hidden()
             .child(group(ui, "New / Import", vec![
                 btn_tip(
                     ui,
@@ -7510,7 +7517,8 @@ impl Root {
             .child(group(ui, &self.t("font"), font_kids))
             .child(group(ui, "Slide layout", layout_kids))
             .child(group(ui, &self.t("colors"), color_kids))
-            .child(group(ui, &self.t("animation"), anim_kids))
+            .child(group(ui, &self.t("animation"), anim_kids));
+        ribbon_groups
     }
 
     /// Style explorer tree (DoD #6) — hook: delegates to `style_explorer.rs`,
@@ -7710,34 +7718,35 @@ impl Root {
         // Slides panel with the command strip immediately to its right — the
         // strip acts on the slide list, so it belongs beside it, and in 1.29
         // the strip's buttons are **circles**, not bordered squares.
-        let slides_and_commands = div()
+        // Slides list only. The command strip is NOT in this row: when it
+        // shared the slides row's height, a tall preview squeezed the row
+        // and vertically clipped the round buttons (the reported bug — the
+        // strip showed 3-4 buttons then cut off). The strip now stands as a
+        // full-height column beside slides+preview, so it can never be cut
+        // by either panel's share of vertical space.
+        let slides_wrap = div()
             .flex()
-            .flex_row()
-            .gap_1()
+            .flex_col()
             .flex_1()
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(self.slides_panel(ui, cx)),
-            )
-            .child(self.tool_strip_panel(ui, cx));
+            .child(self.slides_panel(ui, cx));
+        let tool_strip = self.tool_strip_panel(ui, cx);
 
-        let left_w = self.left_w;
-        let right_w = self.right_w;
+        // Viewport-relative clamp: persisted widths can sum past a narrow
+        // window (left + center-min + right > vw), which pushed the right
+        // column — and the tool strip at its edge — off-screen. Each side
+        // column is capped at 32% of the viewport so all three columns plus
+        // the fixed 44px strip always fit; the center absorbs the rest.
+        let left_w = self.left_w.min((vw * 0.32).max(180.0));
+        let right_w = self.right_w.min((vw * 0.32).max(220.0));
         let left = div()
             .flex()
             .flex_col()
             .gap_2()
             .w(px(left_w))
-            .min_w_0()
+            .flex_none()
             .min_h_0()
             .overflow_hidden()
             // Agenda caps at ~360px so the song/Bible browser below keeps a
@@ -7773,16 +7782,27 @@ impl Root {
                 .child(
                     div()
                         .flex()
-                        .flex_col()
+                        .flex_row()
                         .gap_2()
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(slides_and_commands)
-                        .child(self.preview_big_panel(ui, cx, vw, vh))
-                        // Contextual help (`F1`): on demand under the slide
-                        // side, never a permanent third of the slide panel.
-                        .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .flex_1()
+                                .min_w_0()
+                                .min_h_0()
+                                .overflow_hidden()
+                                .child(slides_wrap)
+                                .child(self.preview_big_panel(ui, cx, vw, vh))
+                                // Contextual help (`F1`): on demand under the slide
+                                // side, never a permanent third of the slide panel.
+                                .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                        )
+                        .child(tool_strip)
                 );
             if let Some(layer) = self.dropdown_overlay(ui, cx) {
                 v = v.child(layer);
@@ -7832,23 +7852,34 @@ impl Root {
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
             )
-            // Right: slides + strip above, preview below, split by a
-            // draggable divider (`preview_h`: automatic until dragged).
+            // Right: slides above, preview below (split by a draggable
+            // divider), command strip full-height at the panel's edge.
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_2()
+                    .flex_row()
+                    .gap_1()
                     .w(px(right_w))
-                    .min_w_0()
+                    .flex_none()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(slides_and_commands)
-                    .child(self.hdivider(ui, cx, 1))
-                    .child(self.preview_wrap(ui, cx, vw, vh))
-                    // Contextual help (`F1`): on demand under the slide
-                    // side, never a permanent third of the slide panel.
-                    .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(slides_wrap)
+                            .child(self.hdivider(ui, cx, 1))
+                            .child(self.preview_wrap(ui, cx, vw, vh))
+                            // Contextual help (`F1`): on demand under the slide
+                            // side, never a permanent third of the slide panel.
+                            .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                    )
+                    .child(tool_strip)
             )
             .child(self.divider(ui, cx, 1));
         if let Some(layer) = self.dropdown_overlay(ui, cx) {
@@ -10461,6 +10492,7 @@ impl Root {
             .flex_col()
             .gap_1()
             .p(px(6.))
+            .min_w_0()
             .min_h_0()
             .flex_1()
             .overflow_hidden()
