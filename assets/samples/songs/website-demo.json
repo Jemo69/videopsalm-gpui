@@ -1,0 +1,33 @@
+{
+  "id": "song-website-demo",
+  "title": "Website Demo",
+  "verses": [
+    {
+      "id": "V1",
+      "lines": [
+        "Visit our page for service times",
+        "See what is happening this week",
+        "<iframe src=\"https://www.example.com\" title=\"Description of content\"/>"
+      ],
+      "order": 1
+    },
+    {
+      "id": "V2",
+      "lines": [
+        "Grace for every need",
+        "Hope for every heart",
+        "<iframe src=\"example.com/live\"/>"
+      ],
+      "order": 2
+    }
+  ],
+  "authors": ["Sample"],
+  "composer": "",
+  "ccli": "",
+  "songbookId": "book-main",
+  "color": "#2563EB",
+  "icon": "7",
+  "chords": { "notation": "ABC", "transpose": 0, "overlays": [] },
+  "createdAt": "2026-11-03",
+  "updatedAt": "2026-11-03"
+}

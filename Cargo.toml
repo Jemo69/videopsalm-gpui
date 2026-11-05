@@ -1,5 +1,5 @@
 [workspace]
-members = ["vp-core", "app"]
+members = ["vp-core", "vp-ndi", "app"]
 resolver = "2"
 
 # Vendored patch: xattr 0.2.3 references libc::ENOATTR, which no longer

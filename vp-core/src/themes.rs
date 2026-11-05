@@ -107,6 +107,7 @@ pub fn default_style(theme: &Theme, accent: Option<&str>) -> Style {
             color: theme.projection_bg.to_string(),
             image: None,
             video_loop: None,
+            website: None,
             rect: None,
         },
         transition: "none".to_string(),

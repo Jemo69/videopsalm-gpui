@@ -14,6 +14,218 @@ use crate::chord_transpose::strip_chords;
 use crate::schema::{AgendaItem, ItemKind, ItemRef, Song};
 use crate::verse_splitter::{split_verse, SplitOptions};
 
+/// One inline website embed parsed out of a lyric line.
+/// Syntax: `<iframe src="https://..." title="optional"/>` (title may be
+/// omitted; quoted values may contain `/`, `>` and `=`; bare `src` values
+/// run to whitespace; the tag name is case-insensitive).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebsiteEmbed {
+    pub url: String,
+    pub title: String,
+}
+
+/// Split `<iframe ...>` embeds out of a lyric line.
+/// Returns the display line (tags removed, surrounding text kept) plus the
+/// embeds in order. Bad URLs (non-http(s), spaces, empties) are dropped
+/// silently — the tag is still stripped so projection never shows markup.
+/// The closing `</iframe>` (if present) is swallowed as well.
+pub fn extract_website_embeds(line: &str) -> (String, Vec<WebsiteEmbed>) {
+    let mut out = String::with_capacity(line.len());
+    let mut embeds = Vec::new();
+    let mut i = 0;
+    while i < line.len() {
+        let rest = &line[i..];
+        let tag_at = rest.find('<').map(|p| i + p);
+        let Some(t) = tag_at else {
+            out.push_str(rest);
+            break;
+        };
+        // Case-insensitive `<iframe` match with a word boundary after.
+        // A line ending in a truncated `<ifram…` is a partial tag too:
+        // drop the `<` so raw markup never reaches the projector.
+        let after: &str = line.get(t + 1..).unwrap_or("");
+        let truncated = !after.is_empty()
+            && after.len() <= 6
+            && "iframe".starts_with(&after.to_ascii_lowercase());
+        let is_iframe = after
+            .get(..6)
+            .map(|s| s.eq_ignore_ascii_case("iframe"))
+            .unwrap_or(false)
+            && after
+                .get(6..)
+                .and_then(|s| s.chars().next())
+                .map(|c| c.is_whitespace() || c == '>' || c == '/')
+                .unwrap_or(false);
+        if !is_iframe {
+            out.push_str(&line[i..t]);
+            if !truncated {
+                out.push('<');
+            }
+            i = t + 1;
+            continue;
+        }
+        // Quote-aware end of tag: a `>` inside quotes does not close.
+        let Some(tag_end) = tag_close(&line[t..]).map(|r| t + r) else {
+            // Unterminated `<iframe …`: drop the partial tag, keep prior text.
+            out.push_str(&line[i..t]);
+            break;
+        };
+        let tag = &line[t..=tag_end];
+        out.push_str(&line[i..t]);
+        let attrs = parse_tag_attrs(tag);
+        if let Some(url) = attrs
+            .get("src")
+            .and_then(|s| crate::schema::normalize_website_url(s))
+        {
+            let title = attrs
+                .get("title")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    url.split_once("://")
+                        .map(|(_, rest)| rest.to_string())
+                        .unwrap_or_else(|| url.clone())
+                });
+            embeds.push(WebsiteEmbed { url, title });
+        }
+        i = tag_end + 1;
+        // Swallow one matching `</iframe>` (optional whitespace, any case).
+        // Inner fallback text between the tags stays as lyric text.
+        i = swallow_close_tag(line, i);
+    }
+    (out, embeds)
+}
+
+/// Byte offset (relative to `s`, which must start at `<`) of the `>` that
+/// closes the tag, ignoring `>` inside single/double quotes. `None` when
+/// the tag never closes.
+fn tag_close(s: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (idx, c) in s.char_indices() {
+        if idx == 0 {
+            continue; // the opening `<`
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+        } else if c == '"' || c == '\'' {
+            quote = Some(c);
+        } else if c == '>' {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// Tokenize one tag into lowercase attribute names → raw values.
+/// Sequential (never substring): a `src=` inside another attribute's quoted
+/// value is inert. Bare values run to whitespace; quoted values to their
+/// quote, so `/`, `>` and `=` survive inside quotes.
+fn parse_tag_attrs(tag: &str) -> std::collections::HashMap<String, String> {
+    let mut attrs = std::collections::HashMap::new();
+    let mut body = tag.strip_prefix('<').unwrap_or(tag);
+    body = body.strip_suffix('>').unwrap_or(body);
+    body = body.strip_suffix('/').unwrap_or(body);
+    // Skip the tag name itself.
+    let mut pos = 0;
+    while pos < body.len() && !body[pos..].chars().next().unwrap().is_whitespace() {
+        pos += body[pos..].chars().next().unwrap().len_utf8();
+    }
+    while pos < body.len() {
+        while pos < body.len() && body[pos..].chars().next().unwrap().is_whitespace() {
+            pos += body[pos..].chars().next().unwrap().len_utf8();
+        }
+        if pos >= body.len() || body[pos..].starts_with('/') {
+            break;
+        }
+        let name_start = pos;
+        while pos < body.len()
+            && {
+                let c = body[pos..].chars().next().unwrap();
+                c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == ':'
+            }
+        {
+            pos += body[pos..].chars().next().unwrap().len_utf8();
+        }
+        let name = body[name_start..pos].to_ascii_lowercase();
+        if name.is_empty() {
+            pos += body[pos..].chars().next().unwrap().len_utf8();
+            continue;
+        }
+        while pos < body.len() && body[pos..].chars().next().unwrap().is_whitespace() {
+            pos += body[pos..].chars().next().unwrap().len_utf8();
+        }
+        if !body[pos..].starts_with('=') {
+            continue; // boolean attribute: no value to take
+        }
+        pos += 1;
+        while pos < body.len() && body[pos..].chars().next().unwrap().is_whitespace() {
+            pos += body[pos..].chars().next().unwrap().len_utf8();
+        }
+        if pos >= body.len() {
+            break;
+        }
+        let value = if body[pos..].starts_with('"') || body[pos..].starts_with('\'') {
+            let q = body[pos..].chars().next().unwrap();
+            pos += q.len_utf8();
+            let start = pos;
+            while pos < body.len() && !body[pos..].starts_with(q) {
+                pos += body[pos..].chars().next().unwrap().len_utf8();
+            }
+            let v = body[start..pos].to_string();
+            if body[pos..].starts_with(q) {
+                pos += q.len_utf8();
+            }
+            v
+        } else {
+            let start = pos;
+            while pos < body.len() && !body[pos..].chars().next().unwrap().is_whitespace() {
+                pos += body[pos..].chars().next().unwrap().len_utf8();
+            }
+            body[start..pos].to_string()
+        };
+        if !value.is_empty() {
+            attrs.entry(name).or_insert(value);
+        }
+    }
+    attrs
+}
+
+/// If `line[i..]` (after optional whitespace) opens a `</iframe …>` close
+/// tag (any case, optional whitespace before `>`), return the index past it.
+/// Byte-safe via `get`.
+fn swallow_close_tag(line: &str, i: usize) -> usize {
+    let mut j = i;
+    while let Some(c) = line[j..].chars().next() {
+        if c.is_whitespace() {
+            j += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let is_close = line[j..]
+        .get(..8)
+        .map(|s| s.eq_ignore_ascii_case("</iframe"))
+        .unwrap_or(false);
+    if !is_close {
+        return i;
+    }
+    let mut k = j + 8;
+    while let Some(c) = line[k..].chars().next() {
+        if c.is_whitespace() {
+            k += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if line[k..].starts_with('>') {
+        k + 1
+    } else {
+        i
+    }
+}
+
 /// One rendered projector slide.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Slide {
@@ -189,8 +401,26 @@ fn song_slides(
     let default_footer = song.authors.join(", ");
     let total_verses = verses.len();
     let mut slides = Vec::new();
+    let mut embeds: Vec<WebsiteEmbed> = Vec::new();
     for (v_idx, v) in verses.iter().enumerate() {
-        let plain: Vec<String> = v.lines.iter().map(|l| strip_chords(l)).collect();
+        // Inline `<iframe src title>` tags parse out as website embeds.
+        // Embeds extract BEFORE chord stripping: `[brackets]` inside a URL
+        // or title are data, not chords. Lines left empty only because a
+        // tag was removed are dropped (operator-intended blank separators
+        // stay, so slide boundaries never shift).
+        let plain: Vec<String> = v.lines.iter().filter_map(|l| {
+            let (clean, found) = extract_website_embeds(l);
+            // Drop when a tag was removed and nothing projectable remains —
+            // even when the URL itself was rejected (no embed collected).
+            let tag_removed = clean.as_str() != l.as_str();
+            embeds.extend(found);
+            let stripped = strip_chords(&clean);
+            if tag_removed && stripped.trim().is_empty() {
+                None
+            } else {
+                Some(stripped)
+            }
+        }).collect();
         let chunks = split_verse(&plain, opts);
         let chunk_count = chunks.len();
         for (i, chunk) in chunks.iter().enumerate() {
@@ -226,14 +456,69 @@ fn song_slides(
             slides.push(Slide::text(header, chunk.clone(), footer));
         }
     }
-    if slides.is_empty() {
+    if slides.is_empty() && embeds.is_empty() {
         slides.push(Slide::text(
             song.title.clone(),
             vec!["(no lyrics)".to_string()],
-            default_footer,
+            default_footer.clone(),
         ));
     }
+    // One link-card slide per unique embed, after the lyrics (offline:
+    // URL shown, never fetched or auto-played). Dedup is case-insensitive
+    // on scheme+host; the first title wins. Header/footer templates apply
+    // like lyric slides; otherwise the embed title and the WebSite label.
+    let web_footer = kind_label(ItemKind::WebSite);
+    let mut embed_ctx = crate::template::SlideTemplateContext::new()
+        .with_song(
+            &song.title,
+            Some(&default_footer),
+            Some(&song.songbook_id),
+            Some(&song.songbook_id),
+        )
+        .with_verse(total_verses, total_verses, None);
+    if !song.ccli.is_empty() {
+        embed_ctx.ccli = Some(&song.ccli);
+    }
+    if !song.copyright.is_empty() {
+        embed_ctx.copyright = Some(&song.copyright);
+    }
+    let mut seen = std::collections::HashSet::new();
+    for e in embeds {
+        if seen.insert(embed_dedup_key(&e.url)) {
+            let header = match header_template {
+                Some(tpl) if !tpl.is_empty() => {
+                    crate::template::format_template(tpl, &embed_ctx)
+                }
+                _ => e.title.clone(),
+            };
+            let footer = match footer_template {
+                Some(tpl) if !tpl.is_empty() => {
+                    crate::template::format_template(tpl, &embed_ctx)
+                }
+                _ => web_footer.clone(),
+            };
+            slides.push(Slide::text(header, vec![e.url.clone()], footer));
+        }
+    }
     slides
+}
+
+/// Dedup key for embed URLs: scheme + host lowercased, path kept verbatim.
+fn embed_dedup_key(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let host_end = rest
+                .find(|c| c == '/' || c == '?' || c == '#')
+                .unwrap_or(rest.len());
+            format!(
+                "{}://{}{}",
+                scheme.to_ascii_lowercase(),
+                rest[..host_end].to_ascii_lowercase(),
+                &rest[host_end..]
+            )
+        }
+        None => url.to_ascii_lowercase(),
+    }
 }
 
 // ---------------------------------------------------------------- bibles ---
@@ -579,6 +864,230 @@ mod tests {
         };
         let slides = compute_item_slides(&item, &songs(), &bibles(), &opts(), true, true);
         assert!(slides[0].lines[0].contains("not found"));
+    }
+
+    #[test]
+    fn iframe_embeds_parse_out_of_lyrics_with_optional_title() {
+        // Full form with title.
+        let (clean, embeds) = extract_website_embeds(
+            r#"Sing along <iframe src="https://www.example.com" title="Description of content"/> amen"#,
+        );
+        assert_eq!(clean, "Sing along  amen");
+        assert_eq!(embeds.len(), 1);
+        assert_eq!(embeds[0].url, "https://www.example.com");
+        assert_eq!(embeds[0].title, "Description of content");
+        // Title optional → falls back to host+path; bare host gets https.
+        let (_, embeds) =
+            extract_website_embeds(r#"<iframe src='example.com/live'/>"#);
+        assert_eq!(embeds[0].url, "https://example.com/live");
+        assert_eq!(embeds[0].title, "example.com/live");
+        // Case-insensitive, close tag swallowed, bad URL dropped but stripped.
+        let (clean, embeds) = extract_website_embeds(
+            r#"<IFRAME SRC="https://a.test/x"></IFRAME>"#,
+        );
+        assert_eq!(clean, "");
+        assert_eq!(embeds.len(), 1);
+        let (clean, embeds) =
+            extract_website_embeds(r#"<iframe src="javascript:alert(1)"/> kept"#);
+        assert_eq!(clean, " kept");
+        assert!(embeds.is_empty());
+    }
+
+    #[test]
+    fn iframe_parser_is_byte_safe_and_quote_aware() {
+        // Non-ASCII around `<` must never panic (char-boundary slices).
+        let (clean, embeds) = extract_website_embeds("<abcdeé");
+        assert_eq!(clean, "<abcdeé");
+        assert!(embeds.is_empty());
+        let (clean, embeds) =
+            extract_website_embeds("<iframe src=\"https://x.test\"/></ifraéé");
+        assert_eq!(embeds.len(), 1);
+        assert!(clean.ends_with("</ifraéé"));
+        // `>` inside quotes does not close the tag.
+        let (clean, embeds) =
+            extract_website_embeds(r#"<iframe src="https://x.test/?q=<b>"/>"#);
+        assert_eq!(clean, "");
+        assert_eq!(embeds[0].url, "https://x.test/?q=<b>");
+        // `src=` inside another attribute's quoted value is inert.
+        let (clean, embeds) = extract_website_embeds(
+            r#"<iframe title="my src=x" src="https://real.test/"/>"#,
+        );
+        assert_eq!(clean, "");
+        assert_eq!(embeds[0].url, "https://real.test/");
+        assert_eq!(embeds[0].title, "my src=x");
+        // Bare values keep slashes; `</iframe >` with space still swallows.
+        let (_, embeds) =
+            extract_website_embeds(r#"<iframe src=https://x.test/path />"#);
+        assert_eq!(embeds[0].url, "https://x.test/path");
+        let (clean, embeds) =
+            extract_website_embeds(r#"<iframe src="https://x.test/"></IFRAME >"#);
+        assert_eq!(clean, "");
+        assert_eq!(embeds.len(), 1);
+        // Unterminated tag drops the partial tag, keeps prior text.
+        let (clean, embeds) =
+            extract_website_embeds(r#"hello <iframe src="https://x.test/a"#);
+        assert_eq!(clean, "hello ");
+        assert!(embeds.is_empty());
+        // Truncated tag at end of line: no raw markup leaks.
+        let (clean, embeds) = extract_website_embeds("see this <iframe");
+        assert_eq!(clean, "see this iframe");
+        assert!(embeds.is_empty());
+        let (clean, _) = extract_website_embeds("a < b");
+        assert_eq!(clean, "a < b");
+    }
+
+    #[test]
+    fn iframe_brackets_are_data_not_chords() {
+        // Embeds extract before chord stripping: brackets survive.
+        let (_, embeds) = extract_website_embeds(
+            r#"<iframe src="http://x.test/a[1]" title="Verse [1]"/>"#,
+        );
+        assert_eq!(embeds[0].url, "http://x.test/a[1]");
+        assert_eq!(embeds[0].title, "Verse [1]");
+    }
+
+    #[test]
+    fn iframe_only_lines_leave_no_blank_lyric_slide() {
+        let mut lib = songs();
+        let mut song = lib.values().next().unwrap().clone();
+        song.id = "song-iframe-blank".to_string();
+        song.verses[0].lines.push(
+            r#"<iframe src="https://www.example.com" title="Card"/>"#.to_string(),
+        );
+        lib.insert(song.id.clone(), song);
+        let item = AgendaItem {
+            id: "w".into(),
+            kind: ItemKind::Song,
+            title: "T".into(),
+            reference: ItemRef::Song { song_id: "song-iframe-blank".into() },
+            flow_type: FlowType::Manual,
+            auto_advance_ms: None,
+            overrides: Default::default(),
+        };
+        let slides = compute_item_slides(&item, &lib, &bibles(), &opts(), true, true);
+        // No lyric line may be blank because of a removed tag.
+        for s in &slides[..slides.len() - 1] {
+            for l in &s.lines {
+                assert!(!l.trim().is_empty(), "blank line leaked: {slides:?}");
+            }
+        }
+        assert_eq!(slides.last().unwrap().footer, "WebSite");
+    }
+
+    #[test]
+    fn invalid_url_tag_leaves_no_blank_lyric_slide() {
+        let (clean, embeds) =
+            extract_website_embeds(r#"<iframe src="javascript:alert(1)"/>"#);
+        assert_eq!(clean, "");
+        assert!(embeds.is_empty());
+        // Song level: an invalid-tag-only verse degrades to the honest
+        // placeholder, never a blank slide.
+        let mut lib = songs();
+        let mut song = lib.values().next().unwrap().clone();
+        song.id = "song-iframe-invalid".to_string();
+        song.verses[0].lines = vec![r#"<iframe src="javascript:alert(1)"/>"#.to_string()];
+        song.verses.truncate(1);
+        lib.insert(song.id.clone(), song);
+        let item = AgendaItem {
+            id: "w".into(),
+            kind: ItemKind::Song,
+            title: "T".into(),
+            reference: ItemRef::Song { song_id: "song-iframe-invalid".into() },
+            flow_type: FlowType::Manual,
+            auto_advance_ms: None,
+            overrides: Default::default(),
+        };
+        let slides = compute_item_slides(&item, &lib, &bibles(), &opts(), true, true);
+        for s in &slides {
+            for l in &s.lines {
+                assert!(!l.trim().is_empty(), "blank line leaked: {slides:?}");
+            }
+        }
+        assert!(slides.iter().all(|s| s.footer != "WebSite"));
+    }
+
+    #[test]
+    fn iframe_dedup_ignores_host_case() {
+        assert_eq!(
+            embed_dedup_key("https://Example.COM/live"),
+            embed_dedup_key("https://example.com/live")
+        );
+        assert_ne!(
+            embed_dedup_key("https://example.com/a"),
+            embed_dedup_key("https://example.com/b")
+        );
+    }
+
+    #[test]
+    fn song_with_iframe_appends_website_slides() {
+        let mut lib = songs();
+        let mut song = lib.values().next().unwrap().clone();
+        song.id = "song-iframe".to_string();
+        song.verses[0].lines.push(
+            r#"<iframe src="https://www.example.com" title="Description of content"/>"#.to_string(),
+        );
+        lib.insert(song.id.clone(), song);
+        let item = AgendaItem {
+            id: "w".into(),
+            kind: ItemKind::Song,
+            title: "T".into(),
+            reference: ItemRef::Song { song_id: "song-iframe".into() },
+            flow_type: FlowType::Manual,
+            auto_advance_ms: None,
+            overrides: Default::default(),
+        };
+        let slides = compute_item_slides(&item, &lib, &bibles(), &opts(), true, true);
+        let last = slides.last().unwrap();
+        assert_eq!(last.header, "Description of content");
+        assert_eq!(last.lines, vec!["https://www.example.com".to_string()]);
+        assert_eq!(last.footer, "WebSite");
+        // No markup leaks into the lyric slides.
+        for s in &slides[..slides.len() - 1] {
+            for l in &s.lines {
+                assert!(!l.contains("iframe"), "markup leaked: {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn iframe_localhost_stage_tag_parses() {
+        // Operator's exact tag: http + port + hash fragment, titled.
+        let (clean, embeds) = extract_website_embeds(
+            r#"<iframe src="http://localhost:4000/#/stage" title="Stage"/>"#,
+        );
+        assert_eq!(clean, "");
+        assert_eq!(embeds.len(), 1);
+        assert_eq!(embeds[0].url, "http://localhost:4000/#/stage");
+        assert_eq!(embeds[0].title, "Stage");
+    }
+
+    #[test]
+    fn sample_agenda_website_demo_song_yields_embed_slides() {
+        let agenda = Agenda::from_json(include_str!(
+            "../../assets/samples/agenda/sample-agenda.json"
+        ))
+        .unwrap();
+        let item = agenda
+            .items
+            .iter()
+            .find(|i| i.title == "Website Demo")
+            .expect("sample agenda carries the Website Demo song");
+        let demo: Song = serde_json::from_str(include_str!(
+            "../../assets/samples/songs/website-demo.json"
+        ))
+        .unwrap();
+        let mut lib = songs();
+        lib.insert(demo.id.clone(), demo);
+        let slides = compute_item_slides(item, &lib, &bibles(), &opts(), true, true);
+        let tails: Vec<&Slide> = slides
+            .iter()
+            .filter(|s| s.footer == "WebSite")
+            .collect();
+        assert_eq!(tails.len(), 2, "got {slides:?}");
+        assert_eq!(tails[0].header, "Description of content");
+        assert_eq!(tails[0].lines, vec!["https://www.example.com".to_string()]);
+        assert_eq!(tails[1].header, "example.com/live");
+        assert_eq!(tails[1].lines, vec!["https://example.com/live".to_string()]);
     }
 
     #[test]

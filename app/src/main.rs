@@ -40,8 +40,10 @@ mod doc_field;
 mod file_picker;
 mod icons;
 mod lyrics_doc;
+mod live_web;
 mod media_gallery;
 mod monitors;
+mod ndi_out;
 mod presentation;
 mod preview_resize;
 mod projector_window;
@@ -52,6 +54,7 @@ mod text_field;
 mod ux;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -71,7 +74,7 @@ use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
 use vp_core::geometry::{AspectRatio, FitMode, Viewport, resolve_percent};
 use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
-use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, projector_frame};
+use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, MotionPump, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemOverrides, ItemRef, Song,
 };
@@ -203,6 +206,10 @@ const ENGAGED: Rgba = Rgba {
     b: 0.153,
     a: 1.0,
 };
+
+/// In-app video motion rate: silent piped stills/sec at 960px wide. The tick
+/// polls at the same cadence; higher reads smoother but republishes more.
+const MOTION_FPS: u32 = 8;
 
 /// Blue, for the row that is currently projecting (UX-RESEARCH §10.3:
 /// "highlighted in blue" — since 1.2, and on every skin).
@@ -378,6 +385,11 @@ pub(crate) struct Root {
     /// eight always-visible buttons.
     style_menu_open: bool,
     pub(crate) bg_kind: BackgroundKind,
+    /// Website background URL (`BackgroundKind::Website`). Normalized on
+    /// assign via `vp_core::schema::normalize_website_url`; `None` = unset.
+    /// Stored as data only — never fetched (offline-first); the projector
+    /// shows a titled tile and the live page opens in the OS browser.
+    pub(crate) bg_website: Option<String>,
     /// Background image fit (WI-025): cover crops to fill, contain shows
     /// the whole image. Global like alignment; the vendor offers no such
     /// knob (its backgrounds always cover), so cover is the default.
@@ -435,8 +447,8 @@ pub(crate) struct Root {
     /// panel is for slide rows.
     show_shortcuts: bool,
     /// Ribbon collapsed via `Ctrl+F1` (show-or-hide-the-toolbar, §8.4).
-    /// Session-only: the original's collapse is a window state, not a saved
-    /// layout, and the sibling feel lane owns ribbon presentation.
+    /// Persisted under the `ribbon_hidden` layout key: the operator's
+    /// workspace choice survives restart (hover or Expand re-opens).
     ribbon_collapsed: bool,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
@@ -470,6 +482,24 @@ pub(crate) struct Root {
     /// B-07: the invisible drag ghost. Starting a platform drag needs a view
     /// to carry, and a resize must not show a floating chip.
     drag_ghost: gpui::Entity<DragGhost>,
+    /// VJSM parity: adjustable section widths. The three control columns
+    /// (library | editor | slides+preview) resize by dragging the dividers
+    /// between them, like the original's cursor-resizable squares.
+    /// Persisted in layout (`left_w`/`right_w`), clamped 220..720 px.
+    left_w: f32,
+    right_w: f32,
+    /// In-progress column-divider drag: (col, start_w, press_x_px).
+    col_drag: Option<(u8, f32, f32)>,
+    /// Adjustable section heights. The agenda/browser split (left column)
+    /// and the slides/preview split (right column) resize by dragging the
+    /// dividers between them. `None` = automatic (status-quo layout);
+    /// `Some(h)` = fixed pixels. Persisted in layout, clamped per split.
+    agenda_h: Option<f32>,
+    preview_h: Option<f32>,
+    /// In-progress row-divider drag: (which, start_h, press_y_px).
+    row_drag: Option<(u8, f32, f32)>,
+    /// When the ribbon was last collapsed (hover-reveal guard).
+    collapsed_at: Option<std::time::Instant>,
     /// The current song has unsaved lyrics.
     song_dirty: bool,
     /// Lyrics-editor sub-tab: `0` = Lyrics, `1` = Files, `2` = Chords.
@@ -495,6 +525,35 @@ pub(crate) struct Root {
     /// re-pushes on every navigation, so without this the player would
     /// relaunch on each slide step. Reset when live leaves video.
     media_launched_for: Option<String>,
+    /// Opt-in live web view (Background > Website > Live): a real browser
+    /// window for website slides. Default off — when off this whole path is
+    /// dead code at runtime and the projector keeps the offline tiles.
+    live_web_on: bool,
+    /// Remote URLs allowed for live view this session (operator-confirmed).
+    /// Loopback never needs confirmation; nothing persists to disk.
+    live_web_confirmed: Vec<String>,
+    /// Remote URL currently awaiting Allow/Block. `None` = nothing pending.
+    live_web_pending: Option<String>,
+    /// The running live-view browser window, if any.
+    live_view: live_web::LiveView,
+    /// URL currently handed to the live browser window (`None` = tile mode).
+    /// Drives the preview's LIVE chip; set alongside every show/hide.
+    live_view_url: Option<String>,
+    /// Poster stills per video file path (`videopsalm-posters` cache): the
+    /// preview/projector show the video's picture through the in-app `img`
+    /// element instead of a black tile. Filled at assign/play/push time
+    /// (never during render), read by `projector_snapshot`.
+    video_posters: HashMap<String, PathBuf>,
+    /// Live frame pump for in-app video motion (silent ffmpeg pipe): `Some`
+    /// while a video moves in preview/projector. One pump at a time — a
+    /// standalone clip takes over the background loop.
+    motion: Option<MotionPump>,
+    /// Latest decoded-live frame (JPEG bytes) for the motion render.
+    /// Replaced per tick; the custom loader decodes only this one, so no
+    /// image cache can accumulate across a long play.
+    motion_frame: Option<Arc<Vec<u8>>>,
+    /// Motion tick-loop guard (mirrors `clock_ticking`).
+    motion_ticking: bool,
     pptx_info: String,
 
     // B-32/B-12 media state (galleries, cascade, assigned background file,
@@ -516,6 +575,10 @@ pub(crate) struct Root {
     pub(crate) projector_display: usize,
     /// Persisted RandR output name for the projector target.
     pub(crate) projector_monitor: Option<String>,
+    /// NDI output engine. Started by Go-live (`go_live`), fed a still on
+    /// every `push_projection`/`republish`. Stays up once started until
+    /// the app exits (closing the projector window does not stop NDI).
+    pub(crate) ndi: ndi_out::NdiOutput,
 
     // Scroll handles. GPUI 0.2.2 *does* provide ScrollHandle + overflow
     // scrolling (the README previously claimed it did not, which is why the
@@ -558,6 +621,10 @@ pub(crate) struct Root {
     composer_field: gpui::Entity<TextField>,
     media_path_field: gpui::Entity<TextField>,
     media_range_field: gpui::Entity<TextField>,
+    /// Website background URL input (Background ribbon > Website group):
+    /// paste `example.com/live`, Set normalizes + assigns, Open launches
+    /// the OS browser. Session-only; the assigned URL persists via prefs.
+    website_field: gpui::Entity<TextField>,
     // B-32 gallery fields: import path + per-gallery search boxes.
     pub(crate) gallery_import_field: gpui::Entity<TextField>,
     pub(crate) gallery_image_filter: gpui::Entity<TextField>,
@@ -592,13 +659,316 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Pure helper for "Add web site / YouTube": normalize + classify a raw
+/// URL into `(kind, title, url)`. YouTube hosts → `YouTube`, the rest →
+/// `WebSite`; `None` = nothing to add (empty/rejected URL). Test-pinned
+/// below so both kinds stay honest without a GPUI context.
+fn website_agenda_item(raw: &str) -> Option<(ItemKind, String, String)> {
+    let url = vp_core::schema::normalize_website_url(raw)?;
+    let lower = url.to_ascii_lowercase();
+    let host = lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&lower);
+    let kind = if host.starts_with("youtube.com")
+        || host.starts_with("www.youtube.com")
+        || host.starts_with("m.youtube.com")
+        || host.starts_with("youtu.be")
+        || host.starts_with("youtube-nocookie.com")
+        || host.starts_with("www.youtube-nocookie.com")
+    {
+        ItemKind::YouTube
+    } else {
+        ItemKind::WebSite
+    };
+    let title = url
+        .split_once("://")
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_else(|| url.clone());
+    Some((kind, title, url))
+}
+
+/// Row key for header-less website embed cards: content-stable (`web:{url}`)
+/// so hiding, clicking and highlighting survive reordering. Verse rows keep
+/// their `slide_verse_id` keys; see `song_blocks` / `library_song_panel`.
+fn web_row_key(url: &str) -> String {
+    format!("web:{url}")
+}
+
+/// Display row → projected slide index, matched by content. Hidden rows
+/// shift the live list, so raw indices misroute clicks; match by `Slide`
+/// equality and fall back to a clamped index only when the row has no live
+/// counterpart.
+fn projected_index_for_row(display: &[Slide], projected: &[Slide], row: usize) -> usize {
+    match display.get(row) {
+        Some(s) => projected
+            .iter()
+            .position(|p| p == s)
+            .unwrap_or(row.min(projected.len().saturating_sub(1))),
+        None => row.min(projected.len().saturating_sub(1)),
+    }
+}
+
 /// Merge native songs into the in-memory library by id (same by-id rule as
 /// the headless smoke pass — one implementation, in `smoke`).
 fn merge_native_songs(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize, usize) {
     smoke::merge_into_library(songs, incoming)
 }
 
+/// VJSM parity: which column divider is being dragged (0 = left/library,
+/// 1 = right/slides+preview). Carried as the drag payload so moves track
+/// even when the cursor leaves the divider — same pattern as B-07 frames.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ColSplit(u8);
+
+/// VJSM parity: adjustable section widths, clamped so neither column can
+/// vanish or eat the centre editor. Pure so the drag math is unit-tested
+/// without a window (fidelity loop: untested layout arithmetic drifted).
+pub(crate) fn clamp_col_width(w: f32) -> f32 {
+    w.clamp(220.0, 720.0)
+}
+
+/// Row-divider payload: 0 = agenda/browser split, 1 = slides/preview split.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RowSplit(u8);
+
+/// Adjustable section heights, clamped so neither pane can vanish nor push
+/// its sibling off the window. 0 splits agenda/browser (100..520 px),
+/// 1 splits slides/preview (160..560 px). Pure so the drag math is
+/// unit-tested without a window.
+pub(crate) fn clamp_row_height(which: u8, h: f32) -> f32 {
+    if which == 0 {
+        h.clamp(100.0, 520.0)
+    } else {
+        h.clamp(160.0, 560.0)
+    }
+}
+
 impl Root {
+    /// Single choke point for every ribbon collapse/expand path (Hide
+    /// button, tab double-click, Ctrl+F1, hover strip). All three old
+    /// triggers disagreed on side effects — now collapse always dismisses
+    /// popups, stamps the guard clock, and persists; expand only persists.
+    /// The guard clock fixes the Hide-click loop: clicking Hide mounts the
+    /// strip directly under the cursor, whose hover(true) would otherwise
+    /// re-expand instantly. Hover expands only 800 ms after a collapse.
+    fn set_ribbon_collapsed(&mut self, cx: &mut Context<Self>, collapsed: bool) {
+        if collapsed {
+            self.dismiss_popups(cx);
+            self.collapsed_at = Some(std::time::Instant::now());
+            let msg = self.t("ribbon_hidden_msg");
+            self.set_status(cx, msg);
+        } else {
+            let msg = self.t("ribbon_shown_msg");
+            self.set_status(cx, msg);
+        }
+        self.ribbon_collapsed = collapsed;
+        self.persist_layout_quiet();
+        cx.notify();
+    }
+
+    /// True when a hover-reveal may expand the ribbon. Two gates, both
+    /// load-bearing: the 800 ms grace ignores the Hide click itself
+    /// (the strip mounts under the cursor), and a RESTARTED-collapsed
+    /// ribbon (`collapsed_at == None`) is armed — otherwise anyone who
+    /// quits collapsed gets a dead hover strip for the whole session.
+    /// GPUI only delivers hover on false→true transitions, so reveal is
+    /// inherently exit-then-reenter: the grace vetoes the first entry,
+    /// a later re-entry reveals. Pure so the rule is unit-tested.
+    fn hover_reveal_armed(collapsed: bool, at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+        const GRACE_MS: u128 = 800;
+        collapsed && at.map(|t| now.duration_since(t).as_millis() > GRACE_MS).unwrap_or(true)
+    }
+
+    /// Press on a column divider: record col + starting width + cursor x.
+    fn col_press(&mut self, cx: &mut Context<Self>, col: u8, press_x: f32) {
+        let start_w = if col == 0 { self.left_w } else { self.right_w };
+        self.col_drag = Some((col, start_w, press_x));
+        let msg = self.t(if col == 0 {
+            "resizing_left_msg"
+        } else {
+            "resizing_right_msg"
+        });
+        self.set_status(cx, msg);
+        cx.notify();
+    }
+
+    /// Feed one divider move: width follows the cursor, clamped 220..720.
+    fn col_move(&mut self, cx: &mut Context<Self>, cur_x: f32) {
+        if let Some((col, start_w, press_x)) = self.col_drag {
+            let w = clamp_col_width(start_w + cur_x - press_x);
+            if col == 0 {
+                self.left_w = w;
+            } else {
+                self.right_w = w;
+            }
+            cx.notify();
+        }
+    }
+
+    /// Release a divider: persist — widths survive restart.
+    fn col_end(&mut self, cx: &mut Context<Self>) {
+        if self.col_drag.is_some() {
+            self.col_drag = None;
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// VJSM parity: the grab strip between control columns.
+    /// Cursor-resizable like the original's squares (B-07 drag pattern).
+    /// 14 px wide with a high-contrast double grip: a 10 px rail proved
+    /// unhittable at 1280 px (fidelity loop: clicks missed by 1–2 px).
+    /// While held the strip lights accent (grabbed state) so a stuck or
+    /// missed press is visible instead of silent. Double-click resets.
+    fn divider(&mut self, ui: &UI, cx: &mut Context<Self>, col: u8) -> impl gpui::IntoElement {
+        let ghost = self.drag_ghost.clone();
+        let default_w = if col == 0 { 360.0 } else { 560.0 };
+        let grabbed = self.col_drag.is_some_and(|(c, _, _)| c == col);
+        let strip = div()
+            .w(px(14.))
+            .h_full()
+            .min_h(px(40.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(gpui::CursorStyle::ResizeColumn)
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border);
+        let strip = if grabbed {
+            strip.bg(ui.accent)
+        } else {
+            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+        };
+        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        strip
+            .id(if col == 0 { "vp-col-split-l" } else { "vp-col-split-r" })
+            .child(div().text_size(px(12.)).text_color(grip_color).child("⋮⋮".to_string()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
+                    if ev.click_count == 2 {
+                        if col == 0 {
+                            this.left_w = default_w;
+                        } else {
+                            this.right_w = default_w;
+                        }
+                        this.col_drag = None;
+                        this.persist_layout_quiet();
+                        let msg = this.t("panel_reset_msg");
+                        this.set_status(cx, msg);
+                        cx.notify();
+                    } else {
+                        this.col_press(cx, col, f32::from(ev.position.x));
+                    }
+                }),
+            )
+            .on_drag(
+                ColSplit(col),
+                move |_v, _off, _win: &mut Window, _cx: &mut App| ghost.clone(),
+            )
+    }
+
+    /// Press on a row divider: record which split + starting height +
+    /// cursor y. Mirrors [`Self::col_press`]; status names the split.
+    fn row_press(&mut self, cx: &mut Context<Self>, which: u8, press_y: f32) {
+        let start_h = match which {
+            0 => self.agenda_h.unwrap_or(300.0),
+            _ => self.preview_h.unwrap_or(300.0),
+        };
+        self.row_drag = Some((which, start_h, press_y));
+        let msg = self.t(if which == 0 {
+            "resizing_agenda_msg"
+        } else {
+            "resizing_preview_msg"
+        });
+        self.set_status(cx, msg);
+        cx.notify();
+    }
+
+    /// Feed one divider move: height follows the cursor, clamped per split.
+    /// Persists continuously (not only on release): a lost mouse-up — or
+    /// a crash mid-drag — must never lose the operator's layout.
+    fn row_move(&mut self, cx: &mut Context<Self>, cur_y: f32) {
+        if let Some((which, start_h, press_y)) = self.row_drag {
+            // Dragging down grows the top pane: the agenda grows, while
+            // the preview (bottom pane) shrinks.
+            let raw = if which == 0 {
+                start_h + (cur_y - press_y)
+            } else {
+                start_h - (cur_y - press_y)
+            };
+            let h = clamp_row_height(which, raw);
+            if which == 0 {
+                self.agenda_h = Some(h);
+            } else {
+                self.preview_h = Some(h);
+            }
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// Release a divider: persist — heights survive restart.
+    fn row_end(&mut self, cx: &mut Context<Self>) {
+        if self.row_drag.is_some() {
+            self.row_drag = None;
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// The grab strip between stacked sections (agenda/browser,
+    /// slides/preview). Row-resize cursor, hover accent, double-click
+    /// resets to automatic. Same contract as [`Self::divider`], rotated.
+    fn hdivider(&mut self, ui: &UI, cx: &mut Context<Self>, which: u8) -> impl gpui::IntoElement {
+        let ghost = self.drag_ghost.clone();
+        let grabbed = self.row_drag.is_some_and(|(w, _, _)| w == which);
+        let strip = div()
+            .w_full()
+            .h(px(14.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(gpui::CursorStyle::ResizeRow)
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border);
+        let strip = if grabbed {
+            strip.bg(ui.accent)
+        } else {
+            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+        };
+        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        strip
+            .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
+            .child(div().text_size(px(12.)).text_color(grip_color).child("⋯".to_string()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
+                    if ev.click_count == 2 {
+                        if which == 0 {
+                            this.agenda_h = None;
+                        } else {
+                            this.preview_h = None;
+                        }
+                        this.row_drag = None;
+                        this.persist_layout_quiet();
+                        let msg = this.t("panel_height_reset_msg");
+                        this.set_status(cx, msg);
+                        cx.notify();
+                    } else {
+                        this.row_press(cx, which, f32::from(ev.position.y));
+                    }
+                }),
+            )
+            .on_drag(
+                RowSplit(which),
+                move |_v, _off, _win: &mut Window, _cx: &mut App| ghost.clone(),
+            )
+    }
+
     fn build(cx: &mut Context<Self>) -> Self {
         let mut locales = HashMap::new();
         locales.insert("en".to_string(), Locale::load("en", LOCALE_EN).unwrap());
@@ -723,6 +1093,7 @@ impl Root {
         let font_filter_field = cx.new(|cx| TextField::new("Search fonts...", cx));
         let media_path_field = cx.new(|cx| TextField::new("media file path...", cx));
         let media_range_field = cx.new(|cx| TextField::new("in-out ms, e.g. 1000-5000", cx));
+        let website_field = cx.new(|cx| TextField::new("https://example.com/live …", cx));
         let gallery_import_field = cx.new(|cx| TextField::new("/path/to/file.jpg …", cx));
         let gallery_image_filter = cx.new(|cx| TextField::new("filter images…", cx));
         let gallery_video_filter = cx.new(|cx| TextField::new("filter videos…", cx));
@@ -788,6 +1159,7 @@ impl Root {
             style_level: "Song".into(),
             style_menu_open: false,
             bg_kind: BackgroundKind::Color,
+            bg_website: None,
             bg_fit: BgFit::Cover,
             show_abbrev: true,
             show_number: true,
@@ -826,6 +1198,13 @@ impl Root {
             frame_sel: FrameId::Body,
             frame_drag: None,
             drag_ghost: drag_ghost.clone(),
+            left_w: 360.0,
+            right_w: 560.0,
+            col_drag: None,
+            agenda_h: None,
+            preview_h: None,
+            row_drag: None,
+            collapsed_at: None,
             song_dirty: false,
             song_tab: 0,
             song_misc: false,
@@ -842,6 +1221,15 @@ impl Root {
             split_bible_verses: false,
             media: ExternalPlayer::new(MediaKind::Video),
             media_launched_for: None,
+            live_web_on: false,
+            live_web_confirmed: Vec::new(),
+            live_web_pending: None,
+            live_view: live_web::LiveView::new(),
+            live_view_url: None,
+            video_posters: HashMap::new(),
+            motion: None,
+            motion_frame: None,
+            motion_ticking: false,
             pptx_info: String::new(),
             galleries: GalleryState::default(),
             cascade: Cascade::default(),
@@ -853,6 +1241,7 @@ impl Root {
             aspect_ratio: "current".to_string(),
             projector_display: 0,
             projector_monitor: None,
+            ndi: ndi_out::NdiOutput::new("PEREZ (Projector)"),
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
@@ -883,6 +1272,7 @@ impl Root {
             system_fonts: None,
             media_path_field: media_path_field.clone(),
             media_range_field: media_range_field.clone(),
+            website_field: website_field.clone(),
             gallery_import_field: gallery_import_field.clone(),
             gallery_image_filter: gallery_image_filter.clone(),
             gallery_video_filter: gallery_video_filter.clone(),
@@ -1238,7 +1628,9 @@ impl Root {
                 BackgroundKind::Image => "image".to_string(),
                 BackgroundKind::VideoLoop => "videoLoop".to_string(),
                 BackgroundKind::Camera => "camera".to_string(),
+                BackgroundKind::Website => "website".to_string(),
             },
+            bg_website: self.bg_website.clone().unwrap_or_default(),
             bg_fit: self.bg_fit.literal().to_string(),
             gallery_images: self
                 .galleries
@@ -1253,6 +1645,12 @@ impl Root {
                 .map(|e| e.path.to_string_lossy().into_owned())
                 .collect(),
             gallery_keep_open: self.galleries.keep_open,
+            live_web: self.live_web_on,
+            agenda_h: self.agenda_h,
+            preview_h: self.preview_h,
+            left_w: self.left_w,
+            right_w: self.right_w,
+            ribbon_hidden: self.ribbon_collapsed,
         }
     }
 
@@ -1296,8 +1694,16 @@ impl Root {
             "image" => BackgroundKind::Image,
             "videoLoop" => BackgroundKind::VideoLoop,
             "camera" => BackgroundKind::Camera,
+            "website" => BackgroundKind::Website,
             _ => BackgroundKind::Color,
         };
+        // Website URL: normalized data only, never fetched. A bad URL in a
+        // hand-edited layout restores as unset so the projector never
+        // points at one.
+        self.bg_website = vp_core::schema::normalize_website_url(p.bg_website.trim());
+        if self.bg_kind == BackgroundKind::Website && self.bg_website.is_none() {
+            self.bg_kind = BackgroundKind::Color;
+        }
         self.bg_fit = BgFit::from_literal(p.bg_fit.as_str()).unwrap_or_default();
         // Restore the gallery library (lens 2/3): only files that still
         // exist; ghosts are dropped so the projector never points at one.
@@ -1351,6 +1757,19 @@ impl Root {
         self.projector_display = p.projector_display;
         self.projector_monitor = p.projector_monitor.clone();
         self.galleries.keep_open = p.gallery_keep_open;
+        // Live web view restores off for old files (serde default); an
+        // operator who turned it on gets it back, everyone else untouched.
+        self.live_web_on = p.live_web;
+        // Pinned section heights: validated on load so a hand-edited file
+        // can never collapse a pane; `None` stays automatic.
+        self.agenda_h = p.agenda_h.map(|h| clamp_row_height(0, h));
+        self.preview_h = p.preview_h.map(|h| clamp_row_height(1, h));
+        // VJSM parity: adjustable section widths survive restart.
+        self.left_w = p.left_w.clamp(220.0, 720.0);
+        self.right_w = p.right_w.clamp(220.0, 720.0);
+        // The collapse state persists under the same key (one mechanism,
+        // not two: the old `ribbon_collapsed` was session-only).
+        self.ribbon_collapsed = p.ribbon_hidden;
     }
 
     /// True while the shield is armed: browsing songs must not repopulate the
@@ -1547,7 +1966,7 @@ impl Root {
             .as_ref()
             .map(|s| s.footer.template.as_str())
             .filter(|t| !t.is_empty());
-        compute_item_slides_templated(
+        let mut slides = compute_item_slides_templated(
             &projected,
             &songs,
             &self.bibles,
@@ -1556,6 +1975,31 @@ impl Root {
             self.whole_ref_header,
             header_tpl,
             footer_tpl,
+        );
+        // Unchecked embed cards project nothing: drop WebSite slides whose
+        // row key (`web:{url}`, content-stable) is hidden.
+        let hide = self.hidden_for(&item.id);
+        if hide.iter().any(|h| h.starts_with("web:")) {
+            slides.retain(|s| {
+                !(s.footer == "WebSite"
+                    && s
+                        .lines
+                        .first()
+                        .map(|u| hide.contains(&web_row_key(u)))
+                        .unwrap_or(false))
+            });
+        }
+        slides
+    }
+
+    /// Display row `i` → projected slide index, matched by content so hidden
+    /// verses/cards (which shift the live list) never misroute a click.
+    /// Falls back to a clamped index when the row has no live counterpart.
+    fn display_row_to_projected(&self, item_idx: usize, row: usize) -> usize {
+        projected_index_for_row(
+            &self.display_item_slides(item_idx),
+            &self.item_slides(item_idx),
+            row,
         )
     }
 
@@ -1977,10 +2421,7 @@ impl Root {
                 cx,
                 "Add document… is not wired yet — drop the Word/Excel/PDF onto the agenda.",
             ),
-            "add-web" => self.set_status(
-                cx,
-                "Add web site / YouTube… is not wired yet — paste the link as an item title.",
-            ),
+            "add-web" => self.add_website_to_agenda(cx),
             "save" => self.save_agenda(cx),
             "save-as" => {
                 self.agenda_file_open = true;
@@ -2520,43 +2961,230 @@ impl Root {
     /// the wall must obey them even under a freeze hold.
     fn republish(&mut self, cx: &mut Context<Self>) {
         crate::presentation::publish(self, cx);
+        let snap = self.projector_snapshot(cx);
+        self.push_ndi_still(&snap);
     }
+
+    /// Feed the NDI engine one still rasterized from the live snapshot
+    /// with the projector's style (colors, alignment, body geometry).
+    /// No-op unless Go-live started the engine.
+    fn push_ndi_still(&self, snap: &ProjectorSnapshot) {
+        self.ndi.push_snapshot(snap);
+    }
+    /// Grab (or reuse) the poster still for a video file so preview and
+    /// projector show its picture. Runs `ffmpeg` at most once per file
+    /// version (mtime-checked cache); call at assign/play/push time, never
+    /// during render. Silent when grabs fail — the captioned tile stands.
+    pub(crate) fn ensure_video_poster(&mut self, path: &std::path::Path) {
+        let key = path.to_string_lossy().into_owned();
+        if self
+            .video_posters
+            .get(&key)
+            .is_some_and(|p| vp_core::media::poster_is_fresh(path, p))
+        {
+            return;
+        }
+        if let Some(poster) = vp_core::media::ensure_video_poster(path) {
+            self.video_posters.insert(key, poster);
+        }
+    }
+
+    /// Stop in-app motion, if any (navigation left video, bg changed).
+    /// Returns true when a pump was running. The last frame stays as the
+    /// poster still — the room never flashes to black.
+    pub(crate) fn stop_motion(&mut self) -> bool {
+        if let Some(mut pump) = self.motion.take() {
+            pump.stop();
+            self.motion_frame = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Play `path` in-app when ffmpeg exists, else report why not. True =
+    /// motion pump running (caller marks launched); false = caller falls
+    /// back (poster still + OS player for standalone, still for loops).
+    /// Idempotent: the same live source re-arms the tick only.
+    pub(crate) fn ensure_motion_for(
+        &mut self,
+        cx: &mut Context<Self>,
+        path: &std::path::Path,
+        loop_play: bool,
+    ) -> bool {
+        let same = self.motion.as_mut().is_some_and(|m| {
+            m.source.as_path() == path && m.loop_play == loop_play && m.alive()
+        });
+        if same {
+            self.ensure_motion_tick(cx);
+            return true;
+        }
+        self.stop_motion();
+        match MotionPump::start(path, MOTION_FPS, loop_play, 0.0) {
+            Ok(pump) => {
+                self.motion = Some(pump);
+                self.ensure_motion_tick(cx);
+                self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                true
+            }
+            Err(e) => {
+                self.set_status(cx, format!("In-app motion off ({e})"));
+                false
+            }
+        }
+    }
+
+    /// Pause/resume in-app motion (transport button). True when a pump
+    /// owned the press. Pause kills the pump and freezes the clock; resume
+    /// restarts at the tracked offset — universal, no IPC.
+    pub(crate) fn motion_toggle_pause(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(pump) = self.motion.as_mut() else {
+            return false;
+        };
+        if pump.paused() {
+            let (source, loop_play, pos) =
+                (pump.source.clone(), pump.loop_play, pump.position());
+            self.stop_motion();
+            match MotionPump::start(&source, MOTION_FPS, loop_play, pos) {
+                Ok(next) => {
+                    self.motion = Some(next);
+                    self.ensure_motion_tick(cx);
+                    self.set_status(cx, "Playing in-app.");
+                }
+                Err(e) => self.set_status(cx, format!("Resume failed ({e}).")),
+            }
+        } else {
+            pump.mark_paused();
+            self.stop_motion();
+            self.set_status(cx, "Paused — still frame held.");
+        }
+        cx.notify();
+        true
+    }
+
+    /// 1000/fps tick loop while a pump runs (mirrors `ensure_clock_tick`).
+    /// Each piped frame replaces the live bytes + republishes, so preview
+    /// and projector move together; an ended standalone clip stops the
+    /// pump and keeps its last frame as a still.
+    fn ensure_motion_tick(&mut self, cx: &mut Context<Self>) {
+        if self.motion_ticking || self.motion.is_none() {
+            return;
+        }
+        self.motion_ticking = true;
+        cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
+            let mut async_cx = async_cx.clone();
+            async move {
+                loop {
+                    async_cx
+                        .background_executor()
+                        .timer(Duration::from_millis(1000 / MOTION_FPS as u64))
+                        .await;
+                    let stop = weak
+                        .update(&mut async_cx, |this: &mut Root, cx| {
+                            // Poll first (borrows only the pump), then act:
+                            // method calls below need `this` free.
+                            let mut ended = this.motion.is_none();
+                            let mut fresh: Option<Arc<Vec<u8>>> = None;
+                            if let Some(pump) = this.motion.as_mut() {
+                                if let Some(frame) = pump.read_frame() {
+                                    fresh = Some(Arc::new(frame));
+                                }
+                                if !pump.alive() {
+                                    ended = true;
+                                }
+                            }
+                            if let Some(bytes) = fresh {
+                                this.motion_frame = Some(bytes);
+                                this.republish(cx);
+                            }
+                            if ended {
+                                this.stop_motion();
+                                this.set_status(cx, "Video ended — last frame held.");
+                                this.republish(cx);
+                            }
+                            let done = ended || this.motion.is_none();
+                            if done {
+                                this.motion_ticking = false;
+                            }
+                            cx.notify();
+                            done
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
     fn push_projection(&mut self, cx: &mut Context<Self>) {
         if self.frozen_slide.is_some() {
             return;
         }
         self.projected_item = self.live_item;
-        // Standalone video has no in-app pixels (gpui 0.2.2 ships no video
-        // element — the room tile stays a captioned placeholder), so hand
-        // the file to the OS player when the live item BECOMES a video.
-        // Once per item, not per push: navigation re-pushes constantly.
+        // Standalone video motion comes from the frame pump (silent
+        // ffmpeg stills through an uncached loader), with the OS player as
+        // fallback when mpv is missing. Once per item, not per push:
+        // navigation re-pushes constantly.
         let video = self
             .live_item
             .and_then(|i| self.agenda.items.get(i))
             .and_then(ux::video_item_file);
+        let standalone_live = video.is_some();
         match video {
             Some((id, path)) if self.media_launched_for.as_deref() != Some(id.as_str()) => {
                 self.media.open(path.clone());
-                self.media.launch_external();
-                if let Some(e) = self.media.last_error.clone() {
-                    // Leave the guard unset: a failed launch must retry on
-                    // the next push, not latch silent forever.
-                    self.set_status(cx, format!("Video not playing: {e}"));
-                } else {
+                // Poster first: the room sees the video's picture even
+                // while the pump spins up (or when nothing can play it).
+                self.ensure_video_poster(&path);
+                if self.ensure_motion_for(cx, &path, false) {
                     self.media_launched_for = Some(id);
-                    self.set_status(
-                        cx,
-                        format!(
-                            "Video playing externally — {}.",
-                            path.display()
-                        ),
-                    );
+                } else {
+                    self.media.launch_external();
+                    if let Some(e) = self.media.last_error.clone() {
+                        // Leave the guard unset: a failed launch must retry
+                        // on the next push, not latch silent forever.
+                        self.set_status(cx, format!("Video not playing: {e}"));
+                    } else {
+                        self.media_launched_for = Some(id);
+                        self.set_status(
+                            cx,
+                            format!(
+                                "Video playing externally — {}.",
+                                path.display()
+                            ),
+                        );
+                    }
                 }
             }
             None => {
                 self.media_launched_for = None;
             }
             _ => {}
+        }
+        // Background loop moves behind the lyrics when assigned and no
+        // standalone clip owns the pump; otherwise motion stops and the
+        // poster still stands.
+        if standalone_live {
+            if self.motion.as_ref().is_some_and(|m| m.loop_play) {
+                self.stop_motion();
+            }
+        } else if self.bg_kind == BackgroundKind::VideoLoop {
+            match self.bg_file.clone() {
+                Some(f) if f.exists() => {
+                    self.ensure_video_poster(&f);
+                    if !self.ensure_motion_for(cx, &f, true) {
+                        self.stop_motion();
+                    }
+                }
+                _ => {
+                    self.stop_motion();
+                }
+            }
+        } else {
+            self.stop_motion();
         }
         let live = self.live_slides();
         self.projected_slide = if live.is_empty() {
@@ -2567,6 +3195,11 @@ impl Root {
         self.projected_slides = live;
         self.projected_chord = self.proj_chord_line();
         crate::presentation::publish(self, cx);
+        let snap = self.projector_snapshot(cx);
+        self.push_ndi_still(&snap);
+        // Live web view follows the pushed slide (spawn on website slides,
+        // die the moment they leave). No-op while the toggle is off.
+        self.sync_live_web(cx);
     }
 
     /// The **projector's** slides: always the pushed snapshot, frozen or
@@ -2625,8 +3258,9 @@ impl Root {
                 let p = vp_core::media::resolve_luminosity(&self.cascade, chain);
                 (p.value, p.source.map(|l| l.literal().to_string()))
             }
-            // A color background carries no media luminosity; the camera has
-            // no cascade chain (no capture support in v1).
+            // A color background carries no media luminosity; the camera and
+            // the website tile carry none either (no capture support in v1,
+            // no web-view in gpui 0.2.2).
             _ => (0.0, None),
         };
         let style = self.agenda.settings.style.clone().unwrap_or_default();
@@ -2659,9 +3293,24 @@ impl Root {
                 .get(it)
                 .and_then(|a| projector_window::standalone_for(&a.kind, &a.reference))
         });
+        // The video picture, when grabbed: standalone video first, else the
+        // video-loop background. Map lookup only (grabs happen at
+        // assign/play/push time) — render never spawns `ffmpeg`.
+        let poster_source: Option<PathBuf> = match &standalone {
+            Some(projector_window::StandaloneMedia::Video(p)) => Some(p.clone()),
+            _ => match self.bg_kind {
+                BackgroundKind::VideoLoop => self.bg_file.clone(),
+                _ => None,
+            },
+        };
+        let video_poster = poster_source.as_ref().and_then(|p| {
+            let key = p.to_string_lossy().into_owned();
+            self.video_posters.get(&key).cloned()
+        });
         ProjectorSnapshot {
             bg_kind: self.bg_kind,
             bg_file: self.bg_file.clone(),
+            bg_website: self.bg_website.clone(),
             bg_fit: self.bg_fit,
             bg_color: hex(theme.projection_bg),
             fg_color,
@@ -2674,6 +3323,8 @@ impl Root {
             lines,
             footer,
             standalone,
+            video_poster,
+            video_frame: self.motion_frame.clone(),
             alert_visible: self.alert_visible,
             alert_text: self.alert_field.read(cx).text(),
             clock_overlay: self.clock_overlay,
@@ -2851,6 +3502,19 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         cx.notify();
     }
 
+    /// NDI output on/off (Display > NDI). Turning it on starts the engine
+    /// and immediately pushes the live snapshot so the feed is never a
+    /// stale frame; turning it off stops the server. Go-live never flips
+    /// this — the operator chooses.
+    fn toggle_ndi(&mut self, cx: &mut Context<Self>) {
+        let msg = self.ndi.set_enabled(!self.ndi.enabled);
+        if self.ndi.enabled {
+            let snap = self.projector_snapshot(cx);
+            self.push_ndi_still(&snap);
+        }
+        self.set_status(cx, msg);
+    }
+
     /// Flip the open projector window in/out of fullscreen (B-12). Also
     /// flips the stored intent so monitor switches reopen the same way.
     fn toggle_projector_fullscreen(&mut self, cx: &mut Context<Self>) {
@@ -2999,6 +3663,66 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             }
         }
         cx.notify();
+    }
+
+    /// Double-click a browser song: play it NOW with no agenda detour.
+    /// A single click only selects (the editor follows); this path ensures
+    /// agenda membership (adds the song when absent, like `+Agenda`) and
+    /// then projects slide 0 through the punch-through path, so the
+    /// projector follows too. Punches through the shield exactly like an
+    /// agenda double-click (`select_agenda`).
+    fn play_browser_song(&mut self, cx: &mut Context<Self>, idx: usize) {
+        if self.songs.get(idx).is_none() {
+            return;
+        }
+        if self.shield {
+            self.set_status(cx, "Shield punched through by double-click.");
+        }
+        if self.ensure_browser_song_in_agenda(idx).is_some() {
+            self.select_song_ex(cx, idx, true);
+        }
+    }
+
+    /// Project one slide row of a browser song (the transient library
+    /// preview has no agenda index of its own): same membership step as
+    /// [`Self::play_browser_song`], then straight to that slide.
+    fn play_browser_song_slide(&mut self, cx: &mut Context<Self>, idx: usize, row: usize) {
+        if self.songs.get(idx).is_none() {
+            return;
+        }
+        if self.shield {
+            self.set_status(cx, "Shield punched through by double-click.");
+        }
+        if let Some(ag_idx) = self.ensure_browser_song_in_agenda(idx) {
+            self.sync_editor_to_item(cx, ag_idx);
+            // Content match, not row index: hidden verses/cards shift the
+            // projected list, so the display row and the live list disagree.
+            let target = self.browser_song_slides(idx);
+            let projected = self.item_slides(ag_idx);
+            let pos = projected_index_for_row(&target, &projected, row);
+            self.goto_item_slide(cx, ag_idx, pos);
+        }
+    }
+
+    /// Agenda membership for a library song, shared by direct-play paths:
+    /// returns the agenda index (added when absent). Never projects.
+    fn ensure_browser_song_in_agenda(&mut self, idx: usize) -> Option<usize> {
+        let song = self.songs.get(idx).cloned()?;
+        if let Some(ag_idx) = self.agenda.items.iter().position(
+            |it| matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id),
+        ) {
+            return Some(ag_idx);
+        }
+        self.agenda_dirty = true;
+        let id = agenda_ops::add_item(
+            &mut self.agenda,
+            ItemKind::Song,
+            song.title.clone(),
+            ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+        );
+        self.agenda.items.iter().position(|i| i.id == id)
     }
 
     /// Transpose the current song by `steps` semitones, or set the display
@@ -3445,6 +4169,11 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                     },
                 );
                 self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+                // The panel now points at the new item: keep the editor on
+                // the same song or editor and slides desync again.
+                if let Some(pos) = self.sel_item {
+                    self.sync_editor_to_item(cx, pos);
+                }
                 self.set_status(cx, format!("Added {}", song.title));
             }
         }
@@ -3575,6 +4304,12 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                         self.agenda_dirty = false;
                         self.sel_item = None;
                         self.live_item = None;
+                        // A new agenda is a new show: remote live-view
+                        // approvals do not carry over, and any live browser
+                        // window dies with the old show.
+                        self.live_web_confirmed.clear();
+                        self.live_web_pending = None;
+                        self.live_view.hide();
                         let _ = library::push_recent(&self.db, &path, now_secs());
                         // Fresh agenda, nothing live: clear the room too.
                         self.push_projection(cx);
@@ -4656,6 +5391,12 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 self.agenda_dirty = true;
                 self.sel_item = None;
                 self.live_item = None;
+                // A new agenda is a new show: remote live-view approvals
+                // do not carry over, and any live browser window dies with
+                // the old show.
+                self.live_web_confirmed.clear();
+                self.live_web_pending = None;
+                self.live_view.hide();
                 // New agenda, nothing live: clear the room too.
                 self.push_projection(cx);
                 let _ = vp_core::library::push_recent(&self.db, &path, now_secs());
@@ -4760,6 +5501,13 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         }
         // An open popup menu yields Escape to dismiss. Also before the
         // typing gate, so a stranded menu never traps the operator.
+        // The settings modal behaves the same way (it is not part of
+        // `dismiss_popups`: a press inside the modal must not close it).
+        if keystroke == "escape" && self.show_message_settings {
+            self.show_message_settings = false;
+            cx.notify();
+            return;
+        }
         if keystroke == "escape" && self.dismiss_popups(cx) {
             return;
         }
@@ -4805,8 +5553,8 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             PresKey::ToggleMode => self.toggle_viewer_mode(cx),
             PresKey::StartPres => self.start_presentation(cx),
             PresKey::ToggleRibbon => {
-                self.ribbon_collapsed = !self.ribbon_collapsed;
-                cx.notify();
+                let to = !self.ribbon_collapsed;
+                self.set_ribbon_collapsed(cx, to);
             }
             PresKey::KeyTips => {
                 self.show_keytips = !self.show_keytips;
@@ -4898,6 +5646,26 @@ pub(crate) fn btn(
         d.border_1().border_color(border)
     };
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
+}
+
+/// [`btn`] that keeps a floating overlay menu open while it is used: the
+/// root dismisses every popup on mousedown (outside-click closes, like a
+/// real dropdown), so a toggle or menu container must stop that press from
+/// bubbling — otherwise the root closes the menu on press and the toggle's
+/// own mouse-up reopens it (or a filter-field click kills the menu). Menu
+/// item clicks themselves bubble to the root AFTER their mouse-up applies
+/// the choice, so only press-propagation needs stopping here.
+fn btn_stop(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    label: &str,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    btn(ui, cx, label, active, f).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+    )
 }
 
 /// One-line floating help: dark chip, light text, small.
@@ -5329,6 +6097,16 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 /// Like [`row`], but children flow onto the next line instead of clipping
 /// past a fixed-width panel (the 360px agenda column plus Browse buttons
 /// overflowed and clipped button labels — WI-024).
+///
+/// The lyrics document must yield vertical space before the footer does:
+/// the footer (References/Author/…) always stays visible while the
+/// document scrolls internally. Without `min_h_0` a tall wrapped footer
+/// pushes the Save row beneath the panel fold with no way to reach it.
+fn document_wrap(doc: gpui::Entity<DocField>) -> Div {
+    div().flex_1().min_h_0().overflow_hidden().child(doc)
+}
+/// past a fixed-width panel (the 360px agenda column plus Browse buttons
+/// overflowed and clipped button labels — WI-024).
 pub(crate) fn row_wrap(kids: Vec<Div>) -> Div {
     let mut r = div().flex().flex_row().flex_wrap().gap_1().items_center();
     for k in kids {
@@ -5360,6 +6138,16 @@ impl Render for Root {
         let mut root = div()
             .key_context("App")
             .track_focus(&self.focus_handle(cx))
+            // Outside-click dismisses every popup (ribbon dropdowns, rail
+            // `▾` menus): real dropdown behavior. Toggle buttons and menu
+            // panels stop the press from bubbling, so using a menu never
+            // dismisses it mid-click.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    this.dismiss_popups(cx);
+                }),
+            )
             // One raw key-down feeds the whole presentation keymap.
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let name = ev.keystroke.unparse();
@@ -5396,6 +6184,11 @@ impl Render for Root {
                 .border_color(ui.border)
                 .child(format!("{} {}", self.t("status"), self.status)),
         )
+        // Settings modal paints last: topmost, over ribbon, panels and
+        // the status line.
+        .when(self.show_message_settings, |d| {
+            d.child(self.message_settings(&ui, cx))
+        })
     }
 }
 
@@ -5580,27 +6373,57 @@ impl Root {
     /// Viewer mode removes the **whole** ribbon, tab row included: only the
     /// ribbon *bodies* used to be gated on `viewer_mode`, so a live tab row
     /// stayed on screen and gave away that this was a hide-toggle.
-    fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> gpui::AnyElement {
         if self.viewer_mode {
-            return div().w(px(0.)).h(px(0.));
+            return div().w(px(0.)).h(px(0.)).into_any_element();
         }
         // `Ctrl+F1` collapse (show-or-hide-the-toolbar, RESEARCH-weebly §8.4).
         // A slim re-expand row stands in for the article's white arrow; the
         // tab row itself is untouched.
         if self.ribbon_collapsed {
+            // VJSM parity: raising the cursor to the top reveals the
+            // ribbon — hover anywhere on the slim strip re-expands, no
+            // click needed. The `Expand` button stays as the touch/click
+            // path (hover never fires for it).
             return div()
+                .id("ribbon-collapsed-strip")
                 .flex()
                 .flex_row()
                 .gap_1()
                 .px(px(6.))
+                .py(px(2.))
                 .items_center()
-                .children(vec![
-                    label(ui, "ribbon collapsed", 12.),
-                    btn(ui, cx, "expand (Ctrl+F1)", false, |this, _, _, cx| {
-                        this.ribbon_collapsed = false;
-                        cx.notify();
+                .bg(rgb(0x1E6CC8))
+                .cursor_pointer()
+                // The whole strip is the affordance, not just the button:
+                // a hand cursor that only works on 120 px is a lie.
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, false);
                     }),
-                ]);
+                )
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered
+                        && Root::hover_reveal_armed(
+                            this.ribbon_collapsed,
+                            this.collapsed_at,
+                            std::time::Instant::now(),
+                        )
+                    {
+                        this.set_ribbon_collapsed(cx, false);
+                    }
+                }))
+                .children(vec![
+                    label(ui, &self.t("ribbon_collapsed_hint"), 12.),
+                    btn(ui, cx, &self.t("ribbon_expand"), false, |this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, false);
+                        // The strip itself also expands on mouse-up: stop
+                        // here or one click persists + notifies twice.
+                        cx.stop_propagation();
+                    }),
+                ])
+                .into_any_element();
         }
         let tabs: Vec<Div> = RibbonTab::all()
             .into_iter()
@@ -5635,8 +6458,8 @@ impl Root {
                         cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
                             if ev.click_count >= 2 {
                                 // Double-click tab header toggles ribbon collapse (B-14).
-                                this.ribbon_collapsed = !this.ribbon_collapsed;
-                                cx.notify();
+                                let to = !this.ribbon_collapsed;
+                                this.set_ribbon_collapsed(cx, to);
                             } else {
                                 this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
                                 this.persist_layout_quiet();
@@ -5661,7 +6484,13 @@ impl Root {
                     .flex_row()
                     .gap_1()
                     .items_center()
-                    .children(tabs),
+                    .children(tabs)
+                    // VJSM parity: an explicit Hide button. Double-click
+                    // and Ctrl+F1 already collapsed, but neither is
+                    // discoverable — the original has a visible Hide affordance.
+                    .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, true);
+                    })),
             )
             .child(self.format_ribbon(ui, cx))
             // The `Message` tab mirrors 1.29: Alert message | Clock |
@@ -5681,6 +6510,7 @@ impl Root {
             .when(self.show_style_explorer, |d| {
                 d.child(self.style_explorer(ui, cx))
             })
+            .into_any_element()
     }
 
     /// Utility actions formerly rendered in a custom top row. VideoPsalm keeps
@@ -5818,35 +6648,75 @@ impl Root {
                         this.toggle_base(cx);
                     },
                 ),
+                btn(
+                    ui,
+                    cx,
+                    if self.ndi.enabled { "NDI on" } else { "NDI" },
+                    self.ndi.enabled,
+                    |this, _, _, cx| {
+                        this.toggle_ndi(cx);
+                    },
+                ),
             ],
         );
-        let mut ribbon = div()
+        div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
+            .min_w_0()
+            .overflow_hidden()
             .child(alert_group)
             .child(clock_group)
             .child(countdown_group)
             .child(stage_group)
-            .child(display_group);
-        if self.show_message_settings {
-            ribbon = ribbon.child(self.message_settings(ui, cx));
-        }
-        ribbon
+            .child(display_group)
     }
 
-    /// Rarely-changed Message-tab knobs, hidden behind `Settings…` so the
-    /// ribbon reads like 1.29: alert styling, clock mode/design, stage view
-    /// visibility toggles, projector monitor, workspace/theme/language and
-    /// the Edit-mode switch. Operators set these once; the ribbon keeps
-    /// only Display/Clear/Start/Stop.
+    /// Settings as a modal popup (not an inline ribbon strip): rarely-changed
+    /// knobs — alert styling, clock mode/design, stage view toggles,
+    /// projector monitor, workspace/theme/language, Edit-mode switch.
+    /// Operators set these once; the modal keeps them out of the way.
+    /// Backdrop click, `✕` and `Esc` close; clicks inside the card never
+    /// bubble out (stop propagation like the ribbon dropdowns).
     fn message_settings(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        section(
-            ui,
-            "Stage view · clock · alert options (Settings)",
-            vec![
-                row(vec![
+        let card = div()
+            .w(px(700.))
+            .max_w_full()
+            .bg(ui.panel)
+            .text_color(ui.fg)
+            .rounded_md()
+            .border_2()
+            .border_color(ui.accent)
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Settings".to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(btn(ui, cx, "✕ Close", false, |this, _, _, cx| {
+                        this.show_message_settings = false;
+                        cx.notify();
+                    })),
+            )
+            .child(label(ui, "Stage view · clock · alert options", 12.))
+            .child(row(vec![
                     label(ui, "clock mode:", 12.),
                     btn(ui, cx, "clock", self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
                         this.clock_mode = ClockMode::Clock;
@@ -5866,8 +6736,8 @@ impl Root {
                         this.whole_ref_header = !this.whole_ref_header;
                         cx.notify();
                     }),
-                ]),
-                row(vec![
+                ]))
+            .child(row(vec![
                     label(ui, "projector monitor:", 12.),
                     btn(ui, cx, "Display 1", self.projector_display == 0, |this, _, _, cx| {
                         this.set_projector_display(cx, 0);
@@ -5881,8 +6751,8 @@ impl Root {
                     btn(ui, cx, "✖ Close projector", false, |this, _, _, cx| {
                         this.close_projector(cx);
                     }),
-                ]),
-                row(vec![
+                ]))
+            .child(row(vec![
                     label(ui, "workspace:", 12.),
                     btn(ui, cx, "Control", self.mode == Mode::Control, |this, _, _, cx| {
                         this.ui_go(Mode::Control, cx);
@@ -5914,13 +6784,59 @@ impl Root {
                     btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
                         this.toggle_viewer_mode(cx);
                     }),
-                ]),
-                row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
+                ]))
+            .child(row(vec![
+                    label(ui, "default font size:", 12.),
+                    btn(ui, cx, "A-", false, |this, _, _, cx| {
+                        this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+                        this.mirror_font_to_style();
+                        let sz = this.font_size;
+                        this.persist_layout_quiet();
+                        this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                            v.size = Some(sz);
+                        });
+                    }),
+                    label(ui, &format!("A {}", self.font_size.round() as i32), 12.),
+                    btn(ui, cx, "A+", false, |this, _, _, cx| {
+                        this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
+                        this.mirror_font_to_style();
+                        let sz = this.font_size;
+                        this.persist_layout_quiet();
+                        this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                            v.size = Some(sz);
+                        });
+                    }),
+                ]))
+            .child(row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
                     this.show_message_settings = false;
                     cx.notify();
-                })]),
-            ],
-        )
+                })]));
+        // Outside-click catcher: dim full-area backdrop UNDER the card.
+        // A press outside the card lands here and dismisses (the card
+        // itself stops propagation, like the ribbon dropdowns).
+        div()
+            .absolute()
+            .left(px(0.))
+            .top(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .bg(Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.55,
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.show_message_settings = false;
+                    cx.notify();
+                }),
+            )
+            .child(card)
     }
 
     #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
@@ -6062,6 +6978,68 @@ impl Root {
                 this.set_transition(cx, t);
             }));
         }
+        // Website group: operator-typed page behind the lyrics. Stored as
+        // data only (offline-first — never fetched); the projector shows a
+        // titled tile and Open launches the OS browser (no web-view in
+        // gpui 0.2.2). Setting clears any file background; picking a file
+        // clears the URL (one background at a time).
+        let web_active = self.bg_kind == BackgroundKind::Website;
+        let web_url = self.bg_website.clone().unwrap_or_default();
+        let web_status = if web_active && !web_url.is_empty() {
+            format!("showing: {web_url}")
+        } else {
+            "paste a page URL, Set shows it behind the lyrics".to_string()
+        };
+        // Live web view: one toggle, invisible until wanted. Default off =
+        // today's offline tiles; on = website slides open in a hardened
+        // browser window on the projector display (loopback exempt, remote
+        // asks Allow first, dead servers keep the tile).
+        let live_on = self.live_web_on;
+        let live_pending = self.live_web_pending.clone();
+        let live_status = if !live_on {
+            "Live view off — tiles only (default).".to_string()
+        } else if let Some(u) = live_pending.as_deref() {
+            format!("Live view: remote page waiting — Allow: {u}")
+        } else {
+            "Live view on — loopback instant, remote asks first.".to_string()
+        };
+        let mut live_row = vec![btn(
+            ui,
+            cx,
+            if live_on { "Live: On" } else { "Live: Off" },
+            live_on,
+            |this, _, _, cx| {
+                this.toggle_live_web(cx);
+            },
+        )];
+        if live_pending.is_some() {
+            live_row.push(btn(ui, cx, "Allow page", false, |this, _, _, cx| {
+                this.allow_live_web(cx);
+            }));
+        }
+        let website_group = group(
+            ui,
+            "Website",
+            vec![
+                div().flex().flex_row().gap_1().items_center().child(
+                    div().flex_1().min_w(px(180.)).child(self.website_field.clone()),
+                ),
+                row(vec![
+                    btn(ui, cx, "Set", web_active, |this, _, _, cx| {
+                        this.assign_website_from_field(cx);
+                    }),
+                    btn(ui, cx, "Open", false, |this, _, _, cx| {
+                        this.open_website_background(cx);
+                    }),
+                    btn(ui, cx, "Clear", false, |this, _, _, cx| {
+                        this.clear_website_background(cx);
+                    }),
+                ]),
+                row(vec![label(ui, &web_status, 11.)]),
+                row(live_row),
+                row(vec![label(ui, &live_status, 11.)]),
+            ],
+        );
         // Aspect ratio group: Current + 5 presets (1.29 right edge).
         let mut aspect_kids: Vec<Div> = Vec::new();
         for ratio in ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"] {
@@ -6076,8 +7054,8 @@ impl Root {
                 cx.notify();
             }));
         }
-        // 1.29 single ribbon row: Image | Video | Brightness | Animation |
-        // Aspect ratio side by side (wrapping on narrow windows), not
+        // 1.29 single ribbon row: Image | Video | Website | Brightness |
+        // Animation | Aspect ratio side by side (wrapping on narrow windows), not
         // stacked full-width grids. Each strip flexes with at least a
         // 3-tile window; its own x-scroller + ◀ ▶ catch the overflow.
         let ribbon_row = div()
@@ -6101,6 +7079,7 @@ impl Root {
                     .child(video_group),
             )
             .child(group(ui, "Brightness", bright_kids))
+            .child(website_group)
             .child(group(ui, &self.t("animation"), anim_kids))
             .child(group(ui, "Aspect ratio", aspect_kids));
         // The open gallery drops its full panel (search, captioned grid,
@@ -6191,7 +7170,7 @@ impl Root {
             })
             .child("●".to_string());
         style_kids.push(row(vec![
-            btn(
+            btn_stop(
                 ui,
                 cx,
                 &style_dropdown_label(&self.style_level),
@@ -6216,18 +7195,10 @@ impl Root {
                 },
             ),
         ]));
-        if self.style_menu_open {
-            for level in style_levels() {
-                let active = self.style_level == level;
-                let text = format!("◈ {level}");
-                style_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
-                    this.style_level = level.into();
-                    this.style_menu_open = false;
-                    this.persist_layout_quiet();
-                    cx.notify();
-                }));
-            }
-        }
+        // The 8 style levels live in the floating overlay menu
+        // (`dropdown_overlay`), NOT inline here: inline expansion shoved
+        // the ribbon taller and dumped text down the page instead of
+        // behaving like the 1.29 dropdown.
         // Preset row: quick-pick cascade glyphs setting the same level as
         // the dropdown (UX-RESEARCH §4.2: `Base / Songbooks / Song / Verse`),
         // so the row can never disagree with it.
@@ -6272,7 +7243,7 @@ impl Root {
         // curated `font_families` remain the fallback when the platform
         // reports nothing (headless CI) and the font-safety reference.
         let mut font_kids: Vec<Div> = Vec::new();
-        font_kids.push(btn(
+        font_kids.push(btn_stop(
             ui,
             cx,
             &format!("▾ {}", self.font_family),
@@ -6296,49 +7267,9 @@ impl Root {
                 cx.notify();
             },
         ));
-        if self.font_menu_open {
-            font_kids.push(div().flex_1().child(self.font_filter_field.clone()));
-            let q = self.font_filter.to_lowercase();
-            let all: Vec<String> = self.system_fonts.clone().unwrap_or_default();
-            const FONT_CAP: usize = 40;
-            let mut shown = 0usize;
-            let mut matched = 0usize;
-            for fam in &all {
-                if !q.is_empty() && !fam.to_lowercase().contains(q.as_str()) {
-                    continue;
-                }
-                matched += 1;
-                if shown >= FONT_CAP {
-                    continue;
-                }
-                shown += 1;
-                let active = *fam == self.font_family;
-                let name = fam.clone();
-                let caption = name.clone();
-                font_kids.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
-                    this.font_family = name.clone();
-                    this.font_menu_open = false;
-                    this.mirror_font_to_style();
-                    let fam = name.clone();
-                    let label = format!("Font {fam}");
-                    this.write_style_attr(cx, &label, move |v| {
-                        v.font = Some(fam.clone());
-                    });
-                }));
-            }
-            font_kids.push(label(
-                ui,
-                &format!(
-                    "{matched} font(s){}",
-                    if matched > shown {
-                        format!(" — showing {shown}, type to narrow")
-                    } else {
-                        String::new()
-                    }
-                ),
-                11.,
-            ));
-        }
+        // The 40-item font list lives in the floating overlay menu
+        // (`dropdown_overlay`), NOT inline here: inline expansion dumped up
+        // to 40 rows of font names down the ribbon.
         // Projector lyric size (WI-026): step the base size; everything
         // projected scales from it (preview proportionally).
         font_kids.push(label(
@@ -6538,11 +7469,16 @@ impl Root {
                 cx.notify();
             }),
         ];
-        div()
+        // Single scroll-free row that wraps on narrow windows: every group
+        // stays reachable without hiding controls behind a scroller.
+        let ribbon_groups = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
+            .min_w_0()
+            .overflow_hidden()
             .child(group(ui, "New / Import", vec![
                 btn_tip(
                     ui,
@@ -6581,7 +7517,8 @@ impl Root {
             .child(group(ui, &self.t("font"), font_kids))
             .child(group(ui, "Slide layout", layout_kids))
             .child(group(ui, &self.t("colors"), color_kids))
-            .child(group(ui, &self.t("animation"), anim_kids))
+            .child(group(ui, &self.t("animation"), anim_kids));
+        ribbon_groups
     }
 
     /// Style explorer tree (DoD #6) — hook: delegates to `style_explorer.rs`,
@@ -6639,51 +7576,188 @@ impl Root {
     ///
     /// Our previous build had the editor **and** the slides stacked in one
     /// centre column with a third preview column, which is not the 1.29 layout.
+    /// Floating overlay for the ribbon dropdowns (Styles level + Font
+    /// family): a real dropdown — one panel floating over the content,
+    /// outside-click or Escape dismisses — instead of inline expansion that
+    /// shoved the ribbon taller and dumped text down the page. Painted as a
+    /// later sibling of the content (inside control_view's relative
+    /// wrapper), so it floats above. Presses inside stop propagation so
+    /// the root outside-click dismiss never fires for menu interaction.
+    fn dropdown_overlay(&mut self, ui: &UI, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.style_menu_open && !self.font_menu_open {
+            return None;
+        }
+        // Outside-click catcher: transparent, full-area, UNDER the panels
+        // (earlier sibling). Any press outside a panel bubbles here and
+        // dismisses — real dropdown behavior.
+        let mut layer = div()
+            .absolute()
+            .left(px(0.))
+            .top(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.dismiss_popups(cx);
+            }),
+        );
+        if self.style_menu_open {
+            let mut items: Vec<Div> = Vec::new();
+            for level in style_levels() {
+                let active = self.style_level == level;
+                let text = format!("◈ {level}");
+                items.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
+                    this.style_level = level.into();
+                    this.style_menu_open = false;
+                    this.persist_layout_quiet();
+                    cx.notify();
+                }));
+            }
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(210.))
+                    .top(px(4.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p(px(6.))
+                    .rounded_md()
+                    .bg(ui.panel)
+                    .border_1()
+                    .border_color(ui.engaged)
+                    .shadow_lg()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .children(items),
+            );
+        }
+        if self.font_menu_open {
+            let mut items: Vec<Div> = vec![
+                div()
+                    .flex_1()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .child(self.font_filter_field.clone()),
+            ];
+            let q = self.font_filter.to_lowercase();
+            let all: Vec<String> = self.system_fonts.clone().unwrap_or_default();
+            const FONT_CAP: usize = 40;
+            let mut shown = 0usize;
+            let mut matched = 0usize;
+            for fam in &all {
+                if !q.is_empty() && !fam.to_lowercase().contains(q.as_str()) {
+                    continue;
+                }
+                matched += 1;
+                if shown >= FONT_CAP {
+                    continue;
+                }
+                shown += 1;
+                let active = *fam == self.font_family;
+                let name = fam.clone();
+                let caption = name.clone();
+                items.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
+                    this.font_family = name.clone();
+                    this.font_menu_open = false;
+                    this.mirror_font_to_style();
+                    let fam = name.clone();
+                    let label = format!("Font {fam}");
+                    this.write_style_attr(cx, &label, move |v| {
+                        v.font = Some(fam.clone());
+                    });
+                }));
+            }
+            items.push(label(
+                ui,
+                &format!(
+                    "{matched} font(s){}",
+                    if matched > shown {
+                        format!(" — showing {shown}, type to narrow")
+                    } else {
+                        String::new()
+                    }
+                ),
+                11.,
+            ));
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(500.))
+                    .top(px(4.))
+                    .w(px(340.))
+                    .max_h(px(420.))
+                    .id("font-menu-scroll")
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p(px(6.))
+                    .rounded_md()
+                    .bg(ui.panel)
+                    .border_1()
+                    .border_color(ui.engaged)
+                    .shadow_lg()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .children(items),
+            );
+        }
+        Some(layer)
+    }
+
     /// Viewer mode drops the centre editor entirely and reflows to two columns.
     fn control_view(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
         // Slides panel with the command strip immediately to its right — the
         // strip acts on the slide list, so it belongs beside it, and in 1.29
         // the strip's buttons are **circles**, not bordered squares.
-        let slides_and_commands = div()
+        // Slides list only. The command strip is NOT in this row: when it
+        // shared the slides row's height, a tall preview squeezed the row
+        // and vertically clipped the round buttons (the reported bug — the
+        // strip showed 3-4 buttons then cut off). The strip now stands as a
+        // full-height column beside slides+preview, so it can never be cut
+        // by either panel's share of vertical space.
+        let slides_wrap = div()
             .flex()
-            .flex_row()
-            .gap_1()
+            .flex_col()
             .flex_1()
+            .min_w_0()
             .min_h_0()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(self.slides_panel(ui, cx)),
-            )
-            .child(self.tool_strip_panel(ui, cx));
+            .overflow_hidden()
+            .child(self.slides_panel(ui, cx));
+        let tool_strip = self.tool_strip_panel(ui, cx);
 
+        // Viewport-relative clamp: persisted widths can sum past a narrow
+        // window (left + center-min + right > vw), which pushed the right
+        // column — and the tool strip at its edge — off-screen. Each side
+        // column is capped at 32% of the viewport so all three columns plus
+        // the fixed 44px strip always fit; the center absorbs the rest.
+        let left_w = self.left_w.min((vw * 0.32).max(180.0));
+        let right_w = self.right_w.min((vw * 0.32).max(220.0));
         let left = div()
             .flex()
             .flex_col()
             .gap_2()
-            .w(px(360.))
+            .w(px(left_w))
+            .flex_none()
             .min_h_0()
+            .overflow_hidden()
             // Agenda caps at ~360px so the song/Bible browser below keeps a
             // usable viewport: both panels were flex_1, splitting the column
             // 50/50 and squeezing the songs list to ~50px (the "not
             // scrollable / feels bad" complaint — the list scrolled, but its
             // window was two rows tall). A short agenda fits content; a long
-            // one scrolls inside the cap.
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .min_h_0()
-                    .max_h(px(360.))
-                    .overflow_hidden()
-                    .child(self.agenda_panel(ui, cx)),
-            )
+            // one scrolls inside the cap. Dragging the divider below pins a
+            // fixed height instead (`agenda_h`), persisted like the widths.
+            .child(self.agenda_wrap(ui, cx))
+            .child(self.hdivider(ui, cx, 0))
             .child(
                 div()
                     .flex()
@@ -6696,31 +7770,47 @@ impl Root {
             );
 
         if self.viewer_mode {
-            return div()
+            let mut v = div()
                 .flex()
                 .flex_row()
                 .gap_2()
                 .flex_1()
                 .p(px(6.))
                 .overflow_hidden()
+                .relative()
                 .child(left)
                 .child(
                     div()
                         .flex()
-                        .flex_col()
+                        .flex_row()
                         .gap_2()
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(slides_and_commands)
-                        .child(self.preview_big_panel(ui, cx, vw, vh))
-                        // Contextual help (`F1`): on demand under the slide
-                        // side, never a permanent third of the slide panel.
-                        .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .flex_1()
+                                .min_w_0()
+                                .min_h_0()
+                                .overflow_hidden()
+                                .child(slides_wrap)
+                                .child(self.preview_big_panel(ui, cx, vw, vh))
+                                // Contextual help (`F1`): on demand under the slide
+                                // side, never a permanent third of the slide panel.
+                                .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                        )
+                        .child(tool_strip)
                 );
+            if let Some(layer) = self.dropdown_overlay(ui, cx) {
+                v = v.child(layer);
+            }
+            return v;
         }
 
-        div()
+        let mut root = div()
             .flex()
             .flex_row()
             .gap_2()
@@ -6728,7 +7818,26 @@ impl Root {
             .min_h_0()
             .p(px(6.))
             .overflow_hidden()
+            .relative()
+            .on_drag_move::<ColSplit>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<ColSplit>, _win, cx| {
+                    this.col_move(cx, f32::from(ev.event.position.x));
+                },
+            ))
+            .on_drag_move::<RowSplit>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<RowSplit>, _win, cx| {
+                    this.row_move(cx, f32::from(ev.event.position.y));
+                },
+            ))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    this.col_end(cx);
+                    this.row_end(cx);
+                }),
+            )
             .child(left)
+            .child(self.divider(ui, cx, 0))
             // Centre: the song editor, full height. min_w_0 is load-
             // bearing: without it the flex default (min-width:auto) lets
             // long slide/editor rows push the right column — and the
@@ -6743,21 +7852,62 @@ impl Root {
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
             )
-            // Right: slides + strip above, preview below.
+            // Right: slides above, preview below (split by a draggable
+            // divider), command strip full-height at the panel's edge.
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_2()
-                    .w(px(560.))
+                    .flex_row()
+                    .gap_1()
+                    .w(px(right_w))
+                    .flex_none()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(slides_and_commands)
-                    .child(self.preview_big_panel(ui, cx, vw, vh))
-                    // Contextual help (`F1`): on demand under the slide
-                    // side, never a permanent third of the slide panel.
-                    .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(slides_wrap)
+                            .child(self.hdivider(ui, cx, 1))
+                            .child(self.preview_wrap(ui, cx, vw, vh))
+                            // Contextual help (`F1`): on demand under the slide
+                            // side, never a permanent third of the slide panel.
+                            .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                    )
+                    .child(tool_strip)
             )
+            .child(self.divider(ui, cx, 1));
+        if let Some(layer) = self.dropdown_overlay(ui, cx) {
+            root = root.child(layer);
+        }
+        root
+    }
+
+    /// Agenda wrapper: automatic (content up to the 360 px cap) until the
+    /// operator drags the divider below it, then the pinned height.
+    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        wrap = match self.agenda_h {
+            Some(h) => wrap.h(px(h)),
+            None => wrap.flex_none().max_h(px(360.)),
+        };
+        wrap.child(self.agenda_panel(ui, cx))
+    }
+
+    /// Preview wrapper: automatic (content-sized) until the operator drags
+    /// the divider above it, then the pinned height (letterboxed inside).
+    fn preview_wrap(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
+        let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        wrap = match self.preview_h {
+            Some(h) => wrap.h(px(h)),
+            None => wrap.flex_none(),
+        };
+        wrap.child(self.preview_big_panel(ui, cx, vw, vh))
     }
 
     /// LEFT-top agenda panel: items with kind badges + add / save /
@@ -6968,7 +8118,13 @@ impl Root {
                 .text_size(px(11.))
                 .child("▾".to_string());
             if enabled {
-                b = b.cursor_pointer().on_mouse_up(
+                b = b
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(move |this, _, _w, cx| {
                         if this.rail_menu.as_deref() == Some(action) {
@@ -7550,8 +8706,14 @@ impl Root {
                 .child(title)
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.select_song(cx, i);
+                    cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
+                        // Double-click plays the song NOW (no agenda
+                        // detour): single click only selects, like before.
+                        if ev.click_count >= 2 {
+                            this.play_browser_song(cx, i);
+                        } else {
+                            this.select_song(cx, i);
+                        }
                         this.focus_root(window);
                     }),
                 ),
@@ -8183,6 +9345,29 @@ impl Root {
     /// Every slide keeps its footer ref line (translation / authors).
     fn slides_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let target = self.sel_item.or(self.live_item);
+        // Which song (if any) the agenda target points at; Bible and other
+        // targets keep the panel regardless of the library selection.
+        let agenda_target = target
+            .and_then(|ti| self.agenda.items.get(ti))
+            .map(|it| match &it.reference {
+                ItemRef::Song { song_id } => ux::AgendaTarget::Song {
+                    song_id: song_id.clone(),
+                },
+                _ => ux::AgendaTarget::Other,
+            });
+        let sel_id = self
+            .sel_song
+            .and_then(|si| self.songs.get(si))
+            .map(|s| s.id.clone());
+        // The editor already follows the browser selection: when it names a
+        // different song than the agenda target (or there is no target),
+        // the panel renders that song transiently instead of a stale agenda
+        // item — editor and slides never show two different songs.
+        if ux::library_preview_wins(sel_id.as_deref(), agenda_target.as_ref()) {
+            if let Some(si) = self.sel_song {
+                return self.library_song_panel(ui, cx, si);
+            }
+        }
         let Some(item_idx) = target else {
             return section(
                 ui,
@@ -8280,6 +9465,206 @@ impl Root {
         )
     }
 
+    /// Display slides for a library song outside the agenda (transient
+    /// `browser:{song}` item, full song — shared by the browser panel rows
+    /// and click-to-project so both see the same list).
+    fn browser_song_slides(&self, si: usize) -> Vec<Slide> {
+        let Some(song) = self.songs.get(si) else {
+            return Vec::new();
+        };
+        let transient = AgendaItem {
+            id: format!("browser:{}", song.id),
+            kind: ItemKind::Song,
+            title: song.title.clone(),
+            reference: ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+            flow_type: FlowType::Default,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let header_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.header.template.as_str())
+            .filter(|t| !t.is_empty());
+        let footer_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.footer.template.as_str())
+            .filter(|t| !t.is_empty());
+        compute_item_slides_templated(
+            &transient,
+            &self.song_map(),
+            &self.bibles,
+            &self.opts(),
+            true,
+            self.whole_ref_header,
+            header_tpl,
+            footer_tpl,
+        )
+    }
+
+    /// Transient preview of a library song that is NOT the agenda target:
+    /// same rows as [`Self::song_blocks`] (checkbox, letter badge, wrapped
+    /// text) so the slides panel stays in step with the editor while
+    /// browsing. Checkbox state is keyed under a `browser:{song}` id so it
+    /// never collides with real agenda items; clicking a row adds the song
+    /// when absent and projects that slide. The live row highlights when
+    /// the live item is this same song.
+    fn library_song_panel(&mut self, ui: &UI, cx: &mut Context<Root>, si: usize) -> Div {
+        let Some(song) = self.songs.get(si).cloned() else {
+            return section(ui, &self.t("slides"), vec![label(ui, "(no verses)", 13.)]);
+        };
+        let transient = AgendaItem {
+            id: format!("browser:{}", song.id),
+            kind: ItemKind::Song,
+            title: song.title.clone(),
+            reference: ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+            flow_type: FlowType::Default,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let slides = self.browser_song_slides(si);
+        if slides.is_empty() {
+            return section(ui, &self.t("slides"), vec![label(ui, "(no verses)", 13.)]);
+        }
+        let book = library::list_songbooks(&self.db)
+            .unwrap_or_default()
+            .iter()
+            .find(|b| b.id == song.songbook_id)
+            .map(|b| b.name.clone())
+            .filter(|n| !n.is_empty())
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        let title = format!("♪ {}{}", song.title, book);
+        let tags: std::collections::HashMap<String, String> = song
+            .verses
+            .iter()
+            .map(|v| {
+                let tag = v
+                    .lines
+                    .first()
+                    .map(|l| l.trim())
+                    .filter(|l| {
+                        !l.is_empty() && l.lines().count() == 1 && lyrics_doc::is_tag_line(l)
+                    })
+                    .unwrap_or_default()
+                    .to_string();
+                (v.id.clone(), tag)
+            })
+            .collect();
+        let live_song = self
+            .live_item
+            .and_then(|li| self.agenda.items.get(li))
+            .and_then(|it| match &it.reference {
+                ItemRef::Song { song_id } => Some(song_id.clone()),
+                _ => None,
+            });
+        let live_here = live_song.as_deref() == Some(song.id.as_str());
+        let item_id = transient.id.clone();
+        // Content, not row index: hidden rows shift the live list. Clamped:
+        // a live position past a shrunk list must not unlight every row.
+        let live_content = self.live_item.and_then(|li| {
+            let slides = self.item_slides(li);
+            slides
+                .get(self.live_slide.min(slides.len().saturating_sub(1)))
+                .cloned()
+        });
+        let mut out: Vec<Div> = Vec::new();
+        for (i, slide) in slides.iter().enumerate() {
+            // Embed cards carry no ` — verse` header: key them by URL so
+            // the row still renders (clickable, hideable, live-lit) and the
+            // key survives reordering. Footer-gated (not header-sniffed):
+            // an em dash inside an embed title must never fabricate a verse.
+            let web = slide.footer == "WebSite";
+            let vid = if web {
+                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+            } else {
+                slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
+            };
+            let hidden = self.is_hidden(&item_id, &vid);
+            let preview: String = slide.lines.join(" / ");
+            let live_now = live_here && live_content.as_ref() == Some(slide);
+            let selected = self.sel_block.as_deref() == Some(vid.as_str());
+            let row_bg = if live_now { ui.selection } else { ui.panel };
+            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
+            let border_c = if selected {
+                ui.engaged
+            } else if live_now {
+                ui.selection
+            } else {
+                row_bg
+            };
+            let check = if hidden { "☐" } else { "☑" };
+            let tag = tags.get(&vid).cloned().unwrap_or_default();
+            let badge = if web {
+                "⌂".to_string()
+            } else {
+                lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone())
+            };
+            let vid2 = vid.clone();
+            let id2 = item_id.clone();
+            let vid3 = vid.clone();
+            out.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(row_bg)
+                    .text_color(row_ink)
+                    .border_2()
+                    .border_color(border_c)
+                    .child(btn(ui, cx, check, false, move |this, _, _, cx| {
+                        let hide = !this.is_hidden(&id2, &vid2);
+                        this.set_hidden(&id2, &vid2, hide);
+                        this.sel_block = Some(vid2.clone());
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .child(badge),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .whitespace_normal()
+                            .child(preview),
+                    )
+                    // Single click projects (UX-RESEARCH 3.2): the song
+                    // joins the agenda on demand, like double-click.
+                    // Content match, not row index (see song_blocks).
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.play_browser_song_slide(cx, si, i);
+                            // Web-card keys live outside the verse namespace:
+                            // don't park the verse cursor on them.
+                            if !vid3.starts_with("web:") {
+                                this.sel_block = Some(vid3.clone());
+                            }
+                            this.focus_root(window);
+                        }),
+                    ),
+            );
+        }
+        section_scrolled(ui, &title, Vec::new(), out, &self.scroll_slides, "scroll:slides")
+    }
+
     /// Song slides: one row per projected slide — `[☑] badge <full text>`.
     ///
     /// UX-RESEARCH §3.2: *"one row = one projected slide"*. A verse that
@@ -8319,10 +9704,24 @@ impl Root {
             return vec![label(ui, "(no verses)", 13.)];
         }
         let live_here = self.live_item == Some(item_idx);
+        // Content, not row index, identifies the live row. Clamped: a live
+        // position past a shrunk list must not unlight every row.
+        let live_content = self.live_item.and_then(|li| {
+            let slides = self.item_slides(li);
+            slides
+                .get(self.live_slide.min(slides.len().saturating_sub(1)))
+                .cloned()
+        });
         let mut out: Vec<Div> = Vec::new();
         for (i, slide) in slides.iter().enumerate() {
-            let Some(vid) = slide_verse_id(&slide.header) else {
-                continue;
+            // Embed cards carry no ` — verse` header: key them by URL so
+            // the row still renders (clickable, hideable, live-lit) and the
+            // key survives reordering.
+            let web = slide.footer == "WebSite";
+            let vid = if web {
+                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+            } else {
+                slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
             };
             let hidden = self.is_hidden(&item_id, &vid);
             // R-6 / LAYOUT.md: the slide text is NEVER truncated — the row
@@ -8335,7 +9734,7 @@ impl Root {
             // always visible. The **selected** row is where the keyboard
             // cursor is. Collapsing them into one flag loses the distinction
             // that makes the panel readable mid-service.
-            let live_now = live_here && self.live_slide == i;
+            let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
             // The row currently projecting is highlighted **blue**, always
             // (UX-RESEARCH 10.3 — "the displayed slide is now highlighted in
@@ -8355,7 +9754,11 @@ impl Root {
             };
             let check = if hidden { "☐" } else { "☑" };
             let tag = tags.get(&vid).cloned().unwrap_or_default();
-            let badge = lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone());
+            let badge = if web {
+                "⌂".to_string()
+            } else {
+                lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone())
+            };
             let vid2 = vid.clone();
             let id2 = item_id.clone();
             let vid3 = vid.clone();
@@ -8400,12 +9803,20 @@ impl Root {
                             .child(preview),
                     )
                     // Single click projects (UX-RESEARCH 3.2).
+                    // Display row → projected index by content: hidden
+                    // verses/cards shift the live list, so raw `i` can land
+                    // on the wrong slide.
                     .cursor_pointer()
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            this.goto_item_slide(cx, item_idx, i);
-                            this.sel_block = Some(vid3.clone());
+                            let target = this.display_row_to_projected(item_idx, i);
+                            this.goto_item_slide(cx, item_idx, target);
+                            // Web-card keys live outside the verse namespace:
+                            // don't park the verse cursor on them.
+                            if !vid3.starts_with("web:") {
+                                this.sel_block = Some(vid3.clone());
+                            }
                             this.focus_root(window);
                         }),
                     ),
@@ -8607,6 +10018,9 @@ impl Root {
                             snap.bg_kind,
                             snap.bg_file.as_ref(),
                             snap.bg_fit,
+                            snap.video_poster.as_ref(),
+                            snap.video_frame.as_ref(),
+                            snap.bg_website.as_deref(),
                         )),
                 );
         // Same rule as the projector (projector_window::grades_luminosity_overlay):
@@ -8741,6 +10155,21 @@ impl Root {
     /// Persistent state chips for the 4 distinct presentation states (B-04).
     fn state_chips(&self, ui: &UI) -> Vec<Div> {
         let mut chips = Vec::new();
+        // Live page on screen beats every other state note: the operator
+        // must see at a glance that the room is looking at a browser, not
+        // the tile (a windowed browser can hide behind the control window
+        // and otherwise read as broken).
+        if self.live_view_url.is_some() {
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(rgb(0x2E7D32))
+                    .text_color(rgb(0xFFFFFF))
+                    .text_size(px(11.))
+                    .child("\u{1F310} LIVE WEB"),
+            );
+        }
         if self.shield {
             chips.push(
                 div()
@@ -8925,8 +10354,10 @@ impl Root {
             .flex()
             .flex_col()
             .gap_1()
-            .w(px(40.))
+            .w(px(44.))
+            .min_w(px(44.))
             .flex_none()
+            .overflow_hidden()
             .items_center()
             .children(col)
     }
@@ -8975,6 +10406,10 @@ impl Root {
             self.blank = false;
             Some(left.join(", "))
         };
+        // NDI is opt-in (Display > NDI toggle): Go-live never starts the
+        // engine by itself. When the engine is on, the re-project below
+        // feeds it; when off, the push is a no-op.
+        let ndi_note: Option<String> = None;
         // Go live means the LIVE selection: re-project it (an edit made
         // while frozen only lands when the operator says so — here).
         self.push_projection(cx);
@@ -8982,10 +10417,13 @@ impl Root {
         // open_projector defers the real open past this update, so the
         // handle is legitimately still None here on first press. Report
         // live either way — the deferred callback overwrites on failure.
-        let msg = match cleared {
+        let mut msg = match cleared {
             Some(what) => format!("Left {what} — projection live in the projector window."),
             None => "Live — projector window opening…".to_string(),
         };
+        if let Some(n) = ndi_note {
+            msg.push_str(&format!(" [{n}]"));
+        }
         self.set_status(cx, msg);
         cx.notify();
     }
@@ -9054,6 +10492,7 @@ impl Root {
             .flex_col()
             .gap_1()
             .p(px(6.))
+            .min_w_0()
             .min_h_0()
             .flex_1()
             .overflow_hidden()
@@ -9127,7 +10566,7 @@ impl Root {
                 label(ui, "Title:", 12.),
                 div().flex_1().child(self.song_title_field.clone()),
             ]))
-            .child(document)
+            .child(document_wrap(document))
             // English 1.29 uses five editable footer fields: References and
             // Author/Composer on the left; Verse order and Copyright on the
             // right. Verse order is LIVE: the agenda item's override when one
@@ -9157,9 +10596,9 @@ impl Root {
                 let owner_down = owner.clone();
                 let default_up = default_order.clone();
                 let default_down = default_order.clone();
-                row(vec![
+                row_wrap(vec![
                     label(ui, "References:", 12.),
-                    div().flex_1().child(self.references_field.clone()),
+                    div().flex_1().min_w(px(140.)).child(self.references_field.clone()),
                     label(ui, "Verse order:", 12.),
                     {
                         // Long medleys string 70+ ids into a wall of text, so
@@ -9289,15 +10728,15 @@ impl Root {
                     }),
                 ])
             })
-            .child(row(vec![
+            .child(row_wrap(vec![
                 label(ui, "Author:", 12.),
-                div().flex_1().child(self.author_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.author_field.clone()),
                 label(ui, "Copyright:", 12.),
-                div().flex_1().child(self.copyright_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.copyright_field.clone()),
             ]))
-            .child(row(vec![
+            .child(row_wrap(vec![
                 label(ui, "Composer:", 12.),
-                div().flex_1().child(self.composer_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.composer_field.clone()),
                 // Explicit affordance: footer fields persist via song Save.
                 // The Song ribbon group owns the canonical Save; this footer
                 // copy is the same action, so `*` in the header can never
@@ -9397,6 +10836,10 @@ impl Root {
                         }
                     }),
                     btn(ui, cx, &self.t("play_pause"), false, |this, _, _, cx| {
+                        // In-app motion owns the press while a pump runs.
+                        if this.motion_toggle_pause(cx) {
+                            return;
+                        }
                         let p = this.media_path_field.read(cx).text();
                         if !p.trim().is_empty()
                             && this
@@ -9415,6 +10858,7 @@ impl Root {
                         cx.notify();
                     }),
                     btn(ui, cx, &self.t("stop"), false, |this, _, _, cx| {
+                        this.stop_motion();
                         this.media.stop();
                         cx.notify();
                     }),
@@ -9677,7 +11121,7 @@ impl Root {
                         bold: self.bold,
                         italic: self.italic,
                         underline: self.underline,
-                        shadow: false,
+                        shadow: true,
                     },
                 )
             })
@@ -9692,7 +11136,7 @@ impl Root {
                     bold: self.bold,
                     italic: self.italic,
                     underline: self.underline,
-                    shadow: false,
+                    shadow: true,
                 },
             ));
         }
@@ -9743,10 +11187,266 @@ impl Root {
         )
     }
 
+    /// Website agenda item: build a WebSite/YouTube item from the URL in
+    /// `website_field` (same field as the background tile — offline data,
+    /// never fetched). YouTube hosts become `ItemKind::YouTube`, everything
+    /// else `ItemKind::WebSite`; title defaults to the host+path. Empty/bad
+    /// input keeps the agenda untouched and says so in the status line.
+    fn add_website_to_agenda(&mut self, cx: &mut Context<Self>) {
+        let raw = self.website_field.read(cx).text();
+        match website_agenda_item(&raw) {
+            Some((kind, title, url)) => {
+                self.agenda.items.push(AgendaItem {
+                    id: agenda_ops::new_id("item"),
+                    kind,
+                    title: title.clone(),
+                    reference: ItemRef::Url { url: url.clone() },
+                    flow_type: FlowType::Manual,
+                    auto_advance_ms: None,
+                    overrides: Default::default(),
+                });
+                self.sel_item = Some(self.agenda.items.len() - 1);
+                self.agenda_dirty = true;
+                self.set_status(cx, format!("{kind:?} added: {title} ({url})."));
+                cx.notify();
+            }
+            None => self.set_status(
+                cx,
+                "Website item: type a page URL first (Background > Website field — example.com/live or a YouTube link).",
+            ),
+        }
+    }
+
+    /// Website background: normalize + assign the URL in `website_field`.
+    /// One background at a time — assigning clears any file background
+    /// and stops in-app video motion (the tile is static). Empty/bad input
+    /// keeps the current background and says so in the status line.
+    fn assign_website_from_field(&mut self, cx: &mut Context<Self>) {
+        let raw = self.website_field.read(cx).text();
+        match vp_core::schema::normalize_website_url(&raw) {
+            Some(url) => {
+                self.stop_motion();
+                self.bg_kind = BackgroundKind::Website;
+                self.bg_website = Some(url.clone());
+                self.bg_file = None;
+                self.persist_layout_quiet();
+                crate::presentation::publish(self, cx);
+                self.set_status(cx, format!("Website background: {url} (lyrics project over the page tile — Open launches the browser)."));
+            }
+            None => self.set_status(
+                cx,
+                "Website background: type a page URL first (example.com/live — https:// is added).",
+            ),
+        }
+        cx.notify();
+    }
+
+    /// Drop a website background back to the plain color.
+    fn clear_website_background(&mut self, cx: &mut Context<Self>) {
+        self.bg_kind = BackgroundKind::Color;
+        self.bg_website = None;
+        self.bg_file = None;
+        self.persist_layout_quiet();
+        crate::presentation::publish(self, cx);
+        self.set_status(cx, "Website background removed — plain color.");
+        cx.notify();
+    }
+
+    /// Live web view toggle: one click on, one click off. Persisted like
+    /// every other layout choice; default off so the offline tiles rule
+    /// until the operator asks for more.
+    fn toggle_live_web(&mut self, cx: &mut Context<Self>) {
+        self.live_web_on = !self.live_web_on;
+        if !self.live_web_on {
+            self.live_view.hide();
+            self.live_web_pending = None;
+            self.live_web_confirmed.clear();
+            self.set_status(cx, "Live web view off — website slides are offline tiles again.");
+        } else {
+            self.set_status(cx, "Live web view on — website slides open in a browser window on the projector display.");
+        }
+        self.persist_layout_quiet();
+        crate::presentation::publish(self, cx);
+        // Toggling on while a website slide is already live must take
+        // effect at once, not on the next navigation.
+        if self.live_web_on {
+            self.sync_live_web(cx);
+        }
+        cx.notify();
+    }
+
+    /// Allow this show's pending remote page into the live view (one click,
+    /// this session only — nothing is remembered on disk). Stale approvals
+    /// (navigated away since) are dropped instead of applied.
+    fn allow_live_web(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .projected_slides
+            .get(self.projected_slide)
+            .and_then(live_web::live_url_for_slide);
+        if let Some(url) = self.live_web_pending.take() {
+            if current.as_deref() != Some(url.as_str()) {
+                self.set_status(cx, "Live view: the slide moved on — Allow again for the new page.");
+            } else {
+                if !self.live_web_confirmed.contains(&url) {
+                    self.live_web_confirmed.push(url.clone());
+                }
+                self.set_status(cx, format!("Live web view allowed for this show: {url}"));
+                self.sync_live_web(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Keep the live browser window in step with the pushed slide. Runs at
+    /// the end of every [`Self::push_projection`]: spawn on website slides,
+    /// die the moment they leave, never fetch anything itself.
+    fn sync_live_web(&mut self, cx: &mut Context<Self>) {
+        let desired = self
+            .projected_slides
+            .get(self.projected_slide)
+            .and_then(live_web::live_url_for_slide);
+        if desired.is_none() {
+            // Not a website slide: make sure nothing lingers, quietly.
+            if self.live_view_url.is_some() {
+                self.live_view.hide();
+                self.live_view_url = None;
+                self.live_web_pending = None;
+            }
+            return;
+        }
+        let url = desired.unwrap();
+        if !self.live_web_on {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.live_web_pending = None;
+            // Say it every push: a tile with no explanation looks broken.
+            self.set_status(cx, format!("Website slide live as a tile — turn Live: On (Background > Website) to open the page: {url}"));
+            cx.notify();
+            return;
+        }
+        // Loopback is exempt (no packet leaves the machine); remote hosts
+        // need a per-session Allow or the tile stays and the operator is
+        // told exactly what is waiting.
+        if !live_web::is_loopback(&url) && !self.live_web_confirmed.contains(&url) {
+            self.live_view.hide();
+            self.live_view_url = None;
+            if self.live_web_pending.as_deref() != Some(url.as_str()) {
+                self.live_web_pending = Some(url.clone());
+                self.set_status(cx, format!("Remote page blocked from live view — Allow it in Background > Website: {url}"));
+                cx.notify();
+            }
+            return;
+        }
+        self.live_web_pending = None;
+        // Window placement needs the projector output; resolving it costs
+        // one local `xrandr` call (no network). Geometry is computed first
+        // so an already-live window short-circuits before any probe.
+        let monitors = monitors::list();
+        let target = monitors::resolve_target(
+            &monitors,
+            self.projector_monitor.as_deref(),
+            self.projector_display,
+        );
+        let primary = monitors.first();
+        // Windowed unless the target is a distinct non-primary rect:
+        // mirrored/cloned outputs share the primary's rect and must not
+        // cover the console, and a missing RandR list fails safe.
+        let geometry = match (&target, primary) {
+            (Some(t), Some(p))
+                if t.name != p.name
+                    && (t.x, t.y, t.w, t.h) != (p.x, p.y, p.w, p.h) =>
+            {
+                Some((t.x, t.y, t.w, t.h))
+            }
+            _ => None,
+        };
+        // Our own projector window is fullscreen: a windowed browser would
+        // open underneath it, invisible. Take over instead — the tile it
+        // covers is the placeholder for this very page.
+        let room_fullscreen =
+            self.projector_window.is_some() && self.projector_fullscreen;
+        // Already showing exactly this: re-pushes must not re-probe (DNS on
+        // the UI thread) or flicker the projector window.
+        if self.live_view.showing(&url, geometry, room_fullscreen) {
+            self.live_view_url = Some(url);
+            return;
+        }
+        // Reachability is a TCP handshake, not a fetch: a dead stage server
+        // reports honestly instead of opening a blank window.
+        if !live_web::reachable(&url, std::time::Duration::from_millis(1500)) {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.set_status(cx, format!("Live web view: nothing serving {url} — tile stays."));
+            cx.notify();
+            return;
+        }
+        let Some((kind, bin)) = live_web::pick_browser() else {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.set_status(cx, "Live web view: no supported browser found (chromium / google-chrome / edge / firefox).");
+            cx.notify();
+            return;
+        };
+        if self.live_view.show(&bin, &kind, &url, geometry, room_fullscreen) {
+            self.live_view_url = Some(url.clone());
+            // Firefox ignores geometry (private window, no placement
+            // control), so only a Chromium-family window on a dedicated
+            // output may claim the projector.
+            let on_projector =
+                matches!(geometry, Some(_)) && matches!(kind, live_web::BrowserKind::Chromium);
+            self.set_status(cx, match (on_projector, room_fullscreen) {
+                (true, _) => format!("Live web view on the projector: {url}"),
+                (false, true) => format!("Live web view fullscreen (projector was fullscreen — Alt+Tab to return): {url}"),
+                (false, false) => format!("Live web view (windowed — no separate projector output): {url}"),
+            });
+        } else {
+            self.live_view_url = None;
+            self.set_status(cx, format!("Live web view: browser failed to start — tile stays: {url}"));
+        }
+    }
+
+    /// Open the assigned website URL in the OS browser (best effort).
+    /// Pure data stays offline: this spawns the handler only, never fetches.
+    fn open_website_background(&mut self, cx: &mut Context<Self>) {
+        let Some(url) = self.bg_website.clone() else {
+            self.set_status(cx, "Website background: nothing assigned — Set a URL first.");
+            return;
+        };
+        // Windows launches without a shell round-trip: `rundll32` hands the
+        // URL straight to the protocol handler, so there is no `cmd`
+        // metacharacter surface at all (no blocklist to maintain).
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = std::process::Command::new("rundll32.exe");
+            cmd.args(["url.dll,FileProtocolHandler", &url]);
+            return match cmd.spawn() {
+                Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
+                Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
+            };
+        }
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        match cmd.arg(&url).spawn() {
+            Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
+            Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
+        }
+        cx.notify();
+    }
+
     /// Note shown when the style asks for a background kind v1 cannot fully
-    /// render. Images render via `gpui::img`; video loops show a captioned
-    /// placeholder tile (gpui 0.2.2 has no video element); only the camera is
-    /// still a solid-color stand-in.
+    /// render. Images render via `gpui::img`; video loops move in-app when
+    /// ffmpeg exists (poster still, else captioned tile, as fallback); the
+    /// camera is still a solid-color stand-in; a website shows as a titled
+    /// tile behind the lyrics (no web-view in gpui 0.2.2) with the live
+    /// page one click away in the OS browser.
     fn background_note(&self) -> Option<&'static str> {
         match self.bg_kind {
             BackgroundKind::Color => None,
@@ -9755,6 +11455,7 @@ impl Root {
                 Some("▶ video loop = captioned tile (no video element in gpui 0.2.2)")
             }
             BackgroundKind::Camera => Some("◉ camera background = v1 stub (solid color shown)"),
+            BackgroundKind::Website => Some("🌐 website background = titled tile (no web-view in gpui 0.2.2 — Open launches the browser)"),
         }
     }
 
@@ -10064,6 +11765,87 @@ mod tests {
     #[test]
     fn boot_size_keeps_default_on_large_display() {
         assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn col_widths_clamp_so_no_column_can_vanish_or_eat_the_editor() {
+        // VJSM parity: dividers drag 220..720 px. Live proof: a +96 px drag
+        // persisted left_w 456.0015 (boaz shots/parity/rust-divider-drag-
+        // proven.png + videopsalm-layout.json).
+        assert_eq!(clamp_col_width(360.0), 360.0);
+        assert_eq!(clamp_col_width(360.0 + 96.0), 456.0);
+        assert_eq!(clamp_col_width(0.0), 220.0);
+        assert_eq!(clamp_col_width(5000.0), 720.0);
+        assert_eq!(clamp_col_width(-40.0), 220.0);
+    }
+
+    #[test]
+    fn row_heights_clamp_so_no_pane_can_vanish_or_push_out_its_sibling() {
+        // 0 = agenda/browser split (100..520), 1 = slides/preview (160..560).
+        assert_eq!(clamp_row_height(0, 300.0), 300.0);
+        assert_eq!(clamp_row_height(0, 0.0), 100.0);
+        assert_eq!(clamp_row_height(0, 5000.0), 520.0);
+        assert_eq!(clamp_row_height(1, 300.0), 300.0);
+        assert_eq!(clamp_row_height(1, 0.0), 160.0);
+        assert_eq!(clamp_row_height(1, 5000.0), 560.0);
+    }
+
+    #[test]
+    fn hover_reveal_ignores_the_collapse_click_itself() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        // Expanded: never armed.
+        assert!(!Root::hover_reveal_armed(false, None, now));
+        assert!(!Root::hover_reveal_armed(false, Some(now), now));
+        // Collapsed 50 ms ago (the Hide click mounting the strip under
+        // the cursor): the immediate hover(true) must NOT re-expand.
+        let just = now - Duration::from_millis(50);
+        assert!(!Root::hover_reveal_armed(true, Some(just), now));
+        // Collapsed 2 s ago, cursor returns: reveal fires.
+        let old = now - Duration::from_secs(2);
+        assert!(Root::hover_reveal_armed(true, Some(old), now));
+        // Restarted while collapsed: no timestamp, but the strip must
+        // still reveal (otherwise hover is dead for the whole session).
+        assert!(Root::hover_reveal_armed(true, None, now));
+    }
+
+    #[test]
+    fn web_row_keys_and_content_mapping_are_stable() {
+        assert_eq!(
+            web_row_key("https://example.com/live"),
+            "web:https://example.com/live"
+        );
+        let lyric = Slide::text("T — V1", vec!["x".to_string()], "Song");
+        let card = Slide::text(
+            "Card",
+            vec!["https://example.com".to_string()],
+            "WebSite",
+        );
+        let display = vec![lyric, card.clone()];
+        // Lyric hidden: card row 1 still resolves to projected 0.
+        assert_eq!(projected_index_for_row(&display, &[card.clone()], 1), 0);
+        // Hidden lyric row itself: no counterpart, clamps to 0.
+        assert_eq!(projected_index_for_row(&display, &[card.clone()], 0), 0);
+        // Nothing hidden: identity.
+        assert_eq!(projected_index_for_row(&display, &display, 1), 1);
+        // Empty show: clamps, never panics.
+        assert_eq!(projected_index_for_row(&[], &[], 3), 0);
+    }
+
+    #[test]
+    fn website_field_classifies_youtube_vs_plain_site() {
+        let (kind, title, url) = website_agenda_item("example.com/live").unwrap();
+        assert_eq!(kind, ItemKind::WebSite);
+        assert_eq!(url, "https://example.com/live");
+        assert_eq!(title, "example.com/live");
+        let (kind, _, url) =
+            website_agenda_item("https://www.youtube.com/watch?v=abc").unwrap();
+        assert_eq!(kind, ItemKind::YouTube);
+        assert!(url.contains("youtube.com"));
+        let (kind, _, _) = website_agenda_item("https://youtu.be/abc").unwrap();
+        assert_eq!(kind, ItemKind::YouTube);
+        assert!(website_agenda_item("  ").is_none());
+        assert!(website_agenda_item("javascript:alert(1)").is_none());
     }
 
     #[test]

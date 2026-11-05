@@ -36,7 +36,7 @@
 //! | `ItemKind`        | 17 literals, `Song` first (see [`ItemKind::ALL`])                         |
 //! | `Versification`   | `EN`, `RU`, `FR`                                                          |
 //! | `Align`           | `left`, `center`, `right`                                                 |
-//! | `BackgroundKind`  | `color`, `image`, `videoLoop`, `camera`                                   |
+//! | `BackgroundKind`  | `color`, `image`, `videoLoop`, `camera`, `website`                     |
 //! | `Style.transition`| `none`, `fade`, `slide`, `zoom`                                           |
 //! | `AspectRatio`     | `4x3.2`, `4x3`, `16x10`, `16x9`, `16x8` (`geometry::AspectRatio`)        |
 //!
@@ -928,18 +928,24 @@ pub enum BackgroundKind {
     VideoLoop,
     #[serde(rename = "camera")]
     Camera,
+    /// Live web page behind the lyrics (operator-typed URL, offline-first:
+    /// stored as data only — the projector shows a titled tile + opens it
+    /// in the OS browser; gpui 0.2.2 has no web-view element to embed it).
+    #[serde(rename = "website")]
+    Website,
 }
 
 impl BackgroundKind {
     /// Canonical literals in declaration order.
-    pub const ALL: [BackgroundKind; 4] = [
+    pub const ALL: [BackgroundKind; 5] = [
         BackgroundKind::Color,
         BackgroundKind::Image,
         BackgroundKind::VideoLoop,
         BackgroundKind::Camera,
+        BackgroundKind::Website,
     ];
     /// [`BackgroundKind::ALL`] as wire literals, same indices.
-    pub const LITERALS: [&'static str; 4] = ["color", "image", "videoLoop", "camera"];
+    pub const LITERALS: [&'static str; 5] = ["color", "image", "videoLoop", "camera", "website"];
     /// Canonical literal for this background kind.
     pub fn literal(&self) -> &'static str {
         BackgroundKind::LITERALS[BackgroundKind::ALL.iter().position(|k| k == self).unwrap()]
@@ -957,6 +963,12 @@ pub struct Background {
     pub image: Option<String>,
     #[serde(default)]
     pub video_loop: Option<String>,
+    /// Website background URL (`BackgroundKind::Website`). `None` = unset;
+    /// normalized by [`normalize_website_url`] (bare `example.com` →
+    /// `https://example.com`). No fetch happens here — pure data so both
+    /// ports agree on the file shape without touching the network.
+    #[serde(default)]
+    pub website: Option<String>,
     /// Background frame, normalized (B-06). `None` means "fill the slide",
     /// i.e. [`Rect::FULL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -965,6 +977,50 @@ pub struct Background {
 
 fn default_bg() -> String {
     "#000000".into()
+}
+
+/// Normalize an operator-typed website URL into a stored background URL.
+///
+/// Pure (no network): trims whitespace, prepends `https://` when no scheme
+/// is present, lowercases the scheme, and rejects empties, strings with
+/// whitespace, and non-http(s) schemes (`file:`, `javascript:`, …). Used
+/// by both the style background (`Background.website`) and anywhere else
+/// an operator pastes a page address, so both ports store the same shape.
+/// Returns `None` for anything that should not be stored.
+pub fn normalize_website_url(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    // A colon without `://` claims a non-web scheme (`javascript:…`,
+    // `mailto:…`) or a bare host:port. Both are rejected: the operator
+    // adds `https://` explicitly for ports.
+    if t.contains(':') && !t.contains("://") {
+        return None;
+    }
+    let with_scheme = if t.contains("://") {
+        t.to_string()
+    } else {
+        format!("https://{t}")
+    };
+    let (scheme, rest) = with_scheme.split_once("://")?;
+    let scheme_lc = scheme.to_ascii_lowercase();
+    if scheme_lc != "http" && scheme_lc != "https" {
+        return None;
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    // WHATWG treats `\` as `/` for special schemes: a backslash can hide
+    // the real host (`http://evil.com\@localhost/` is evil.com). Reject —
+    // no legitimate http(s) URL needs one.
+    if rest.contains('\\') {
+        return None;
+    }
+    if rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
+        return None;
+    }
+    Some(format!("{scheme_lc}://{rest}"))
 }
 
 /// Hierarchical presentation style (SPEC 2.4: levels like Song > ...).
@@ -1127,7 +1183,48 @@ mod tests {
         let s = Style::default();
         let v = serde_json::to_value(&s).unwrap();
         assert!(v["background"].get("videoLoop").is_some());
+        assert!(v["background"].get("website").is_some());
         assert!(v.get("footer").is_some() && v.get("header").is_some());
+    }
+
+    #[test]
+    fn style_background_website_round_trips_and_normalizes() {
+        // Old files without the key still parse (serde default).
+        let legacy = serde_json::json!({
+            "level": "Song", "body": {}, "header": {}, "footer": {},
+            "background": {"kind": "color"}
+        });
+        let back: Style = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.background.website, None);
+        // A website background keeps its URL.
+        let mut s = Style::default();
+        s.background.kind = BackgroundKind::Website;
+        s.background.website = normalize_website_url("example.com/live");
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["background"]["kind"], "website");
+        assert_eq!(v["background"]["website"], "https://example.com/live");
+        let back: Style = serde_json::from_value(v).unwrap();
+        assert_eq!(back.background.website.as_deref(), Some("https://example.com/live"));
+    }
+
+    #[test]
+    fn website_url_normalization_is_offline_and_strict() {
+        assert_eq!(normalize_website_url(""), None);
+        assert_eq!(normalize_website_url("   "), None);
+        assert_eq!(normalize_website_url("example.com"), Some("https://example.com".into()));
+        assert_eq!(normalize_website_url("  Example.COM/Go  "), Some("https://Example.COM/Go".into()), "trims edges");
+        assert_eq!(normalize_website_url("exam ple.com"), None, "inner spaces reject");
+        assert_eq!(normalize_website_url("HTTP://example.com/x"), Some("http://example.com/x".into()));
+        assert_eq!(normalize_website_url("https://example.com/a?b=c"), Some("https://example.com/a?b=c".into()));
+        assert_eq!(normalize_website_url("file:///etc/passwd"), None);
+        assert_eq!(normalize_website_url("javascript:alert(1)"), None);
+        assert_eq!(normalize_website_url("example.com:8080/live"), None, "bare host:port needs a scheme");
+        assert_eq!(normalize_website_url("https://example.com:8080/live"), Some("https://example.com:8080/live".into()));
+        assert_eq!(normalize_website_url("https://"), None);
+        assert_eq!(normalize_website_url("//example.com"), None);
+        // Backslash hides the real host from naive parsers (WHATWG: it is
+        // a slash). Reject everywhere, not just in the embed path.
+        assert_eq!(normalize_website_url(r"http://evil.com\@localhost/"), None);
     }
 
     #[test]
@@ -1454,7 +1551,7 @@ mod tests {
     fn fixture_styles_round_trip_with_transition() {
         let f = fixture();
         let styles: Vec<Style> = serde_json::from_value(f["styles"].clone()).unwrap();
-        assert_eq!(styles.len(), 4);
+        assert_eq!(styles.len(), 5);
         // Every align and every background kind appears at least once.
         let aligns: Vec<&str> = styles.iter().map(|s| s.body.align.literal()).collect();
         for a in Align::LITERALS {

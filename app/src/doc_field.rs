@@ -982,7 +982,8 @@ impl Render for DocField {
                         };
                         let d = if is_tag {
                             div()
-                                .h(px(22.))
+                                .min_h(px(22.))
+                                .flex_shrink_0()
                                 .w_full()
                                 .flex()
                                 .flex_row()
@@ -999,7 +1000,7 @@ impl Render for DocField {
                                         .child(content),
                                 )
                         } else {
-                            div().h(px(20.)).w_full().child(content)
+                            div().min_h(px(20.)).flex_shrink_0().w_full().child(content)
                         };
                         // A blank line has no characters to highlight, so a
                         // selection crossing it lights the whole row.

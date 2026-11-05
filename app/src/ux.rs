@@ -219,6 +219,32 @@ pub fn redirect_style_targets(
     }
 }
 
+/// What the agenda target contributes to the slides-panel source decision.
+/// Only the song identity matters: Bible and other targets always keep
+/// the panel (a stale song selection must never cover them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgendaTarget {
+    Song { song_id: String },
+    Other,
+}
+
+/// Slides-panel source when the library selection disagrees with the agenda
+/// target: the editor already follows the browser song, so the panel must
+/// render that song too — otherwise editor and slides show two different
+/// songs (Stage 04: never desync). True = render the transient library
+/// preview instead of the agenda target. Pure so the contract is
+/// unit-testable without a window.
+pub fn library_preview_wins(sel_song_id: Option<&str>, target: Option<&AgendaTarget>) -> bool {
+    let Some(sel) = sel_song_id else {
+        return false;
+    };
+    match target {
+        None => true,
+        Some(AgendaTarget::Song { song_id }) => song_id != sel,
+        Some(AgendaTarget::Other) => false,
+    }
+}
+
 /// File a live video agenda item should hand to the OS player: `(item id,
 /// path)`. `None` for anything that is not a standalone `Video` + file
 /// reference. Pure so the auto-launch decision is unit-testable.
@@ -1034,6 +1060,11 @@ pub struct LayoutPrefs {
     /// the file still exists — never a ghost path (WI-024).
     #[serde(default)]
     pub bg_file: String,
+    /// Website background URL (`""` = none). Normalized on assign
+    /// (`example.com` → `https://example.com`); revalidated on load so a
+    /// hand-edited layout with a bad URL restores as unset, never stored.
+    #[serde(default)]
+    pub bg_website: String,
     /// Font ribbon state (new keys carry serde defaults so pre-existing
     /// layout files keep loading).
     #[serde(default = "d_font")]
@@ -1108,10 +1139,37 @@ pub struct LayoutPrefs {
     /// in the vendor docs; v1 persists it so the choice survives restart.
     #[serde(default)]
     pub gallery_keep_open: bool,
+    /// Opt-in live web view (Background > Website > Live). Default off:
+    /// old layout files load with the offline tiles, never a browser.
+    #[serde(default)]
+    pub live_web: bool,
+    /// Pinned agenda-list height in px (`None` = automatic content height).
+    /// Dragged row splits persist; pre-existing files load automatic.
+    #[serde(default)]
+    pub agenda_h: Option<f32>,
+    /// Pinned preview height in px (`None` = automatic). Same contract.
+    #[serde(default)]
+    pub preview_h: Option<f32>,
+    /// Adjustable section widths (VJSM parity): dragged dividers persist.
+    #[serde(default = "d_left_w")]
+    pub left_w: f32,
+    #[serde(default = "d_right_w")]
+    pub right_w: f32,
+    /// Ribbon auto-hide (VJSM parity): collapsed to a hover strip.
+    #[serde(default)]
+    pub ribbon_hidden: bool,
 }
 
 fn d_bible_search() -> String {
     "reference".into()
+}
+
+fn d_left_w() -> f32 {
+    360.0
+}
+
+fn d_right_w() -> f32 {
+    560.0
 }
 
 fn d_aspect_ratio() -> String {
@@ -1127,6 +1185,7 @@ impl Default for LayoutPrefs {
             accent_override: None,
             fg_override: None,
             bg_file: String::new(),
+            bg_website: String::new(),
             style_level: "Song".to_string(),
             max_lines: 4,
             max_chars: 40,
@@ -1163,6 +1222,12 @@ impl Default for LayoutPrefs {
             gallery_images: Vec::new(),
             gallery_videos: Vec::new(),
             gallery_keep_open: false,
+            live_web: false,
+            agenda_h: None,
+            preview_h: None,
+            left_w: d_left_w(),
+            right_w: d_right_w(),
+            ribbon_hidden: false,
         }
     }
 }
@@ -1276,6 +1341,25 @@ mod tests {
     }
 
     #[test]
+    fn layout_prefs_website_url_round_trips_and_defaults_empty() {
+        // Empty default: no website until the operator Sets one, and old
+        // files without the key still load.
+        assert_eq!(LayoutPrefs::default().bg_website, "");
+        let old = r#"{"theme_id":"dark","lang":"en","ribbon":"agenda",
+            "accent_override":null,"style_level":"Song","max_lines":4,"max_chars":40,
+            "bilingual":true,"whole_song_stage":false,"whole_ref_header":true,
+            "show_abbrev":true,"show_number":true,"show_chords_proj":false,
+            "clock_overlay":false,"bg_kind":"color"}"#;
+        assert_eq!(LayoutPrefs::from_json(old).unwrap().bg_website, "");
+        let mut p = LayoutPrefs::default();
+        p.bg_kind = "website".to_string();
+        p.bg_website = "https://example.com/live".to_string();
+        let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
+        assert_eq!(back.bg_kind, "website");
+        assert_eq!(back.bg_website, "https://example.com/live");
+    }
+
+    #[test]
     fn layout_prefs_json_round_trip() {
         let mut p = LayoutPrefs::default();
         p.theme_id = "blue".to_string();
@@ -1319,6 +1403,31 @@ mod tests {
         dup.sort_unstable();
         dup.dedup();
         assert_eq!(dup.len(), levels.len());
+    }
+
+    #[test]
+    fn library_preview_wins_only_for_a_different_song() {
+        use AgendaTarget::*;
+        // No library selection -> agenda target always stands.
+        assert!(!library_preview_wins(None, None));
+        assert!(!library_preview_wins(
+            None,
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Nothing on the agenda -> library preview is the only content.
+        assert!(library_preview_wins(Some("a"), None));
+        // Same song -> agenda item stands (checkbox state, live cue live there).
+        assert!(!library_preview_wins(
+            Some("a"),
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Different song -> editor already shows it, panel must follow.
+        assert!(library_preview_wins(
+            Some("b"),
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Bible/other targets always win over a stale song selection.
+        assert!(!library_preview_wins(Some("b"), Some(&Other)));
     }
 
     #[test]

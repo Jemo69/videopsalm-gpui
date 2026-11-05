@@ -1200,7 +1200,17 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
         Some(path) => {
             root.bg_kind = GalleryState::assigned_kind(kind);
             root.bg_file = Some(path.clone());
+            // A file background replaces any website background (one
+            // background at a time — the projector reads a single kind).
+            root.bg_website = None;
             if kind == MediaFileKind::Video {
+                // Poster still so the loop shows its picture in-app.
+                root.ensure_video_poster(&path);
+                // Background loop moves in-app when mpv exists; without it
+                // the still stands and F5 still reaches the OS player.
+                if !root.ensure_motion_for(cx, &path, true) {
+                    root.stop_motion();
+                }
                 root.media.open(path);
             }
             root.persist_layout_quiet();
@@ -1216,6 +1226,7 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
             // Black sentinel (§7): unassign; the level falls through to Base.
             root.bg_kind = BackgroundKind::Color;
             root.bg_file = None;
+            root.bg_website = None;
             root.persist_layout_quiet();
             root.set_status(
                 cx,
@@ -1250,11 +1261,16 @@ pub(crate) fn play_selected_video(root: &mut Root, cx: &mut Context<Root>) {
     match path {
         Some(p) => {
             root.media.open(p.clone());
-            root.media.launch_external();
-            if let Some(e) = root.media.last_error.clone() {
-                root.set_status(cx, format!("Video not playing: {e}"));
-            } else {
-                root.set_status(cx, format!("Video playing externally — {}.", p.display()));
+            root.ensure_video_poster(&p);
+            // In-app motion first (silent stills, no audio path touched);
+            // OS player stays the fallback when mpv is missing.
+            if !root.ensure_motion_for(cx, &p, false) {
+                root.media.launch_external();
+                if let Some(e) = root.media.last_error.clone() {
+                    root.set_status(cx, format!("Video not playing: {e}"));
+                } else {
+                    root.set_status(cx, format!("Video playing externally — {}.", p.display()));
+                }
             }
         }
         None => root.set_status(cx, "Select a video first — click a ▶ tile."),
@@ -1280,6 +1296,7 @@ pub(crate) fn delete_selected(root: &mut Root, cx: &mut Context<Root>, kind: Med
         if root.bg_file.as_deref() == Some(path.as_path()) {
             root.bg_kind = BackgroundKind::Color;
             root.bg_file = None;
+            root.bg_website = None;
         }
     }
     root.galleries.library.remove(&id);

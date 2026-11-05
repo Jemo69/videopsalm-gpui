@@ -156,25 +156,14 @@ pub fn rich_line(text: &str, s: RichLineStyle) -> Div {
         return main;
     }
     // Halo: the same glyphs in translucent black, offset behind.
-    let mut halo = div()
-        .text_size(size)
-        .text_color(Rgba {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.75,
-        })
-        .font(gpui::font(font_family.to_string()));
-    if bold || block_bold {
-        halo = halo.font_weight(FontWeight::BOLD);
-    }
-    if italic {
-        halo = halo.italic();
-    }
-    if underline {
-        halo = halo.underline();
-    }
-    let halo_content: AnyElement = gpui::StyledText::new(body).into_any_element();
+    // Double-struck (built twice, stacked at the same offset): a single
+    // 0.75-alpha copy washes out on mid-tone backgrounds ("the shadow is
+    // not really showing"), and GPUI 0.2 has no blur API — density is the
+    // only lever. Same offset, so edges stay crisp, never blurry-double.
+    let halo = halo_div(size, font_family, bold || block_bold, italic, underline);
+    let halo_content: AnyElement = gpui::StyledText::new(body.clone()).into_any_element();
+    let halo_b = halo_div(size, font_family, bold || block_bold, italic, underline);
+    let halo_content2: AnyElement = gpui::StyledText::new(body).into_any_element();
     div()
         .relative()
         .child(
@@ -184,7 +173,37 @@ pub fn rich_line(text: &str, s: RichLineStyle) -> Div {
                 .top(px(SHADOW_DY))
                 .child(halo.child(halo_content)),
         )
+        .child(
+            div()
+                .absolute()
+                .left(px(SHADOW_DX))
+                .top(px(SHADOW_DY))
+                .child(halo_b.child(halo_content2)),
+        )
         .child(main)
+}
+
+/// One translucent-black copy of the lyric line for the halo stack.
+fn halo_div(size: gpui::Pixels, font_family: &str, bold: bool, italic: bool, underline: bool) -> Div {
+    let mut halo = div()
+        .text_size(size)
+        .text_color(Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.75,
+        })
+        .font(gpui::font(font_family.to_string()));
+    if bold {
+        halo = halo.font_weight(FontWeight::BOLD);
+    }
+    if italic {
+        halo = halo.italic();
+    }
+    if underline {
+        halo = halo.underline();
+    }
+    halo
 }
 
 #[cfg(test)]

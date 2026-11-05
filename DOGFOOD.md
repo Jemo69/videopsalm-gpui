@@ -88,3 +88,12 @@ Caret blink close-up:
 **Honestly unmet / accepted:** caret animation repaints while focused (no notify path re-renders — documented in code); hidpi-fractional RandR scale division not plumbed (100% exact); mishpat (headless browser) has no target — desktop app, boaz-covered; `Drag-drop` agenda reordering untested headless.
 
 **Commits + PR:** branch `fix/dogfood-round2` → PR #13 (OPEN, unmerged per instruction). Commits: strip pager pages, review findings (blockers/majors/minors), live-panel monitor parity, missing-file video guard, verse overlay popup + min width, pure summary helper.
+
+## 2026-11-04 — UI parity pass (PR #14, branch fix/ui-parity-dividers-dropdowns-shadow)
+
+Scores (boaz, fresh build): sections 9/10, dropdowns 9/10, editor rows 9/10, shadow 8/10.
+Bug class: fixed-size containers + wrapping/shrinking content overflow.
+Tests: cargo test 161+235+5 green (new clamp_col_width test). Evidence: shots/parity/rust-divider-drag-proven.png, rust-editor-rows-fixed.png, rust-tab-text.png; PR body has 5 slop-media shots.
+Gaps (not in PR): ribbon hover-Hide, programme polish, scope-grid overlay, footer crowding at narrow center.
+Harness notes: fast xdotool drags never engage GPUI platform-drag (2px threshold + event timing) — drive slow (12px/150ms steps). App stderr is NOT visible via `boaz log` (WM log only) — instrument via status bar / screenshots.
+OpenCode reviews: mimo-v2.6-flash-free + deepseek-v4.1-flash-free dumped source, no verdict (too slow, don't block on them); meta/muse-spark-1.3 billing-blocked. agy -p works for pointed questions but timed out once under load.
