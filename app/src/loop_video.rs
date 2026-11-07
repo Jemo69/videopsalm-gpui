@@ -126,6 +126,18 @@ pub fn agenda_video_status(title: &str, playable: bool) -> String {
     }
 }
 
+/// Probe-driven rail status (injectable seam): `probe_fn` has exactly
+/// `probe`'s signature, so production passes `probe` itself and tests can
+/// simulate "H.264 present" without a binary fixture. The drive is the
+/// rail arm's previous inline pair verbatim — `Ok(Some)` means playable,
+/// anything else is the captioned tile — so behavior is unchanged.
+pub fn rail_video_status<F>(path: &Path, title: &str, probe_fn: F) -> String
+where
+    F: FnOnce(&Path) -> Result<Option<LoopSpec>, String>,
+{
+    agenda_video_status(title, matches!(probe_fn(path), Ok(Some(_))))
+}
+
 /// One full pass elapsed? Pure so the decided rule is headlessly pinned
 /// (the probe tie stays the only place that needs a file on disk). The
 /// loop wraps via `FrameClock`; callers playing a single pass stop here.
@@ -455,6 +467,33 @@ mod tests {
         assert!(LoopPlayer::start(&txt).is_none());
         assert!(LoopRun::start(&txt, false).is_none());
         assert!(LoopRun::start(&txt, true).is_none());
+    }
+
+    #[test]
+    fn simulated_ok_some_probe_drives_the_playable_status() {
+        // R2-VIDEO-01: the `Ok(Some)` arm was unreachable without a real
+        // H.264 binary. The injected `probe_fn` seam simulates it: only
+        // `Ok(Some)` lands on "project it to play." (the rail arm's drive,
+        // verbatim — same rule the tile message also comes through).
+        let playable = |_: &Path| {
+            Ok(Some(LoopSpec {
+                path: PathBuf::from("/v/clip.mp4"),
+                width: 640,
+                height: 360,
+                fps: (30, 1),
+                frame_count: 90,
+                duration_ms: 3_000,
+            }))
+        };
+        let msg = rail_video_status(Path::new("/v/clip.mp4"), "clip", playable);
+        assert_eq!(msg, "Added clip — project it to play.");
+        // Same seam, the other arms: tile verdicts stay honest.
+        let tile = |_: &Path| Ok(None);
+        let msg = rail_video_status(Path::new("/v/clip.webm"), "clip", tile);
+        assert!(msg.contains("captioned tile on the projector"));
+        let err = |_: &Path| Err("cannot open".to_string());
+        let msg = rail_video_status(Path::new("/v/gone.mp4"), "gone", err);
+        assert!(msg.contains("captioned tile on the projector"));
     }
 
     #[test]

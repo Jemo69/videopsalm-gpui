@@ -742,7 +742,9 @@ fn open_boot_db() -> rusqlite::Connection {
 /// `main()` both resolve through here so they can never disagree): reopen the
 /// most recent agenda when its file still exists and parses (every successful
 /// Save records it via `push_recent` in `save_agenda`); otherwise the bundled
-/// sample. A missing/corrupt recent falls back silently.
+/// sample. A missing/corrupt recent falls back silently. A restored agenda
+/// with an empty/blank title is retitled "New agenda" so the operator never
+/// sees a blank header or title bar (R2-S2-01).
 fn boot_agenda_from_lib(db: &rusqlite::Connection) -> (Agenda, Option<String>) {
     let restored: Option<(Agenda, String)> = library::list_recents(db, 1)
         .ok()
@@ -756,7 +758,12 @@ fn boot_agenda_from_lib(db: &rusqlite::Connection) -> (Agenda, Option<String>) {
                 .and_then(|a| a.validate().ok().map(|_| (a, p.clone())))
         });
     match restored {
-        Some((a, p)) => (a, Some(p)),
+        Some((mut a, p)) => {
+            if a.title.trim().is_empty() {
+                a.title = "New agenda".to_string();
+            }
+            (a, Some(p))
+        }
         None => (
             Agenda::from_json(AGENDA_SAMPLE)
                 .unwrap_or_else(|_| Agenda::new("New agenda")),
@@ -2226,29 +2233,6 @@ impl Root {
             .position(|s| slide_verse_id(&s.header).as_deref() == Some(verse_id))
     }
 
-    /// Projected slide index holding a Bible verse's text snippet.
-    #[allow(dead_code)] // CENTER Bible-row click handler, kept for rewire
-    fn slide_for_bible_text(&self, slides: &[Slide], verse_text: &str) -> Option<usize> {
-        let text = verse_text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        for len in [24usize, 12, 6] {
-            let snippet: String = text.chars().take(len).collect();
-            let snippet = snippet.trim();
-            if snippet.len() < 3 {
-                continue;
-            }
-            if let Some(i) = slides
-                .iter()
-                .position(|s| s.lines.iter().any(|l| l.contains(snippet)))
-            {
-                return Some(i);
-            }
-        }
-        None
-    }
-
     /// Click a CENTER song block: re-include when unchecked, then project
     /// the verse's first slide.
     fn goto_song_verse(&mut self, cx: &mut Context<Self>, item_idx: usize, verse_id: &str) {
@@ -2264,32 +2248,6 @@ impl Root {
         let target = self.slide_for_song_verse(&slides, verse_id).unwrap_or(0);
         self.goto_item_slide(cx, item_idx, target);
         self.sel_block = Some(verse_id.to_string());
-    }
-
-    /// Click a CENTER Bible row: re-include when unchecked, then project.
-    #[allow(dead_code)] // kept for CENTER Bible-row rewire
-    fn goto_bible_verse(
-        &mut self,
-        cx: &mut Context<Self>,
-        item_idx: usize,
-        verse_no: &str,
-        verse_text: &str,
-    ) {
-        let item_id = match self.agenda.items.get(item_idx) {
-            Some(it) => it.id.clone(),
-            None => return,
-        };
-        if self.is_hidden(&item_id, verse_no) {
-            self.set_hidden(&item_id, verse_no, false);
-        }
-        self.sel_block = Some(verse_no.to_string());
-        let slides = self.item_slides(item_idx);
-        let target = self
-            .slide_for_bible_text(&slides, verse_text)
-            .unwrap_or(0)
-            .min(slides.len().saturating_sub(1));
-        self.goto_item_slide(cx, item_idx, target);
-        self.sel_block = Some(verse_no.to_string());
     }
 
     /// Load the agenda item's song/Bible into the centre editor so the
@@ -2482,8 +2440,10 @@ impl Root {
                     // Preview/codec honesty: only H.264-in-MP4 plays in-app;
                     // anything else is named as a captioned tile on the
                     // projector (probe + picker filter deliberately unchanged).
-                    let playable = matches!(crate::loop_video::probe(&p), Ok(Some(_)));
-                    self.set_status(cx, crate::loop_video::agenda_video_status(&title, playable));
+                    self.set_status(
+                        cx,
+                        crate::loop_video::rail_video_status(&p, &title, crate::loop_video::probe),
+                    );
                     cx.notify();
                 } else {
                     self.set_status(
@@ -2510,10 +2470,19 @@ impl Root {
                 // constructor (stored URL only — no embed, no autoplay, no
                 // fetch). No valid http(s) URL on the clipboard keeps the
                 // paste-as-title instruction, agenda untouched.
+                // R2-VIDEO-02: the field is seeded with the *normalised*
+                // URL the card stores, not the raw clipboard text — so
+                // field-value == stored-URL (`website_agenda_item`
+                // re-normalises the field-bound value and the normaliser
+                // is idempotent on it).
                 let clip = cx.read_from_clipboard().and_then(|item| item.text());
-                match clip.as_deref().filter(|raw| crate::media_gallery::clipboard_has_link(raw)) {
+                match clip
+                    .as_deref()
+                    .filter(|raw| crate::media_gallery::clipboard_has_link(raw))
+                    .and_then(vp_core::schema::normalize_website_url)
+                {
                     Some(url) => {
-                        self.website_field.update(cx, |f, cx| f.set_text(url.trim(), cx));
+                        self.website_field.update(cx, |f, cx| f.set_text(&url, cx));
                         self.add_website_to_agenda(cx);
                     }
                     None => self.set_status(
@@ -5286,7 +5255,6 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
 
     // ------------------------------------------------------------- export
 
-    #[allow(dead_code)] // export actions, kept for menu rewire
     fn print_booklet(&mut self, cx: &mut Context<Self>) {
         // The booklet prints songs: resolve the songs chain, same as the
         // projector does for song items.
@@ -5346,7 +5314,6 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         }
     }
 
-    #[allow(dead_code)] // kept for menu rewire
     fn import_pptx(&mut self, cx: &mut Context<Self>) {
         let path = self.pptx_field.read(cx).text();
         match std::fs::read(path.trim()) {
@@ -12066,6 +12033,31 @@ mod tests {
     }
 
     #[test]
+    fn web_field_shows_the_normalised_url_the_card_stores() {
+        // R2-VIDEO-02: the add-web arm seeds the Website field with the
+        // normalised URL (not the raw clipboard text), so a schemeless
+        // paste shows exactly what the card stores.
+        let raw = "example.com/live";
+        let field = vp_core::schema::normalize_website_url(raw).expect("http gate");
+        assert_eq!(field, "https://example.com/live");
+        assert_ne!(field, raw.trim(), "guards the pre-fix raw-field behaviour");
+        let (kind, _, stored) = website_agenda_item(&field).expect("re-validates");
+        assert_eq!(kind, ItemKind::WebSite);
+        assert_eq!(stored, field);
+        // Other reasonable pastes agree too (field == stored after one
+        // normalisation pass through the constructor).
+        let yt = vp_core::schema::normalize_website_url("www.youtube.com/watch?v=x")
+            .expect("http gate");
+        let (kind, _, stored) = website_agenda_item(&yt).expect("re-validates");
+        assert_eq!(kind, ItemKind::YouTube);
+        assert_eq!(stored, yt);
+        let https = vp_core::schema::normalize_website_url("https://example.com/live")
+            .expect("http gate");
+        let (_, _, stored) = website_agenda_item(&https).expect("re-validates");
+        assert_eq!(stored, https);
+    }
+
+    #[test]
     fn boot_size_clamps_to_small_display() {
         // boaz headless screen: 1280x800 must not open a 1500x950 window.
         assert_eq!(
@@ -12290,6 +12282,29 @@ mod tests {
         let (a, p) = boot_agenda_from_lib(&db);
         assert!(p.is_none());
         assert_eq!(a.title, "Sunday Service (sample)");
+        // R2-S2-01: valid agenda with an empty title restores retitled
+        // "New agenda" (path still reported) — never a blank header.
+        let untitled = dir.join("untitled.json");
+        std::fs::write(
+            &untitled,
+            r#"{"version":1,"title":"","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, untitled.to_str().unwrap(), 40).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(untitled.to_str().unwrap()));
+        assert_eq!(a.title, "New agenda");
+        // A blank/whitespace title takes the same arm.
+        let blank = dir.join("blank.json");
+        std::fs::write(
+            &blank,
+            r#"{"version":1,"title":"   ","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, blank.to_str().unwrap(), 50).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(blank.to_str().unwrap()));
+        assert_eq!(a.title, "New agenda");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

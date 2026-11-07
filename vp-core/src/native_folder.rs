@@ -1252,4 +1252,31 @@ mod tests {
             "library lives in app folder"
         );
     }
+
+    #[test]
+    fn clean_clone_ships_public_domain_bibles_and_installer_reads_them() {
+        // R2-BIBLE-01 packaging guard (read-only, no network): a clean clone
+        // must carry the PD Bible texts at repo-root ./bibles and the Windows
+        // installer must read them from there — otherwise a fresh install
+        // opens with only the SAMPLE-EN/FR excerpts. NIV is copyrighted and
+        // stays import-only, so it is deliberately NOT asserted here.
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("manifest dir has a parent")
+            .to_path_buf();
+        for name in ["KJV.xml", "ASV.xml"] {
+            let p = root.join("bibles").join(name);
+            assert!(p.is_file(), "clean clone must carry {p:?} (PD Bible text)");
+        }
+        let iss = std::fs::read_to_string(root.join("windows").join("perez.iss"))
+            .expect("windows/perez.iss must be readable from the repo root");
+        assert!(
+            iss.contains(r#"Source: "bibles\*""#),
+            "installer must read the root bibles\\* source"
+        );
+        assert!(
+            !iss.contains(r#"gpui-app\bibles"#),
+            "installer must not reference the stale gpui-app\\bibles source"
+        );
+    }
 }
