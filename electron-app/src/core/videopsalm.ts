@@ -744,7 +744,7 @@ function songbookFiles(folder: string): string[] {
       : folder;
   return walkFiles(root, 0, 3).filter((file) => {
     const base = path.basename(file);
-    if (!/\.(?:json|vpc)$/i.test(base)) return false;
+    if (!/\.(?:json|vpc|vpcsetting)$/i.test(base)) return false;
     // When the caller selected a loose folder, root-level settings/styles
     // are not songbooks. Native songs always live under SongBooks/.
     if (/^(?:settings|commonsettings|(?:.*style))\.json$/i.test(base)) return false;

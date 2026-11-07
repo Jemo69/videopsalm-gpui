@@ -23,6 +23,18 @@ pub fn pick_file(title: &str, filters: &[(&str, &[&str])]) -> Option<PathBuf> {
     dlg.pick_file()
 }
 
+/// Pick one existing directory. Mirrors [`pick_file`] but opens the folder
+/// chooser so document-folder open gets a native dialog instead of a typed
+/// path. Returns `None` on cancel / headless — callers fall back to the
+/// saved path or the known-folder search and report on the status line.
+pub fn pick_folder(title: &str) -> Option<PathBuf> {
+    let mut dlg = rfd::FileDialog::new().set_title(title);
+    if let Some(start) = videopsalm_start_dir() {
+        dlg = dlg.set_directory(start);
+    }
+    dlg.pick_folder()
+}
+
 /// Basename suggestion for save dialogs: file name of the typed path when
 /// present, else `fallback`. Keeps full typed directories out of
 /// `rfd::set_file_name`, which expects a file name, not a path.
@@ -208,6 +220,14 @@ pub const VIDEO_FILTER: (&str, &[&str]) = (
     ],
 );
 
+/// Songbook extensions accepted by the songbook import picker. `.vpcsetting`
+/// is the same WinZip-AES container as `.vpc` (`is_vpc_file` in vp-core), so
+/// the picker must offer it for folder-scan parity.
+pub const SONGBOOK_FILTER: (&str, &[&str]) = ("Songbook", &["json", "vpc", "vpcsetting"]);
+
+/// Service-plan extensions accepted by the `.vpagd` import picker.
+pub const VPAGD_FILTER: (&str, &[&str]) = ("VideoPsalm plan", &["vpagd"]);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +242,18 @@ mod tests {
         ];
         assert_eq!(VIDEO_FILTER.0, "Videos");
         assert_eq!(VIDEO_FILTER.1, expected);
+    }
+
+    #[test]
+    fn songbook_filter_includes_vpcsetting() {
+        assert_eq!(SONGBOOK_FILTER.0, "Songbook");
+        assert_eq!(SONGBOOK_FILTER.1, ["json", "vpc", "vpcsetting"]);
+    }
+
+    #[test]
+    fn vpagd_filter_is_the_plan_extension() {
+        assert_eq!(VPAGD_FILTER.0, "VideoPsalm plan");
+        assert_eq!(VPAGD_FILTER.1, ["vpagd"]);
     }
 
     #[test]

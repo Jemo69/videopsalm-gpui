@@ -529,6 +529,18 @@ pub struct FolderBackground {
     pub source: String,
 }
 
+/// The background a folder scan should assign: prefer the entry that came
+/// from `RootStyle.json` (case-insensitive source match), else the first
+/// background discovered. Pure so both ports and both call sites (explicit
+/// open + boot scan) select the same file and the rule is unit-testable.
+/// `None` when the scan found no backgrounds.
+pub fn pick_style_background<'a>(backgrounds: &'a [FolderBackground]) -> Option<&'a FolderBackground> {
+    backgrounds
+        .iter()
+        .find(|b| b.source.to_ascii_lowercase().contains("rootstyle"))
+        .or_else(|| backgrounds.first())
+}
+
 /// The result of scanning a VideoPsalm document folder.
 #[derive(Clone, Debug, Default)]
 pub struct FolderScan {
@@ -543,7 +555,7 @@ pub struct FolderScan {
 
 fn is_songbook_name(base: &str) -> bool {
     let lower = base.to_lowercase();
-    if !(lower.ends_with(".json") || lower.ends_with(".vpc")) {
+    if !(lower.ends_with(".json") || lower.ends_with(".vpc") || lower.ends_with(".vpcsetting")) {
         return false;
     }
     // Root-level settings/styles are not songbooks. Native songs always
@@ -1251,6 +1263,48 @@ mod tests {
             app_library_path().ends_with("library.db"),
             "library lives in app folder"
         );
+    }
+
+    #[test]
+    fn songbook_name_accepts_vpcsetting_and_rejects_settings() {
+        assert!(is_songbook_name("Book.json"));
+        assert!(is_songbook_name("Book.vpc"));
+        assert!(is_songbook_name("Book.vpcsetting"));
+        assert!(is_songbook_name("Book.VPCSETTING"));
+        assert!(!is_songbook_name("settings.json"));
+        assert!(!is_songbook_name("CommonSettings.json"));
+        assert!(!is_songbook_name("RootStyle.json"));
+        assert!(!is_songbook_name("notes.txt"));
+        assert!(!is_songbook_name("Book.vpx"));
+    }
+
+    #[test]
+    fn style_background_prefers_rootstyle() {
+        let other = FolderBackground {
+            kind: "image".to_string(),
+            file: "/v/other.png".to_string(),
+            source: "SongStyle.json".to_string(),
+        };
+        let root = FolderBackground {
+            kind: "videoLoop".to_string(),
+            file: "/v/root.mp4".to_string(),
+            source: "RootStyle.json".to_string(),
+        };
+        let bgs = vec![other.clone(), root.clone()];
+        assert_eq!(pick_style_background(&bgs).map(|b| b.file.as_str()), Some("/v/root.mp4"));
+        // No RootStyle anywhere: first entry wins (stable scan order).
+        let first_only = vec![other.clone()];
+        assert_eq!(pick_style_background(&first_only).map(|b| b.file.as_str()), Some("/v/other.png"));
+        // Empty scan: no background to assign.
+        assert!(pick_style_background(&[]).is_none());
+        // Case-insensitive source match.
+        let lower = FolderBackground {
+            kind: "image".to_string(),
+            file: "/v/lower.png".to_string(),
+            source: "rootstyle.json".to_string(),
+        };
+        let mixed = vec![other, lower];
+        assert_eq!(pick_style_background(&mixed).map(|b| b.file.as_str()), Some("/v/lower.png"));
     }
 
     #[test]

@@ -1574,7 +1574,7 @@ impl Root {
         if let Some(vp_dir) = crate::file_picker::videopsalm_start_dir() {
             let folder = vp_dir.to_string_lossy().into_owned();
             let scan = vp_core::native_folder::scan_folder(&folder);
-            if !scan.songs.is_empty() || !scan.images.is_empty() || !scan.videos.is_empty() {
+            if !scan.songs.is_empty() || !scan.images.is_empty() || !scan.videos.is_empty() || !scan.backgrounds.is_empty() {
                 let (added, kept) = merge_native_songs(&mut this.songs, scan.songs);
                 let mut failed = 0;
                 for s in &this.songs {
@@ -1619,6 +1619,23 @@ impl Root {
                 }
                 for w in scan.errors.iter().take(3) {
                     msg.push_str(&format!(" [{w}]"));
+                }
+                // Style-driven background at boot (mirror Electron restore,
+                // announce=false): only fill an unset background, never
+                // stomp the operator's persisted choice.
+                if this.bg_kind == BackgroundKind::Color && this.bg_file.is_none() {
+                    if let Some(bg) = vp_core::native_folder::pick_style_background(&scan.backgrounds) {
+                        this.bg_kind = if bg.kind == "videoLoop" {
+                            BackgroundKind::VideoLoop
+                        } else {
+                            BackgroundKind::Image
+                        };
+                        this.bg_file = Some(PathBuf::from(&bg.file));
+                        this.bg_website = None;
+                        this.persist_layout_quiet();
+                        crate::presentation::publish(&this, cx);
+                        msg.push_str(&format!(" background → {}.", PathBuf::from(&bg.file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| bg.file.clone())));
+                    }
                 }
                 vp_note = Some(msg);
                 let q = this.search_field.read(cx).text();
@@ -5425,7 +5442,7 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// The file itself is never modified (read-only import).
     fn import_songbook_file(&mut self, cx: &mut Context<Root>) {
         let Some(picked) =
-            crate::file_picker::pick_file("Import songbook", &[("Songbook", &["json", "vpc"])])
+            crate::file_picker::pick_file("Import songbook", &[crate::file_picker::SONGBOOK_FILTER])
         else {
             self.set_status(cx, "Browse cancelled — no file chosen.");
             return;
@@ -5481,13 +5498,21 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     fn open_native_folder(&mut self, cx: &mut Context<Self>) {
         let typed = self.native_path_field.read(cx).text();
         let folder = if typed.trim().is_empty() {
-            // Same search the picker starts in: explicit override, the
-            // vendor's public-documents home, then the operator's own.
-            match crate::file_picker::videopsalm_start_dir() {
-                Some(dir) => dir.to_string_lossy().into_owned(),
-                None => {
-                    self.set_status(cx, "Enter the VideoPsalm folder path.");
-                    return;
+            // Empty field: offer the OS folder chooser first; headless
+            // cancel falls through to the known-folder search (explicit
+            // override, the vendor's public-documents home, then the
+            // operator's own).
+            if let Some(picked) = crate::file_picker::pick_folder("Select the VideoPsalm document folder") {
+                let s = picked.to_string_lossy().into_owned();
+                self.native_path_field.update(cx, |f, cx| f.set_text(&s, cx));
+                s
+            } else {
+                match crate::file_picker::videopsalm_start_dir() {
+                    Some(dir) => dir.to_string_lossy().into_owned(),
+                    None => {
+                        self.set_status(cx, "Enter the VideoPsalm folder path.");
+                        return;
+                    }
                 }
             }
         } else {
@@ -5529,6 +5554,22 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 },
             );
         }
+        // Style-driven background (mirror Electron applyVpFolderResult):
+        // explicit open always applies the RootStyle-preferred background.
+        if let Some(bg) = vp_core::native_folder::pick_style_background(&scan.backgrounds) {
+            self.bg_kind = if bg.kind == "videoLoop" {
+                BackgroundKind::VideoLoop
+            } else {
+                BackgroundKind::Image
+            };
+            self.bg_file = Some(PathBuf::from(&bg.file));
+            // One background at a time: a file background clears any
+            // website background (and vice versa in the UI).
+            self.bg_website = None;
+            self.persist_layout_quiet();
+            crate::presentation::publish(self, cx);
+            msg.push_str(&format!(" background → {}.", PathBuf::from(&bg.file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| bg.file.clone())));
+        }
         let q = self.search_field.read(cx).text();
         self.refresh_search(&q, cx);
         self.set_status(cx, msg);
@@ -5539,12 +5580,24 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// projections). Plan songs join the library only when it lacks them;
     /// plan media is extracted next to the plan file.
     fn import_native_plan(&mut self, cx: &mut Context<Self>) {
-        let path = self.native_path_field.read(cx).text();
-        let path = path.trim().to_string();
-        if path.is_empty() {
-            self.set_status(cx, "Enter the .vpagd plan path to import.");
-            return;
-        }
+        let typed = self.native_path_field.read(cx).text();
+        let path = if typed.trim().is_empty() {
+            // Empty field: offer the OS chooser (headless cancel falls
+            // through to the instruct message).
+            match crate::file_picker::pick_file("Import native plan", &[crate::file_picker::VPAGD_FILTER]) {
+                Some(picked) => {
+                    let s = picked.to_string_lossy().into_owned();
+                    self.native_path_field.update(cx, |f, cx| f.set_text(&s, cx));
+                    s
+                }
+                None => {
+                    self.set_status(cx, "Enter the .vpagd plan path to import.");
+                    return;
+                }
+            }
+        } else {
+            typed.trim().to_string()
+        };
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {

@@ -506,7 +506,7 @@ function registerIpc(): void {
   ipcMain.handle("vp:open-videopsalm-songbook", async () => {
     const res = await dialog.showOpenDialog({
       title: "Open a VideoPsalm songbook",
-      filters: [{ name: "VideoPsalm songbook", extensions: ["json", "vpc"] }],
+      filters: [{ name: "VideoPsalm songbook", extensions: ["json", "vpc", "vpcsetting"] }],
       properties: ["openFile"],
     });
     if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true };
