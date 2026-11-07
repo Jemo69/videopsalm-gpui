@@ -118,10 +118,21 @@ pub fn resolve_vpagd_path(
     PathBuf::from(vpagd_fallback_path(agenda_title))
 }
 
-/// Booklet fallback file name (pure): preserves the pre-dialog
+/// Booklet fallback file name: preserves the pre-dialog
 /// `print-booklet.html` name when the save picker is cancelled.
-pub fn booklet_fallback_filename() -> String {
-    "print-booklet.html".to_string()
+pub const BOOKLET_FALLBACK_FILENAME: &str = "print-booklet.html";
+
+/// Title-derived song export name (pure): `<song title>.json`, `song.json`
+/// when the title is blank. Illegal filename characters become `_` via
+/// [`sanitize_filename_stem`]. Suggested as the save dialog's initial name
+/// for the Export-song action.
+pub fn song_export_filename(title: &str) -> String {
+    let safe = sanitize_filename_stem(title);
+    if safe.is_empty() {
+        "song.json".to_string()
+    } else {
+        format!("{safe}.json")
+    }
 }
 
 /// Best-known VideoPsalm document folder, if it exists on this machine.
@@ -254,15 +265,23 @@ mod tests {
     }
 
     #[test]
+    fn song_export_filename_derives_from_title_and_sanitises() {
+        assert_eq!(song_export_filename("Amazing Grace"), "Amazing Grace.json");
+        assert_eq!(song_export_filename(""), "song.json");
+        assert_eq!(song_export_filename("   "), "song.json");
+        assert_eq!(song_export_filename("a/b"), "a_b.json");
+    }
+
+    #[test]
     fn booklet_fallbacks() {
-        assert_eq!(booklet_fallback_filename(), "print-booklet.html");
+        assert_eq!(BOOKLET_FALLBACK_FILENAME, "print-booklet.html");
         // Booklet cancel keeps fallback; picker wins when present.
         assert_eq!(
-            resolve_save_path("", None, &booklet_fallback_filename()),
+            resolve_save_path("", None, BOOKLET_FALLBACK_FILENAME),
             PathBuf::from("print-booklet.html")
         );
         assert_eq!(
-            resolve_save_path("", Some(PathBuf::from("/tmp/booklet.html")), &booklet_fallback_filename()),
+            resolve_save_path("", Some(PathBuf::from("/tmp/booklet.html")), BOOKLET_FALLBACK_FILENAME),
             PathBuf::from("/tmp/booklet.html")
         );
     }

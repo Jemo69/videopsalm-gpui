@@ -41,6 +41,7 @@ mod file_picker;
 mod icons;
 mod lyrics_doc;
 mod live_web;
+mod loop_video;
 mod media_gallery;
 mod monitors;
 mod ndi_out;
@@ -548,6 +549,12 @@ pub(crate) struct Root {
     /// while a video moves in preview/projector. One pump at a time — a
     /// standalone clip takes over the background loop.
     motion: Option<MotionPump>,
+    /// In-house H.264 decoder fallback (no ffmpeg binary): probed-playable
+    /// loops decode native and ride the same `motion_frame` channel.
+    loop_player: Option<crate::loop_video::LoopRun>,
+    /// Paused in-house loop (path + loop-play), so transport resume can
+    /// restart it — the native twin of the ffmpeg pump's tracked offset.
+    loop_paused: Option<(PathBuf, bool)>,
     /// Latest decoded-live frame (JPEG bytes) for the motion render.
     /// Replaced per tick; the custom loader decodes only this one, so no
     /// image cache can accumulate across a long play.
@@ -713,6 +720,49 @@ fn projected_index_for_row(display: &[Slide], projected: &[Slide], row: usize) -
 /// the headless smoke pass — one implementation, in `smoke`).
 fn merge_native_songs(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize, usize) {
     smoke::merge_into_library(songs, incoming)
+}
+
+/// Open the persistent library database (application support folder, falling
+/// back to in-memory when the folder cannot be created). Shared by
+/// `Root::build` and `main()` so the recents the boot-agenda rule reads are
+/// the same database the rest of the app writes.
+fn open_boot_db() -> rusqlite::Connection {
+    match vp_core::native_folder::ensure_app_dirs() {
+        Ok(base) => {
+            let path = base.join("library.db");
+            library::open(path.to_string_lossy().as_ref()).unwrap_or_else(|_| {
+                library::open_memory().expect("in-memory library")
+            })
+        }
+        Err(_) => library::open_memory().unwrap(),
+    }
+}
+
+/// Boot-agenda rule (single source; `Root::build` and the window-title call in
+/// `main()` both resolve through here so they can never disagree): reopen the
+/// most recent agenda when its file still exists and parses (every successful
+/// Save records it via `push_recent` in `save_agenda`); otherwise the bundled
+/// sample. A missing/corrupt recent falls back silently.
+fn boot_agenda_from_lib(db: &rusqlite::Connection) -> (Agenda, Option<String>) {
+    let restored: Option<(Agenda, String)> = library::list_recents(db, 1)
+        .ok()
+        .and_then(|recents| {
+            library::recent_agenda_to_restore(&recents, |p| std::path::Path::new(p).is_file())
+        })
+        .and_then(|p| {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|text| Agenda::from_json(&text).ok())
+                .and_then(|a| a.validate().ok().map(|_| (a, p.clone())))
+        });
+    match restored {
+        Some((a, p)) => (a, Some(p)),
+        None => (
+            Agenda::from_json(AGENDA_SAMPLE)
+                .unwrap_or_else(|_| Agenda::new("New agenda")),
+            None,
+        ),
+    }
 }
 
 /// VJSM parity: which column divider is being dragged (0 = left/library,
@@ -984,15 +1034,7 @@ impl Root {
         // `~/.local/share/videopsalm` on Linux) so songs, songbooks, and
         // imports survive restart. Falls back to in-memory when the folder
         // cannot be created (read-only profile, headless test).
-        let db = match vp_core::native_folder::ensure_app_dirs() {
-            Ok(base) => {
-                let path = base.join("library.db");
-                library::open(path.to_string_lossy().as_ref()).unwrap_or_else(|_| {
-                    library::open_memory().expect("in-memory library")
-                })
-            }
-            Err(_) => library::open_memory().unwrap(),
-        };
+        let db = open_boot_db();
         library::upsert_songbook(
             &db,
             &vp_core::schema::Songbook {
@@ -1003,8 +1045,12 @@ impl Root {
             },
         )
         .unwrap();
+        // Sample-overwrite guard: only insert bundled samples whose id is
+        // absent, so operator edits to a sample survive restarts. The
+        // stored copy still reaches the browser via the `all_songs` merge
+        // below (known ids replace in place).
         for s in &songs {
-            library::upsert_song(&db, s).unwrap();
+            library::upsert_song_if_absent(&db, s).unwrap();
         }
 
         let mut bibles = BibleLibrary::default();
@@ -1074,11 +1120,16 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
 
-        let agenda = Agenda::from_json(AGENDA_SAMPLE).unwrap_or_else(|_| Agenda::new("New agenda"));
+        let (agenda, restored_agenda_path) = boot_agenda_from_lib(&db);
 
         let search_field =
             cx.new(|cx| TextField::new("Keywords (title and lyrics) or number to search", cx));
-        let path_field = cx.new(|cx| TextField::new("agenda.json", cx));
+        let path_field = cx.new(|cx| {
+            TextField::new(
+                restored_agenda_path.as_deref().unwrap_or("agenda.json"),
+                cx,
+            )
+        });
         let alert_field = cx.new(|cx| TextField::new("Alert text...", cx));
         let book_field = cx.new(|cx| TextField::new("Book (e.g. John / Jean)...", cx));
         let verse_field = cx.new(|cx| TextField::new("16-18", cx));
@@ -1228,6 +1279,8 @@ impl Root {
             live_view_url: None,
             video_posters: HashMap::new(),
             motion: None,
+            loop_player: None,
+            loop_paused: None,
             motion_frame: None,
             motion_ticking: false,
             pptx_info: String::new(),
@@ -2405,10 +2458,40 @@ impl Root {
                 cx,
                 "Add slideshow image… is not wired yet — drop the file onto the agenda.",
             ),
-            "add-video" => self.set_status(
-                cx,
-                "Add standalone video… is not wired yet — drop the file onto the agenda.",
-            ),
+            "add-video" => {
+                // Rail video: pick with the Videos filter, then append the
+                // same agenda video item the gallery "+ Agenda" constructor
+                // builds (stem title + ItemRef::File via add_item). Cancel
+                // changes nothing — the instructive guidance stays, no error.
+                if let Some(p) = crate::file_picker::pick_file(
+                    "Add standalone video",
+                    &[crate::file_picker::VIDEO_FILTER],
+                ) {
+                    let title = crate::media_gallery::picked_video_title(&p);
+                    self.agenda_dirty = true;
+                    let id = agenda_ops::add_item(
+                        &mut self.agenda,
+                        ItemKind::Video,
+                        title.clone(),
+                        ItemRef::File {
+                            file: p.to_string_lossy().into_owned(),
+                        },
+                    );
+                    self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+                    self.sync_editor_to_item(cx, self.sel_item.unwrap_or(usize::MAX));
+                    // Preview/codec honesty: only H.264-in-MP4 plays in-app;
+                    // anything else is named as a captioned tile on the
+                    // projector (probe + picker filter deliberately unchanged).
+                    let playable = matches!(crate::loop_video::probe(&p), Ok(Some(_)));
+                    self.set_status(cx, crate::loop_video::agenda_video_status(&title, playable));
+                    cx.notify();
+                } else {
+                    self.set_status(
+                        cx,
+                        "Add video cancelled — no file chosen. Drop the file onto the agenda, or use Videos gallery ▸ + Agenda.",
+                    );
+                }
+            }
             "add-audio" => self.set_status(
                 cx,
                 "Add audio file… is not wired yet — drop the file onto the agenda.",
@@ -2421,7 +2504,24 @@ impl Root {
                 cx,
                 "Add document… is not wired yet — drop the Word/Excel/PDF onto the agenda.",
             ),
-            "add-web" => self.add_website_to_agenda(cx),
+            "add-web" => {
+                // Rail web: the clipboard link becomes an offline link-card
+                // agenda item through the existing Website-field
+                // constructor (stored URL only — no embed, no autoplay, no
+                // fetch). No valid http(s) URL on the clipboard keeps the
+                // paste-as-title instruction, agenda untouched.
+                let clip = cx.read_from_clipboard().and_then(|item| item.text());
+                match clip.as_deref().filter(|raw| crate::media_gallery::clipboard_has_link(raw)) {
+                    Some(url) => {
+                        self.website_field.update(cx, |f, cx| f.set_text(url.trim(), cx));
+                        self.add_website_to_agenda(cx);
+                    }
+                    None => self.set_status(
+                        cx,
+                        "Website item: type a page URL first (Background > Website field — example.com/live or a YouTube link).",
+                    ),
+                }
+            }
             "save" => self.save_agenda(cx),
             "save-as" => {
                 self.agenda_file_open = true;
@@ -2993,18 +3093,28 @@ impl Root {
     /// Returns true when a pump was running. The last frame stays as the
     /// poster still — the room never flashes to black.
     pub(crate) fn stop_motion(&mut self) -> bool {
+        let mut was = false;
         if let Some(mut pump) = self.motion.take() {
             pump.stop();
-            self.motion_frame = None;
-            true
-        } else {
-            false
+            was = true;
         }
+        // Dropping the in-house run stops its decoder thread (Drop flag).
+        if self.loop_player.take().is_some() {
+            was = true;
+        }
+        // A paused loop also holds a frozen frame; after navigation it
+        // must go, or it would keep rendering behind the next slide.
+        let was_paused = self.loop_paused.take().is_some();
+        if was || was_paused {
+            self.motion_frame = None;
+        }
+        was
     }
 
-    /// Play `path` in-app when ffmpeg exists, else report why not. True =
-    /// motion pump running (caller marks launched); false = caller falls
-    /// back (poster still + OS player for standalone, still for loops).
+    /// Play `path` in-app — ffmpeg pipe first (unchanged when it works),
+    /// in-house H.264 decoder when ffmpeg is missing or fails. True =
+    /// motion running (caller marks launched); false = caller falls back
+    /// (poster still + OS player for standalone, still for loops).
     /// Idempotent: the same live source re-arms the tick only.
     pub(crate) fn ensure_motion_for(
         &mut self,
@@ -3019,6 +3129,14 @@ impl Root {
             self.ensure_motion_tick(cx);
             return true;
         }
+        // Native loop already playing this source: same re-arm rule.
+        let same_loop = self.loop_player.as_ref().is_some_and(|l| {
+            l.path.as_path() == path && l.loop_play == loop_play
+        });
+        if same_loop {
+            self.ensure_motion_tick(cx);
+            return true;
+        }
         self.stop_motion();
         match MotionPump::start(path, MOTION_FPS, loop_play, 0.0) {
             Ok(pump) => {
@@ -3027,18 +3145,49 @@ impl Root {
                 self.set_status(cx, format!("Playing in-app — {}.", path.display()));
                 true
             }
-            Err(e) => {
-                self.set_status(cx, format!("In-app motion off ({e})"));
-                false
-            }
+            Err(e) => match crate::loop_video::LoopRun::start(path, loop_play) {
+                Some(run) => {
+                    self.loop_player = Some(run);
+                    self.ensure_motion_tick(cx);
+                    self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                    true
+                }
+                None => {
+                    self.set_status(cx, format!("In-app motion off ({e})"));
+                    false
+                }
+            },
         }
     }
 
     /// Pause/resume in-app motion (transport button). True when a pump
     /// owned the press. Pause kills the pump and freezes the clock; resume
-    /// restarts at the tracked offset — universal, no IPC.
+    /// restarts at the tracked offset — universal, no IPC. The native
+    /// loop twin: pause stashes (path, loop-play) and drops the decoder
+    /// thread; resume restarts it from zero (no position tracking yet),
+    /// and its frozen JPEG stays frozen via `loop_paused` + `motion_frame`.
     pub(crate) fn motion_toggle_pause(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(pump) = self.motion.as_mut() else {
+            // No ffmpeg pump: delegate to the native loop / its pause stash.
+            if let Some(run) = self.loop_player.take() {
+                let (path, loop_play) = (run.path.clone(), run.loop_play);
+                self.loop_paused = Some((path, loop_play));
+                self.set_status(cx, "Paused — still frame held.");
+                cx.notify();
+                return true;
+            }
+            if let Some((path, loop_play)) = self.loop_paused.take() {
+                match crate::loop_video::LoopRun::start(&path, loop_play) {
+                    Some(run) => {
+                        self.loop_player = Some(run);
+                        self.ensure_motion_tick(cx);
+                        self.set_status(cx, "Playing in-app.");
+                    }
+                    None => self.set_status(cx, "Resume failed."),
+                }
+                cx.notify();
+                return true;
+            }
             return false;
         };
         if pump.paused() {
@@ -3065,9 +3214,11 @@ impl Root {
     /// 1000/fps tick loop while a pump runs (mirrors `ensure_clock_tick`).
     /// Each piped frame replaces the live bytes + republishes, so preview
     /// and projector move together; an ended standalone clip stops the
-    /// pump and keeps its last frame as a still.
+    /// pump and keeps its last frame as a still. The native loop polls
+    /// through the same channel (decoded JPEG bytes, clock-wrapped);
+    /// a single-pass loop run ends here exactly like ffmpeg's clip end.
     fn ensure_motion_tick(&mut self, cx: &mut Context<Self>) {
-        if self.motion_ticking || self.motion.is_none() {
+        if self.motion_ticking || (self.motion.is_none() && self.loop_player.is_none()) {
             return;
         }
         self.motion_ticking = true;
@@ -3083,13 +3234,20 @@ impl Root {
                         .update(&mut async_cx, |this: &mut Root, cx| {
                             // Poll first (borrows only the pump), then act:
                             // method calls below need `this` free.
-                            let mut ended = this.motion.is_none();
+                            let mut ended = this.motion.is_none() && this.loop_player.is_none();
                             let mut fresh: Option<Arc<Vec<u8>>> = None;
                             if let Some(pump) = this.motion.as_mut() {
                                 if let Some(frame) = pump.read_frame() {
                                     fresh = Some(Arc::new(frame));
                                 }
                                 if !pump.alive() {
+                                    ended = true;
+                                }
+                            } else if let Some(run) = this.loop_player.as_ref() {
+                                if let Some(frame) = run.frame_jpeg() {
+                                    fresh = Some(frame);
+                                }
+                                if run.finished() {
                                     ended = true;
                                 }
                             }
@@ -3102,7 +3260,8 @@ impl Root {
                                 this.set_status(cx, "Video ended — last frame held.");
                                 this.republish(cx);
                             }
-                            let done = ended || this.motion.is_none();
+                            let done = ended
+                                || (this.motion.is_none() && this.loop_player.is_none());
                             if done {
                                 this.motion_ticking = false;
                             }
@@ -3168,7 +3327,9 @@ impl Root {
         // standalone clip owns the pump; otherwise motion stops and the
         // poster still stands.
         if standalone_live {
-            if self.motion.as_ref().is_some_and(|m| m.loop_play) {
+            if self.motion.as_ref().is_some_and(|m| m.loop_play)
+                || self.loop_player.as_ref().is_some_and(|l| l.loop_play)
+            {
                 self.stop_motion();
             }
         } else if self.bg_kind == BackgroundKind::VideoLoop {
@@ -3816,6 +3977,41 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 );
             }
             Err(e) => self.set_status(cx, format!("Could not save: {e}")),
+        }
+    }
+
+    /// Export the selected song as a pretty-printed Song JSON file via the
+    /// OS save dialog. The export does not touch the library copy and does
+    /// not clear the dirty flag — it is a copy, not a save. Cancel / headless
+    /// keeps prior behavior silently (no write, no status change).
+    fn export_song_document(&mut self, cx: &mut Context<Self>) {
+        let Some(song) = self
+            .sel_song
+            .and_then(|si| self.songs.get(si))
+            .cloned()
+        else {
+            self.set_status(cx, "No song selected — nothing to export.");
+            return;
+        };
+        let suggested = crate::file_picker::song_export_filename(&song.title);
+        let picked = crate::file_picker::pick_save(
+            "Export song",
+            &[("Song JSON", &["json"])],
+            &suggested,
+        );
+        let Some(path) = picked else { return };
+        match serde_json::to_string_pretty(&song)
+            .map_err(|e| e.to_string())
+            .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()))
+        {
+            Ok(_) => {
+                // NOTE: song exports are deliberately NOT pushed to recents.
+                // Recents drive boot restore (newest-only); a song path as
+                // newest recent would fail agenda parse and silently boot
+                // the sample instead of the saved agenda (R2-SONG-01).
+                self.set_status(cx, format!("Exported {} to {}.", song.title, path.display()));
+            }
+            Err(e) => self.set_status(cx, format!("Export failed: {e}")),
         }
     }
 
@@ -5135,12 +5331,12 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         let picked = crate::file_picker::pick_save(
             "Export booklet",
             &[("HTML", &["html"])],
-            &crate::file_picker::booklet_fallback_filename(),
+            crate::file_picker::BOOKLET_FALLBACK_FILENAME,
         );
         let path = crate::file_picker::resolve_save_path(
             "",
             picked,
-            &crate::file_picker::booklet_fallback_filename(),
+            crate::file_picker::BOOKLET_FALLBACK_FILENAME,
         )
         .to_string_lossy()
         .to_string();
@@ -7138,6 +7334,9 @@ impl Root {
         let song_kids: Vec<Div> = vec![
             btn(ui, cx, "Save song", false, |this, _, _, cx| {
                 this.save_song_document(cx);
+            }),
+            btn(ui, cx, "Export song…", false, |this, _, _, cx| {
+                this.export_song_document(cx);
             }),
             btn(
                 ui,
@@ -9157,7 +9356,7 @@ impl Root {
                 ui,
                 cx,
                 &self.t("import_bible"),
-                "Import a Bible translation file (.xml or .vpc); empty field opens the file picker. Bibles are import-only by design (no export).",
+                "Import Bible translation (.xml or .vpc). Import-only by design (no export).",
                 false,
                 |this, _, _, cx| {
                     this.import_bible_file(cx);
@@ -11748,11 +11947,16 @@ fn main() {
             let bounds = Bounds::centered(None, size(px(boot_w), px(boot_h)), cx);
             // OS chrome carries the agenda name, like the original's
             // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
-            // Same sample Root::build opens, so the two can never disagree.
-            let boot_title: String = serde_json::from_str::<serde_json::Value>(AGENDA_SAMPLE)
-                .ok()
-                .and_then(|v| v.get("title")?.as_str().map(str::to_string))
-                .unwrap_or_else(|| "New agenda".to_string());
+            // Same agenda Root::build opens, so the two can never disagree.
+            let boot_title: String = {
+                let db = open_boot_db();
+                let (agenda, _) = boot_agenda_from_lib(&db);
+                if agenda.title.trim().is_empty() {
+                    "New agenda".to_string()
+                } else {
+                    agenda.title
+                }
+            };
             let window_title: gpui::SharedString =
                 format!("{boot_title} - Perez RS").into();
             cx.open_window(
@@ -12052,6 +12256,75 @@ mod tests {
         let again = bible_agenda_item(&r, Some("ASV".to_string()));
         assert_eq!(bi.title, again.title);
         assert_eq!(bi.kind, again.kind);
+    }
+
+    #[test]
+    fn boot_agenda_restores_most_recent_then_falls_back() {
+        let dir = std::env::temp_dir().join(format!("vp-boot-agenda-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = library::open_memory().unwrap();
+        // No recents: bundled sample, no restored path.
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        // Most recent points at a missing file: still the sample.
+        library::push_recent(&db, dir.join("gone.json").to_str().unwrap(), 10).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        // Most recent is a valid agenda file: restored, path reported.
+        let good = dir.join("sunday.json");
+        std::fs::write(
+            &good,
+            r#"{"version":1,"title":"Easter Service","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, good.to_str().unwrap(), 20).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(good.to_str().unwrap()));
+        assert_eq!(a.title, "Easter Service");
+        // Corrupt newest shadows the good one (newest-or-sample rule).
+        library::push_recent(&db, dir.join("bad.json").to_str().unwrap(), 30).unwrap();
+        std::fs::write(dir.join("bad.json"), "{not json").unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boot_agenda_ignores_legacy_song_recent() {
+        // R2-SONG-01: pre-fix builds pushed song exports into the same
+        // recents table; a song path as newest must degrade to the sample
+        // (never a crash, never song content as agenda), and a newer agenda
+        // save restores normally.
+        let dir = std::env::temp_dir()
+            .join(format!("vp-boot-song-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = library::open_memory().unwrap();
+        let song = dir.join("amazing.json");
+        std::fs::write(
+            &song,
+            r#"{"id":"s1","title":"Amazing Grace","verses":[]}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, song.to_str().unwrap(), 10).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        let good = dir.join("sunday.json");
+        std::fs::write(
+            &good,
+            r#"{"version":1,"title":"Easter Service","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, good.to_str().unwrap(), 20).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(good.to_str().unwrap()));
+        assert_eq!(a.title, "Easter Service");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

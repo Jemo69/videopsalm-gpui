@@ -19,7 +19,7 @@ gpui-app/target/
 electron-app/node_modules/
 electron-app/dist/
 electron-app/release-pkg/
-gpui-app/bibles/*.xml
+gpui-app/bibles/NIV.xml
 electron-app/data/bibles/*.xml
 gpui-app/media/
 

@@ -8,9 +8,9 @@
 //! same tile, not the byte source of the ico.
 
 fn main() {
-    println!("cargo:rerun-if-changed=../windows/perez.ico");
     #[cfg(target_os = "windows")]
     {
+        println!("cargo:rerun-if-changed=../windows/perez.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon("../windows/perez.ico");
         if let Err(e) = res.compile() {

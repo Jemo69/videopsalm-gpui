@@ -111,6 +111,28 @@ pub fn probe(path: &Path) -> Result<Option<LoopSpec>, String> {
     Ok(None)
 }
 
+/// Rail video preview honesty (pure, headlessly pinned): the status line
+/// shown after a video is picked for the agenda. `playable` is `probe`'s
+/// verdict — `Ok(Some(_))` means H.264-in-MP4 and the projector will play
+/// it in-app. Anything else must be named as it will actually appear — a
+/// captioned tile — never implied to play.
+pub fn agenda_video_status(title: &str, playable: bool) -> String {
+    if playable {
+        format!("Added {title} — project it to play.")
+    } else {
+        format!(
+            "Added {title} — not H.264-MP4: it will show as a captioned tile on the projector."
+        )
+    }
+}
+
+/// One full pass elapsed? Pure so the decided rule is headlessly pinned
+/// (the probe tie stays the only place that needs a file on disk). The
+/// loop wraps via `FrameClock`; callers playing a single pass stop here.
+pub fn loop_passed(frames: u64, frame_ms: u64, elapsed_ms: u64) -> bool {
+    elapsed_ms >= frames.saturating_mul(frame_ms)
+}
+
 /// A decoded RGB frame ready for GPUI upload, with its loop position.
 #[derive(Clone)]
 pub struct RgbFrame {
@@ -129,6 +151,23 @@ pub struct BgFrame {
     /// Opaque BGRA, row-major, `width*height*4` bytes, behind `Arc`
     /// so the snapshot clone per repaint is a pointer bump.
     pub bgra: std::sync::Arc<Vec<u8>>,
+}
+
+/// Encode a decoded frame exactly the way the projector's `motion_img`
+/// decodes it (JPEG bytes through an uncached custom loader), so native
+/// loop frames ride the same `video_frame` channel as ffmpeg-piped ones.
+/// `None` = corrupt buffer or encode failure — the caller keeps the
+/// poster/tile, never a broken image.
+pub fn frame_to_jpeg(frame: &RgbFrame) -> Option<std::sync::Arc<Vec<u8>>> {
+    let buf = image::ImageBuffer::from_raw(frame.width, frame.height, frame.rgb.clone())?;
+    let img = image::DynamicImage::ImageRgb8(buf);
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg)
+        .ok()?;
+    if out.is_empty() {
+        return None;
+    }
+    Some(std::sync::Arc::new(out))
 }
 
 /// Convert a decoded frame to projector pixels (opaque alpha).
@@ -185,6 +224,56 @@ impl LoopPlayer {
     pub fn frame_now(&self, elapsed_ms: u64) -> Option<RgbFrame> {
         let _want = self.clock.frame_at(elapsed_ms);
         self.latest.lock().ok()?.clone()
+    }
+
+    /// One full pass elapsed since loop start (see [`loop_passed`]).
+    /// Looping callers ignore this (`loop_play=true`); single-pass
+    /// callers stop here and keep the last frame as a still.
+    pub fn finished(&self, elapsed_ms: u64) -> bool {
+        loop_passed(self.clock.frames, self.clock.frame_ms, elapsed_ms)
+    }
+}
+
+/// One live in-house loop run, owned by `Root` while motion is active:
+/// the probed player plus the wall-clock origin, source path and
+/// loop-play mode. The ffmpeg-pump alternative is `MotionPump` in
+/// `vp_core::media`; when it cannot start, this session is the fallback
+/// so H.264-in-MP4 still moves without any external binary. `None` from
+/// [`LoopRun::start`] = the probe said tile (see [`probe`]).
+pub struct LoopRun {
+    pub path: PathBuf,
+    pub loop_play: bool,
+    started: std::time::Instant,
+    player: LoopPlayer,
+}
+
+impl LoopRun {
+    /// Start decoding `path` (already probed). `None` when not playable —
+    /// the caller keeps the honest tile, same as before.
+    pub fn start(path: &Path, loop_play: bool) -> Option<Self> {
+        Some(LoopRun {
+            path: path.to_path_buf(),
+            loop_play,
+            started: std::time::Instant::now(),
+            player: LoopPlayer::start(path)?,
+        })
+    }
+
+    pub fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis().min(u64::MAX as u128) as u64
+    }
+
+    /// Current decoded frame as projector-ready JPEG bytes
+    /// (see [`frame_to_jpeg`]), wrapped by clock position.
+    pub fn frame_jpeg(&self) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.player
+            .frame_now(self.elapsed_ms())
+            .and_then(|f| frame_to_jpeg(&f))
+    }
+
+    /// Single-pass runs stop here; looping runs wrap via the clock.
+    pub fn finished(&self) -> bool {
+        !self.loop_play && self.player.finished(self.elapsed_ms())
     }
 }
 
@@ -328,6 +417,82 @@ mod tests {
         assert_eq!(spec, None);
         let missing = dir.join("nope.mp4");
         assert!(probe(&missing).is_err());
+    }
+
+    #[test]
+    fn agenda_video_status_names_playable_vs_tile_honestly() {
+        // Playable H.264-MP4: the same message the gallery "+ Agenda"
+        // constructor uses — picked and projected identically.
+        assert_eq!(
+            agenda_video_status("sunset", true),
+            "Added sunset — project it to play."
+        );
+        // Anything else: named as the captioned tile it will be — the
+        // spec's honesty rule (never implied to play).
+        let msg = agenda_video_status("clip", false);
+        assert!(
+            msg.contains("it will show as a captioned tile on the projector"),
+            "non-H264 must be named as a captioned tile, got: {msg}"
+        );
+        assert!(!msg.contains("project it to play"));
+    }
+
+    #[test]
+    fn probe_result_drives_the_honesty_status() {
+        // Regression tie: the rail arm's `matches!(probe(..), Ok(Some(_)))`
+        // verdict feeds the status — a non-MP4 file therefore lands on the
+        // captioned-tile message without any picker/probe change.
+        let dir = std::env::temp_dir().join("perez-loop-probe-status");
+        let _ = std::fs::create_dir_all(&dir);
+        let txt = dir.join("note.txt");
+        std::fs::write(&txt, b"just lyrics").unwrap();
+        let playable = matches!(probe(&txt), Ok(Some(_)));
+        assert!(!playable);
+        let msg = agenda_video_status("note", playable);
+        assert!(msg.contains("captioned tile on the projector"));
+        // Same verdict gates the frame pump: a non-MP4 file gets no
+        // decoder thread at all, so pressure on the wire is safe.
+        assert!(LoopPlayer::start(&txt).is_none());
+        assert!(LoopRun::start(&txt, false).is_none());
+        assert!(LoopRun::start(&txt, true).is_none());
+    }
+
+    #[test]
+    fn loop_passed_fires_exactly_when_one_pass_elapsed() {
+        // 90 frames × 34 ms = 3060 ms per loop; nothing earlier, done at
+        // the wrap point.
+        assert!(!loop_passed(90, 34, 3059));
+        assert!(loop_passed(90, 34, 3060));
+        assert!(loop_passed(90, 34, 60_000));
+        // A 1-frame pass ends on the next millisecond, and LoopPlayer
+        // can never be built with a degenerate clock (FrameClock
+        // rejects 0 frames / 0 ms), so this state is unreachable.
+        assert!(loop_passed(1, 1, 1));
+    }
+
+    #[test]
+    fn frame_to_jpeg_decodes_through_the_projector_way() {
+        // `motion_img` decodes with `load_from_memory_with_format(Jpeg)`;
+        // our encoder must produce bytes that survive exactly that call.
+        let frame = RgbFrame {
+            width: 4,
+            height: 2,
+            rgb: vec![[200u8, 40, 20]; 8].concat(),
+        };
+        let jpeg = frame_to_jpeg(&frame).expect("a solid frame encodes");
+        assert!(!jpeg.is_empty());
+        let back = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)
+            .expect("the projector decoder reads it");
+        assert_eq!(back.width(), 4);
+        assert_eq!(back.height(), 2);
+        // Corrupt geometry (buffer too short for the claimed size) is
+        // rejected, never panics: the caller shows poster/tile instead.
+        let bad = RgbFrame {
+            width: 10,
+            height: 10,
+            rgb: vec![0u8; 3],
+        };
+        assert!(frame_to_jpeg(&bad).is_none());
     }
 
     #[test]

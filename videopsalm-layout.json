@@ -1,7 +1,7 @@
 {
   "theme_id": "light",
   "lang": "en",
-  "ribbon": "background",
+  "ribbon": "edit",
   "accent_override": null,
   "fg_override": null,
   "style_level": "Song",
@@ -14,9 +14,10 @@
   "show_number": true,
   "show_chords_proj": false,
   "clock_overlay": false,
-  "bg_kind": "color",
+  "bg_kind": "videoLoop",
   "bg_fit": "cover",
-  "bg_file": "",
+  "bg_file": "/home/jemo/.local/share/videopsalm/Media/Videos/Egon_Cool_Rainbow_Lines_Plus_4k (2).mp4",
+  "bg_website": "",
   "font_family": "Sans",
   "font_size": 44.0,
   "bold": false,
@@ -37,8 +38,16 @@
   "bible_search": "keyword",
   "aspect_ratio": "16x10",
   "projector_display": 0,
+  "projector_monitor": null,
   "gallery_images": [],
-  "gallery_videos": [],
-  "gallery_expanded": false,
-  "gallery_keep_open": false
+  "gallery_videos": [
+    "/home/jemo/.local/share/videopsalm/Media/Videos/Egon_Cool_Rainbow_Lines_Plus_4k (2).mp4"
+  ],
+  "gallery_keep_open": false,
+  "live_web": false,
+  "agenda_h": null,
+  "preview_h": 308.00012,
+  "left_w": 360.0,
+  "right_w": 560.0,
+  "ribbon_hidden": false
 }

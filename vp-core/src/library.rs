@@ -181,6 +181,18 @@ pub fn upsert_song(conn: &Connection, song: &Song) -> Result<(), rusqlite::Error
     Ok(())
 }
 
+/// Insert a song only when its id is absent from the library; returns
+/// `true` when the row was inserted, `false` when an existing row won and
+/// was left untouched. Boot uses this for the bundled samples so operator
+/// edits to a sample survive restarts instead of being overwritten.
+pub fn upsert_song_if_absent(conn: &Connection, song: &Song) -> Result<bool, rusqlite::Error> {
+    if get_song(conn, &song.id)?.is_some() {
+        return Ok(false);
+    }
+    upsert_song(conn, song)?;
+    Ok(true)
+}
+
 fn row_to_song(row: &rusqlite::Row) -> Result<Song, rusqlite::Error> {
     let data: String = row.get("data")?;
     // Loud on corrupt blobs: silent empty-song defaults collide on id "".
@@ -596,6 +608,21 @@ pub fn list_recents(conn: &Connection, limit: usize) -> Result<Vec<String>, rusq
     rows.collect()
 }
 
+/// Boot-restore rule (pure): the single most recent path counts only when
+/// `exists` reports it still on disk. A missing/unreadable newest entry
+/// yields `None` (the caller keeps the bundled sample agenda) — older
+/// recents are never substituted, so a deleted newest file cannot silently
+/// resurrect a stale plan.
+pub fn recent_agenda_to_restore(
+    recents: &[String],
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    recents
+        .first()
+        .filter(|p| !p.trim().is_empty() && exists(p))
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,6 +823,55 @@ mod tests {
         assert_eq!(
             list_recents(&conn, 10).unwrap(),
             vec!["/a/sunday.vps".to_string(), "/a/friday.vps".to_string()]
+        );
+    }
+
+    #[test]
+    fn upsert_song_if_absent_keeps_operator_edits() {
+        let conn = open_memory().unwrap();
+        upsert_songbook(
+            &conn,
+            &Songbook {
+                id: "b1".into(),
+                name: "Main".into(),
+                abbrev: "M".into(),
+                read_only: false,
+            },
+        )
+        .unwrap();
+        let pristine = song("s1", "Sample Title", "Old Author", "1", "01", "b1");
+        // Absent id inserts.
+        assert!(upsert_song_if_absent(&conn, &pristine).unwrap());
+        // Operator edits the stored copy.
+        let mut edited = pristine.clone();
+        edited.title = "Operator Title".into();
+        upsert_song(&conn, &edited).unwrap();
+        // Boot re-offers the pristine sample: the edit must survive.
+        assert!(!upsert_song_if_absent(&conn, &pristine).unwrap());
+        assert_eq!(
+            get_song(&conn, "s1").unwrap().unwrap().title,
+            "Operator Title"
+        );
+    }
+
+    #[test]
+    fn recent_agenda_to_restore_takes_newest_existing_only() {
+        let recents = vec!["/new/agenda.json".to_string(), "/old/agenda.json".to_string()];
+        // Newest on disk: restored.
+        assert_eq!(
+            recent_agenda_to_restore(&recents, |p| p == "/new/agenda.json"),
+            Some("/new/agenda.json".to_string())
+        );
+        // Newest deleted: sample fallback, never the older recent.
+        assert_eq!(
+            recent_agenda_to_restore(&recents, |p| p == "/old/agenda.json"),
+            None
+        );
+        // Blank/empty recents: nothing to restore.
+        assert_eq!(recent_agenda_to_restore(&[], |_| true), None);
+        assert_eq!(
+            recent_agenda_to_restore(&["  ".to_string()], |_| true),
+            None
         );
     }
 
