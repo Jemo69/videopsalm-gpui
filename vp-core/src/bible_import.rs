@@ -30,7 +30,8 @@
 //! instead of reproducing the junk — noted at each site.
 
 use crate::bible_data::{Translation, TranslationBook};
-use crate::bible_ref::{BOOKS, match_book};
+use crate::bible_ref::{match_book, BOOKS};
+use crate::native_songbook::{member_text, parse as parse_vpjson, VpJson};
 use std::collections::BTreeMap;
 
 /// Import failure; `Faithful` carries the original's operator-facing text.
@@ -260,7 +261,9 @@ fn adjust_spaces(raw: &str, french: bool) -> String {
         s.push(c);
     }
     // "..." → "…" and "…." → "…"
-    s = s.replace("...", "\u{2026}").replace("\u{2026}.", "\u{2026}");
+    s = s
+        .replace("...", "\u{2026}")
+        .replace("\u{2026}.", "\u{2026}");
     if french {
         s = s.replace('*', "");
         s = s.replace("oe", "\u{153}");
@@ -282,7 +285,8 @@ fn adjust_spaces(raw: &str, french: bool) -> String {
     for marker in ["</p>", "</h2>"] {
         s = s.replace(marker, "");
     }
-    s.replace("'\"", "' \"").replace("\"'", "\" '")
+    s.replace("'\"", "' \"")
+        .replace("\"'", "\" '")
         .trim()
         .to_string()
 }
@@ -292,7 +296,10 @@ fn adjust_spaces(raw: &str, french: bool) -> String {
 /// Runs repeat: `"¹ ¹² Text"` → `"Text"`. Result is trimmed both ends.
 fn strip_leading_verse_number(text: &str) -> String {
     let is_sup = |c: char| {
-        matches!(c, '\u{b2}' | '\u{b3}' | '\u{b9}' | '\u{2070}' | '\u{2074}'..='\u{2079}')
+        matches!(
+            c,
+            '\u{b2}' | '\u{b3}' | '\u{b9}' | '\u{2070}' | '\u{2074}'..='\u{2079}'
+        )
     };
     let mut s = text.trim_start();
     loop {
@@ -414,6 +421,110 @@ pub fn import_bible_xml(xml: &str, fallback_name: &str) -> Result<Translation, I
             "Unrecognised Bible XML root element: {other}"
         ))),
     }
+}
+
+/// Import a native VideoPsalm `.vpc` Bible (WI-031): a WinZip-AES archive
+/// holding one flat JSON document —
+/// `{Abbreviation:"KJV", Language:"en",
+///   Books:[{Abbreviation:"Gn", Chapters:[{Verses:[{Text:"…"},
+///   {ID:2, Text:"…"}]}]}]}`.
+/// Verse 1 conventionally carries no `ID`, just `Text`; book identity is
+/// the vendor abbreviation resolved through the canon table (`Gn` →
+/// Genesis). Unknown abbreviations are skipped, not imported as junk.
+pub fn import_bible_vpc(
+    entries: &[crate::native_archive::ArchiveEntry],
+    fallback_name: &str,
+) -> Result<Translation, ImportError> {
+    let entry = entries
+        .iter()
+        .find(|e| e.name.to_lowercase().ends_with(".json"))
+        .or_else(|| entries.first())
+        .ok_or_else(|| ImportError::Bad("empty .vpc archive".to_string()))?;
+    let text = std::str::from_utf8(&entry.data)
+        .map_err(|_| ImportError::Bad(format!("{} is not UTF-8 text", entry.name)))?;
+    let doc = parse_vpjson(text)
+        .map_err(|e| ImportError::Bad(format!("cannot parse {}: {e}", entry.name)))?;
+    let raw_id = member_text(&doc, "Abbreviation");
+    let translation_id = if raw_id.trim().is_empty() {
+        fallback_name.to_string()
+    } else {
+        raw_id.trim().to_string()
+    };
+    let language = member_text(&doc, "Language");
+    let mut books = Vec::new();
+    let empty = Vec::new();
+    // Books live under `Testaments: [{Books: [...]}]` (2 entries: Old +
+    // New); fall back to a top-level `Books` array for hand-made files.
+    let mut book_list: Vec<&VpJson> = Vec::new();
+    if let Some(VpJson::Array(tests)) = doc.get("Testaments") {
+        for t in tests {
+            if let Some(VpJson::Array(bs)) = t.get("Books") {
+                book_list.extend(bs.iter());
+            }
+        }
+    }
+    if book_list.is_empty() {
+        if let Some(VpJson::Array(bs)) = doc.get("Books") {
+            book_list.extend(bs.iter());
+        }
+    }
+    for b in book_list {
+        let abbrev = member_text(b, "Abbreviation");
+        let Some(canon) = match_book(&abbrev) else {
+            continue;
+        };
+        let mut chapters = Vec::new();
+        let chapter_list = match b.get("Chapters") {
+            Some(VpJson::Array(a)) => a,
+            _ => &empty,
+        };
+        for c in chapter_list {
+            let verse_list = match c.get("Verses") {
+                Some(VpJson::Array(a)) => a,
+                _ => &empty,
+            };
+            let mut numbered: Vec<(u32, String)> = Vec::new();
+            for (i, v) in verse_list.iter().enumerate() {
+                let text = member_text(v, "Text");
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let n = match v.get("ID") {
+                    Some(VpJson::Number(n)) if *n >= 1.0 => *n as u32,
+                    _ => (i + 1) as u32,
+                };
+                numbered.push((n, text));
+            }
+            numbered.sort_by_key(|(n, _)| *n);
+            chapters.push(numbered.into_iter().map(|(_, t)| t).collect());
+        }
+        if chapters.is_empty() {
+            continue;
+        }
+        books.push(TranslationBook {
+            name: canon.name_en.to_string(),
+            chapters,
+            abbreviation: Some(abbrev),
+        });
+    }
+    if books.is_empty() {
+        return Err(ImportError::Bad(
+            "no readable books in the .vpc Bible".to_string(),
+        ));
+    }
+    // Keep the original's book order (canon), not the file's order.
+    books.sort_by_key(|b| {
+        BOOKS
+            .iter()
+            .position(|b2| b2.name_en == b.name)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(Translation {
+        translation_id,
+        language,
+        books,
+        ..Default::default()
+    })
 }
 
 // ----------------------------------------------------------------- OSIS
@@ -583,7 +694,9 @@ fn import_zefania(doc: &Element, fallback_name: &str) -> Result<Translation, Imp
 
     let info = root.child("INFORMATION");
     let get = |key: &str| -> String {
-        info.and_then(|i| i.child(key)).map(|e| e.inner_text()).unwrap_or_default()
+        info.and_then(|i| i.child(key))
+            .map(|e| e.inner_text())
+            .unwrap_or_default()
     };
     let language_raw = get("language");
     let french = language_raw == "FRE";
@@ -649,17 +762,29 @@ fn import_zefania(doc: &Element, fallback_name: &str) -> Result<Translation, Imp
         .filter(|s| !s.is_empty());
     t.publisher = {
         let p = get("publisher");
-        if p.is_empty() { None } else { Some(p) }
+        if p.is_empty() {
+            None
+        } else {
+            Some(p)
+        }
     };
     t.copyright = {
         let c = get("rights");
-        if c.is_empty() { None } else { Some(c) }
+        if c.is_empty() {
+            None
+        } else {
+            Some(c)
+        }
     };
     t.description = {
         let d = root.attr("biblename").unwrap_or("").to_string();
         if d.is_empty() {
             let d2 = get("description");
-            if d2.is_empty() { None } else { Some(d2) }
+            if d2.is_empty() {
+                None
+            } else {
+                Some(d2)
+            }
         } else {
             Some(d)
         }
@@ -691,7 +816,9 @@ fn import_local_xml(doc: &Element, fallback_name: &str) -> Result<Translation, I
     let mut builder = Builder::default();
     let mut any_book = false;
     for book in doc.children_named("book") {
-        let Some(name) = book.attr("name") else { continue };
+        let Some(name) = book.attr("name") else {
+            continue;
+        };
         let Some(canonical) = match_book(name) else {
             // Unknown book name: skip rather than invent a book.
             continue;
@@ -699,8 +826,7 @@ fn import_local_xml(doc: &Element, fallback_name: &str) -> Result<Translation, I
         any_book = true;
         let b = builder.book(canonical.number, canonical.name_en, None);
         for chapter in book.children_named("chapter") {
-            let Some(cid): Option<u32> = chapter.attr("number").and_then(|s| s.parse().ok())
-            else {
+            let Some(cid): Option<u32> = chapter.attr("number").and_then(|s| s.parse().ok()) else {
                 continue;
             };
             for passage in chapter.children_named("passage") {
@@ -723,7 +849,11 @@ fn import_local_xml(doc: &Element, fallback_name: &str) -> Result<Translation, I
     }
     t.copyright = {
         let c = get("copyright");
-        if c.is_empty() { None } else { Some(c) }
+        if c.is_empty() {
+            None
+        } else {
+            Some(c)
+        }
     };
     t.source = Some("videopsalm-xml".into());
     Ok(t)
@@ -759,7 +889,8 @@ mod tests {
         assert_eq!(t.books.len(), 2); // Genesis + John
         assert_eq!(t.books[0].name, "Genesis");
         assert_eq!(t.books[1].name, "John");
-        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "KJV", Versification::En).unwrap();
+        let r =
+            crate::bible_ref::parse_reference("Genesis 1:1-2", "KJV", Versification::En).unwrap();
         assert_eq!(
             t.resolve(&r),
             vec![
@@ -790,7 +921,10 @@ mod tests {
         let r = crate::bible_ref::parse_reference("Psalm 23:1-2", "X", Versification::En).unwrap();
         let lines = t.resolve(&r);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].starts_with("1 The LORD is my shepherd"), "{lines:?}");
+        assert!(
+            lines[0].starts_with("1 The LORD is my shepherd"),
+            "{lines:?}"
+        );
         assert!(lines[1].starts_with("2 He makes me"), "{lines:?}");
     }
 
@@ -846,7 +980,8 @@ mod tests {
         assert_eq!(t.copyright.as_deref(), Some("Public domain"));
         assert_eq!(t.description.as_deref(), Some("Sample German Bible"));
         assert_eq!(t.source.as_deref(), Some("zefania"));
-        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "SMB", Versification::En).unwrap();
+        let r =
+            crate::bible_ref::parse_reference("Genesis 1:1-2", "SMB", Versification::En).unwrap();
         // Out-of-order VERS elements come out sorted by number.
         assert_eq!(
             t.resolve(&r),
@@ -884,9 +1019,7 @@ mod tests {
         let err = import_zefania(&parse_doc("<root/>").unwrap(), "x").unwrap_err();
         assert_eq!(
             err,
-            ImportError::Faithful(
-                "This is not a Zefania Bible: Missing \"XMLBIBLE\" tag.".into()
-            )
+            ImportError::Faithful("This is not a Zefania Bible: Missing \"XMLBIBLE\" tag.".into())
         );
     }
 
@@ -919,7 +1052,8 @@ mod tests {
         assert_eq!(t.language, "English");
         assert_eq!(t.copyright.as_deref(), Some("https://example.invalid"));
         assert_eq!(t.source.as_deref(), Some("videopsalm-xml"));
-        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "NIV", Versification::En).unwrap();
+        let r =
+            crate::bible_ref::parse_reference("Genesis 1:1-2", "NIV", Versification::En).unwrap();
         assert_eq!(
             t.resolve(&r),
             vec![
@@ -962,11 +1096,52 @@ mod tests {
     }
 
     #[test]
+    fn vpc_bible_imports_books_chapters_and_numberless_first_verses() {
+        use crate::native_archive::ArchiveEntry;
+        // Vendor shape, trimmed: verse 1 carries bare Text, later verses
+        // carry IDs; books key on vendor abbreviations.
+        let doc = r#"{Abbreviation:"KJT",Language:"en",Books:[{Abbreviation:"Gn",Chapters:[{Verses:[{Text:"In the beginning God created the heaven and the earth."},{ID:2,Text:"And the earth was without form."}]}]},{Abbreviation:"ZZZ",Chapters:[{Verses:[{Text:"junk"}]}]}]}"#;
+        let entries = vec![ArchiveEntry {
+            name: "KJT.json".to_string(),
+            data: doc.as_bytes().to_vec(),
+            encrypted: false,
+        }];
+        let t = import_bible_vpc(&entries, "Fallback").expect("vpc bible must import");
+        assert_eq!(t.translation_id, "KJT");
+        assert_eq!(t.language, "en");
+        // Unknown abbreviation ZZZ skipped, not imported as junk.
+        assert_eq!(t.books.len(), 1);
+        assert_eq!(t.books[0].name, "Genesis");
+        assert_eq!(t.books[0].abbreviation.as_deref(), Some("Gn"));
+        assert_eq!(t.books[0].chapters.len(), 1);
+        assert_eq!(t.books[0].chapters[0].len(), 2);
+        assert!(t.books[0].chapters[0][0].starts_with("In the beginning"));
+        let r = crate::bible_ref::parse_reference(
+            "Genesis 1:2",
+            "KJT",
+            crate::schema::Versification::En,
+        )
+        .unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec!["2 And the earth was without form.".to_string()]
+        );
+    }
+
+    #[test]
+    fn vpc_bible_rejects_empty_archives() {
+        assert!(import_bible_vpc(&[], "Fallback").is_err());
+    }
+
+    #[test]
     fn cleanup_helpers_match_the_decompiled_rules() {
         assert_eq!(clean_osis_text("a\u{a0}\u{a0}b *c "), "a b c");
         assert_eq!(adjust_spaces("x  ...  y", false), "x \u{2026} y");
         assert_eq!(adjust_spaces("\u{b6} intro\nnext", false), "intro\nnext");
-        assert_eq!(strip_leading_verse_number("\u{b9} \u{b9}\u{b2} Text"), "Text");
+        assert_eq!(
+            strip_leading_verse_number("\u{b9} \u{b9}\u{b2} Text"),
+            "Text"
+        );
         assert_eq!(strip_leading_verse_number("Plain"), "Plain");
     }
 }

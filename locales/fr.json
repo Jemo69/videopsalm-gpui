@@ -1,5 +1,5 @@
 {
-  "app_title": "VideoPsalm v1 (GPUI)",
+  "app_title": "Perez",
   "tab_control": "Console",
   "tab_projector": "Projecteur",
   "tab_stage": "Retour scène",
@@ -59,6 +59,7 @@
   "header_ref": "Référence complète en en-tête",
   "save_note": "Enregistrez l'ordre du culte en JSON, réutilisable sur tout PC.",
   "live": "EN DIRECT",
+  "go_live": "En direct",
   "blank": "Noir",
   "import": "Importer",
   "seconds": "secondes",

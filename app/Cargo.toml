@@ -1,12 +1,12 @@
 [package]
-name = "videopsalm-gpui"
-version = "0.1.0"
+name = "perez-rs"
+version = "0.1.27"
 edition = "2024"
-description = "VideoPsalm clean-room v1: GPUI control window + projector + stage view"
+description = "Perez: clean-room worship presentation (GPUI control window + projector + stage view)"
 license = "MIT"
 
 [[bin]]
-name = "videopsalm-gpui"
+name = "perez-rs"
 path = "src/main.rs"
 
 [dependencies]
@@ -16,3 +16,19 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 unicode-segmentation = "1"
+# Native file dialogs (Browse buttons). Portal-only on Linux so CI needs no
+# GTK dev packages; Windows/macOS use the OS dialogs unconditionally.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+# In-house loop-video backgrounds (no system codecs): pure-Rust MP4 demux + 
+# Cisco OpenH264 built from source by its build script. Wired in loop_video.rs.
+mp4 = "0.14"
+openh264 = "0.4"
+# Loop-video frame upload: RGB→BGRA frames as GPUI RenderImages.
+image = { version = "0.25", default-features = false }
+smallvec = "1"
+# Opt-in update check only (Help → Check for updates; no background use).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+

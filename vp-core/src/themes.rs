@@ -89,6 +89,7 @@ pub fn default_style(theme: &Theme, accent: Option<&str>) -> Style {
             size: crate::schema::default_body_size(),
             color: theme.projection_fg.to_string(),
             align: crate::schema::Align::Center,
+            valign: crate::schema::VAlign::Center,
             margins: Default::default(),
             // No authored frame: `Style::body_rect()` falls back to
             // `Rect::DEFAULT_BODY`, which is the vendor's printed default.
@@ -113,6 +114,11 @@ pub fn parse_hex(color: &str) -> Option<(u8, u8, u8)> {
     if h.len() != 6 {
         return None;
     }
+    // ASCII-only before byte slicing: a multibyte char straddling a cut
+    // would panic on a non-char-boundary (operator-typed custom accents).
+    if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let r = u8::from_str_radix(&h[0..2], 16).ok()?;
     let g = u8::from_str_radix(&h[2..4], 16).ok()?;
     let b = u8::from_str_radix(&h[4..6], 16).ok()?;
@@ -122,6 +128,13 @@ pub fn parse_hex(color: &str) -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multibyte_hex_rejected_without_panic() {
+        // VC-07: é straddles the [0..2] cut — must be None, not a panic.
+        assert_eq!(parse_hex("#aébcd"), None);
+        assert_eq!(parse_hex("#FF0000"), Some((255, 0, 0)));
+    }
 
     #[test]
     fn four_builtin_themes_with_distinct_ids() {

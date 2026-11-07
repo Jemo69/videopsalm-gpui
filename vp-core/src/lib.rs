@@ -58,8 +58,8 @@ pub(crate) fn cross_port_fixture(name: &str) -> Vec<u8> {
 }
 
 pub use library::SearchScope;
-pub use template::{format_template, SlideTemplateContext};
 pub use schema::{
-    Agenda, AgendaItem, Background, BodyStyle, BibleRef, HeaderFooter, ItemKind, ItemRef, Rect, Song,
-    Style, Versification, NORMALIZED_SPACE,
+    Agenda, AgendaItem, Background, BibleRef, BodyStyle, HeaderFooter, ItemKind, ItemRef, Rect,
+    Song, Style, Versification, NORMALIZED_SPACE,
 };
+pub use template::{format_template, SlideTemplateContext};

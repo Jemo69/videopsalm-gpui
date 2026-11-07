@@ -44,8 +44,8 @@
 //! appears in this module.
 
 use gpui::{
-    App, Context, DefiniteLength, Div, DragMoveEvent, MouseButton, Point, Render, Window,
-    div, prelude::*, px, rgb,
+    App, Context, DefiniteLength, Div, DragMoveEvent, MouseButton, Point, Render, Window, div,
+    prelude::*, px, rgb,
 };
 use vp_core::geometry::{FitMode, Viewport, resolve_percent};
 use vp_core::schema::{NORMALIZED_SPACE, Rect, Style};
@@ -144,7 +144,11 @@ pub struct FrameDrag {
 
 impl FrameDrag {
     pub fn new(handle: FrameHandle, start: Rect) -> Self {
-        FrameDrag { handle, start, press: None }
+        FrameDrag {
+            handle,
+            start,
+            press: None,
+        }
     }
 
     /// Feed one move (position already in normalized units); returns the new
@@ -216,18 +220,36 @@ pub fn apply_drag(start: Rect, handle: FrameHandle, dx: f64, dy: f64) -> Rect {
     if matches!(handle, FrameHandle::S | FrameHandle::Sw | FrameHandle::Se) {
         b += dy;
     }
-    let (l, t, r, b) = (round_half_up(l), round_half_up(t), round_half_up(r), round_half_up(b));
+    let (l, t, r, b) = (
+        round_half_up(l),
+        round_half_up(t),
+        round_half_up(r),
+        round_half_up(b),
+    );
     // Opposite-edge pinning, mirroring the TypeScript port: the west edge can
     // advance at most to r - MIN_FRAME (the east edge's CURRENT position),
     // never to space - MIN_FRAME. `.max(0)` on the bound keeps `min` from
     // going negative on degenerate starts (`clamp` would panic on min > max).
-    let max_l = if moves_l { (r - MIN_FRAME).max(0) } else { space - MIN_FRAME };
-    let max_t = if moves_t { (b - MIN_FRAME).max(0) } else { space - MIN_FRAME };
+    let max_l = if moves_l {
+        (r - MIN_FRAME).max(0)
+    } else {
+        space - MIN_FRAME
+    };
+    let max_t = if moves_t {
+        (b - MIN_FRAME).max(0)
+    } else {
+        space - MIN_FRAME
+    };
     let l = l.max(0).min(max_l);
     let t = t.max(0).min(max_t);
     let r = r.max(l + MIN_FRAME).min(space);
     let b = b.max(t + MIN_FRAME).min(space);
-    Rect { x: l, y: t, w: r - l, h: b - t }
+    Rect {
+        x: l,
+        y: t,
+        w: r - l,
+        h: b - t,
+    }
 }
 
 /// `Math.round` on the clamped (non-negative) domain, matching the
@@ -325,7 +347,9 @@ impl crate::Root {
     /// body's own hitbox (Fill fit, padding-aware), commit live, dirty the
     /// agenda through the existing flag.
     fn frame_drag_move(&mut self, cx: &mut Context<Self>, ev: &DragMoveEvent<FrameHandle>) {
-        let Some(drag) = self.frame_drag.as_mut() else { return };
+        let Some(drag) = self.frame_drag.as_mut() else {
+            return;
+        };
         let bounds = ev.bounds;
         let w = f64::from(bounds.size.width) - 2.0 * BODY_PAD_PX;
         let h = f64::from(bounds.size.height) - 2.0 * BODY_PAD_PX;
@@ -341,7 +365,10 @@ impl crate::Root {
         ));
         let frame = self.frame_sel;
         set_frame_rect(
-            self.agenda.settings.style.get_or_insert_with(Default::default),
+            self.agenda
+                .settings
+                .style
+                .get_or_insert_with(Default::default),
             frame,
             rect,
         );
@@ -369,12 +396,7 @@ impl crate::Root {
     /// handle overlay, and feed mouse events into the drag machine.
     /// Called once from `preview_big_panel`; the overlay lives inside the
     /// preview pane (RIGHT column, below slides+strip), not elsewhere.
-    pub fn preview_surface(
-        &mut self,
-        ui: &crate::UI,
-        cx: &mut Context<Self>,
-        body: Div,
-    ) -> Div {
+    pub fn preview_surface(&mut self, ui: &crate::UI, cx: &mut Context<Self>, body: Div) -> Div {
         let frame = self.frame_sel;
         let fbox = frame_fractions(self.current_frame_rect());
 
@@ -433,12 +455,18 @@ impl crate::Root {
             .on_drag_move::<FrameHandle>(cx.listener(|this, ev, _win, cx| {
                 this.frame_drag_move(cx, ev);
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev, _win, cx| {
-                this.frame_drag_end(cx);
-            }))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _ev, _win, cx| {
-                this.frame_drag_end(cx);
-            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    this.frame_drag_end(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    this.frame_drag_end(cx);
+                }),
+            )
             .child(outline);
         for h in FrameHandle::ALL {
             // The Move outline is already a child (added above); the loop
@@ -520,11 +548,17 @@ mod tests {
         let style = Style::default();
         assert_eq!(frame_rect(&style, FrameId::Body), r(0, 0, 10_000, 9_300));
         assert_eq!(frame_rect(&style, FrameId::Header), r(0, 0, 10_000, 700));
-        assert_eq!(frame_rect(&style, FrameId::Footer), r(0, 9_300, 10_000, 700));
+        assert_eq!(
+            frame_rect(&style, FrameId::Footer),
+            r(0, 9_300, 10_000, 700)
+        );
         assert_eq!(Rect::DEFAULT_BODY, r(0, 0, 10_000, 9_300));
         assert_eq!(Rect::DEFAULT_HEADER, r(0, 0, 10_000, 700));
         assert_eq!(Rect::DEFAULT_FOOTER, r(0, 9_300, 10_000, 700));
-        assert_eq!(Rect::DEFAULT_BODY.h + Rect::DEFAULT_FOOTER.h, NORMALIZED_SPACE);
+        assert_eq!(
+            Rect::DEFAULT_BODY.h + Rect::DEFAULT_FOOTER.h,
+            NORMALIZED_SPACE
+        );
         assert_eq!(Rect::DEFAULT_FOOTER.y, Rect::DEFAULT_BODY.h);
     }
 
@@ -535,10 +569,22 @@ mod tests {
     #[test]
     fn edges_move_one_axis_each_corners_move_pairs_move_shifts() {
         let start = r(1000, 1000, 5000, 5000);
-        assert_eq!(apply_drag(start, FrameHandle::E, 700.0, 0.0), r(1000, 1000, 5700, 5000));
-        assert_eq!(apply_drag(start, FrameHandle::W, 700.0, 0.0), r(1700, 1000, 4300, 5000));
-        assert_eq!(apply_drag(start, FrameHandle::S, 0.0, 400.0), r(1000, 1000, 5000, 5400));
-        assert_eq!(apply_drag(start, FrameHandle::N, 0.0, 400.0), r(1000, 1400, 5000, 4600));
+        assert_eq!(
+            apply_drag(start, FrameHandle::E, 700.0, 0.0),
+            r(1000, 1000, 5700, 5000)
+        );
+        assert_eq!(
+            apply_drag(start, FrameHandle::W, 700.0, 0.0),
+            r(1700, 1000, 4300, 5000)
+        );
+        assert_eq!(
+            apply_drag(start, FrameHandle::S, 0.0, 400.0),
+            r(1000, 1000, 5000, 5400)
+        );
+        assert_eq!(
+            apply_drag(start, FrameHandle::N, 0.0, 400.0),
+            r(1000, 1400, 5000, 4600)
+        );
         assert_eq!(
             apply_drag(start, FrameHandle::Se, 700.0, 400.0),
             r(1000, 1000, 5700, 5400)
@@ -576,7 +622,10 @@ mod tests {
 
     #[test]
     fn drag_past_the_slide_edge_clamps_instead_of_overflowing() {
-        assert_eq!(apply_drag(r(1000, 1000, 5000, 5000), FrameHandle::E, 9000.0, 0.0).w, 9000);
+        assert_eq!(
+            apply_drag(r(1000, 1000, 5000, 5000), FrameHandle::E, 9000.0, 0.0).w,
+            9000
+        );
         let south = apply_drag(r(1000, 1000, 5000, 5000), FrameHandle::S, 0.0, 9000.0);
         assert_eq!(south.y + south.h, 10_000);
         assert_eq!(
@@ -608,7 +657,10 @@ mod tests {
                 _ => -9000.0,
             };
             let out = apply_drag(r(4000, 4000, 2000, 2000), handle, dx, 0.0);
-            assert!(out.w >= MIN_FRAME && out.h >= MIN_FRAME, "{handle:?} -> {out:?}");
+            assert!(
+                out.w >= MIN_FRAME && out.h >= MIN_FRAME,
+                "{handle:?} -> {out:?}"
+            );
             assert!(
                 out.x >= 0 && out.y >= 0 && out.x + out.w <= 10_000 && out.y + out.h <= 10_000,
                 "{handle:?} -> {out:?}"
@@ -654,14 +706,25 @@ mod tests {
         ] {
             assert!((left - right).abs() < 1e-9, "Fill {axis}: 4:3 vs 16:9");
         }
-        assert_ne!(resolve(dragged, v43, FitMode::Fill), resolve(dragged, v169, FitMode::Fill));
+        assert_ne!(
+            resolve(dragged, v43, FitMode::Fill),
+            resolve(dragged, v169, FitMode::Fill)
+        );
         assert!((p169.w - 93.0).abs() < 1e-9 && (p169.h - 93.0).abs() < 1e-9);
     }
 
     #[test]
     fn frame_fractions_match_resolve_percent() {
         let b = frame_fractions(r(1000, 2000, 5000, 6000));
-        assert_eq!(b, FrameBox { x: 0.1, y: 0.2, w: 0.5, h: 0.6 });
+        assert_eq!(
+            b,
+            FrameBox {
+                x: 0.1,
+                y: 0.2,
+                w: 0.5,
+                h: 0.6
+            }
+        );
         assert_eq!(handle_anchor(b, FrameHandle::Nw), (0.1, 0.2));
         assert_eq!(handle_anchor(b, FrameHandle::Se), (0.6, 0.8));
         assert_eq!(handle_anchor(b, FrameHandle::E), (0.6, 0.5));
@@ -694,7 +757,10 @@ mod tests {
         // be a no-op delta, not a jump.
         let at_press = (6234.0, 5871.0);
         assert_eq!(drag.apply(at_press), r(1000, 1000, 5000, 5000));
-        assert_eq!(drag.apply((at_press.0 + 1000.0, at_press.1)), r(1000, 1000, 6000, 5000));
+        assert_eq!(
+            drag.apply((at_press.0 + 1000.0, at_press.1)),
+            r(1000, 1000, 6000, 5000)
+        );
     }
 
     #[test]

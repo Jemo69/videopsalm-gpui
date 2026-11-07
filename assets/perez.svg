@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Perez RS master app icon (original, clean-room). Dark slate tile, white P, amber baseline. -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#1F2937"/>
+  <text x="128" y="176" font-family="sans-serif" font-size="148" font-weight="bold" fill="#FFFFFF" text-anchor="middle">P</text>
+  <rect x="64" y="196" width="128" height="10" rx="5" fill="#F59E0B"/>
+</svg>

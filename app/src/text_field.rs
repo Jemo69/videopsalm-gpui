@@ -9,9 +9,9 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, Window, actions, div, fill, hsla,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window, actions, div, fill, hsla,
     point, prelude::*, px, relative, rgb, rgba, size, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -176,14 +176,27 @@ impl TextField {
 
     /// `Ctrl+Backspace` / `Ctrl+Delete`: same word rule as the lyrics
     /// document ([`prev_word_start`]/[`next_word_end`]).
-    fn delete_word_back(&mut self, _: &FieldDeleteWordBack, window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_back(
+        &mut self,
+        _: &FieldDeleteWordBack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.selected_range.is_empty() {
-            self.select_to(prev_word_start(self.content.as_str(), self.cursor_offset()), cx)
+            self.select_to(
+                prev_word_start(self.content.as_str(), self.cursor_offset()),
+                cx,
+            )
         }
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn delete_word_fwd(&mut self, _: &FieldDeleteWordFwd, window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_fwd(
+        &mut self,
+        _: &FieldDeleteWordFwd,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.selected_range.is_empty() {
             let end = next_word_end(self.content.as_str(), self.cursor_offset());
             if end == self.cursor_offset() {
@@ -195,19 +208,41 @@ impl TextField {
     }
 
     fn word_left(&mut self, _: &FieldWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(prev_word_start(self.content.as_str(), self.cursor_offset()), cx)
+        self.move_to(
+            prev_word_start(self.content.as_str(), self.cursor_offset()),
+            cx,
+        )
     }
 
     fn word_right(&mut self, _: &FieldWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(next_word_end(self.content.as_str(), self.cursor_offset()), cx)
+        self.move_to(
+            next_word_end(self.content.as_str(), self.cursor_offset()),
+            cx,
+        )
     }
 
-    fn select_word_left(&mut self, _: &FieldSelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(prev_word_start(self.content.as_str(), self.cursor_offset()), cx)
+    fn select_word_left(
+        &mut self,
+        _: &FieldSelectWordLeft,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(
+            prev_word_start(self.content.as_str(), self.cursor_offset()),
+            cx,
+        )
     }
 
-    fn select_word_right(&mut self, _: &FieldSelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(next_word_end(self.content.as_str(), self.cursor_offset()), cx)
+    fn select_word_right(
+        &mut self,
+        _: &FieldSelectWordRight,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(
+            next_word_end(self.content.as_str(), self.cursor_offset()),
+            cx,
+        )
     }
 
     fn on_mouse_down(

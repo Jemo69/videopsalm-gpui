@@ -165,7 +165,10 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Self {
-        Parser { bytes: text.as_bytes(), pos: 0 }
+        Parser {
+            bytes: text.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn err<T>(&self, message: &str) -> Result<T, String> {
@@ -269,7 +272,9 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
-        let key = String::from_utf8_lossy(&self.bytes[start..self.pos]).trim().to_string();
+        let key = String::from_utf8_lossy(&self.bytes[start..self.pos])
+            .trim()
+            .to_string();
         if key.is_empty() {
             return self.err("empty object key");
         }
@@ -356,7 +361,9 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
         }
-        let raw = String::from_utf8_lossy(&self.bytes[start..self.pos]).trim().to_string();
+        let raw = String::from_utf8_lossy(&self.bytes[start..self.pos])
+            .trim()
+            .to_string();
         if raw.is_empty() {
             return Ok(VpJson::Null);
         }
@@ -548,7 +555,10 @@ fn split_lyric_lines(value: &str) -> Vec<String> {
     if normalized.ends_with('\n') {
         normalized.pop();
     }
-    normalized.split('\n').map(|line| line.to_string()).collect()
+    normalized
+        .split('\n')
+        .map(|line| line.to_string())
+        .collect()
 }
 
 /// VideoPsalm's `Author` field may hold several names separated by `;` or `,`.
@@ -595,7 +605,9 @@ pub fn resolve_path(file: &str) -> String {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(path)
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
     };
     let mut out = PathBuf::new();
     for part in absolute.components() {
@@ -676,11 +688,23 @@ fn verse_from_native(value: &VpJson, index: usize) -> SongVerse {
 /// Map one native song object onto the shared song shape.
 /// Map one native song projection onto the shared song shape (used by the
 /// `.vpagd` plan importer; songbooks go through [`songbook_to_songs`]).
-pub fn song_from_projection(value: &VpJson, file: &str, book_guid: &str, abbrev: &str, index: usize) -> Option<Song> {
+pub fn song_from_projection(
+    value: &VpJson,
+    file: &str,
+    book_guid: &str,
+    abbrev: &str,
+    index: usize,
+) -> Option<Song> {
     song_from_native(value, file, book_guid, abbrev, index)
 }
 
-fn song_from_native(value: &VpJson, file: &str, book_guid: &str, abbrev: &str, index: usize) -> Option<Song> {
+fn song_from_native(
+    value: &VpJson,
+    file: &str,
+    book_guid: &str,
+    abbrev: &str,
+    index: usize,
+) -> Option<Song> {
     if !value.is_object() {
         return None;
     }
@@ -741,12 +765,27 @@ fn song_from_native(value: &VpJson, file: &str, book_guid: &str, abbrev: &str, i
         songbook_id: abbrev.to_string(),
         color: member_text(value, "DefaultColorString"),
         icon: member_text(value, "Icon"),
-        sequence: if sequence.is_empty() { None } else { Some(sequence) },
+        sequence: if sequence.is_empty() {
+            None
+        } else {
+            Some(sequence)
+        },
         verse_order_index,
         source: Some(source),
-        copyright: member_text(value, "Copyright").replace('\n', " ").trim().to_string(),
-        themes: if themes.is_empty() { Vec::new() } else { themes },
-        references: if references.is_empty() { Vec::new() } else { references },
+        copyright: member_text(value, "Copyright")
+            .replace('\n', " ")
+            .trim()
+            .to_string(),
+        themes: if themes.is_empty() {
+            Vec::new()
+        } else {
+            themes
+        },
+        references: if references.is_empty() {
+            Vec::new()
+        } else {
+            references
+        },
         memo1: member_text(value, "Memo1"),
         memo2: member_text(value, "Memo2"),
         memo3: member_text(value, "Memo3"),
@@ -839,7 +878,10 @@ mod tests {
         assert_eq!(member_text(song, "Copyright"), "Public\nDomain");
         assert_eq!(member_text(song, "Theme"), "tema1\ntema2");
         // Escaped quote and escaped backslash.
-        let verses = song.get("Verses").and_then(|v| v.as_array()).expect("verses");
+        let verses = song
+            .get("Verses")
+            .and_then(|v| v.as_array())
+            .expect("verses");
         assert_eq!(verses.len(), 2);
         assert!(member_text(&verses[1], "Text").contains("With \"force\" of arms"));
         assert!(member_text(&verses[1], "Text").contains("fights \\ the proper Man."));
@@ -870,7 +912,10 @@ mod tests {
 
         let song = &book.songs[0];
         // VideoPsalm identifies a song by its own `Guid` when it has one.
-        assert_eq!(song.id, "videopsalm:khiHU2blX0Kb41dGdbDLhA:jtCkrJdPIUOmECjaQylg/g");
+        assert_eq!(
+            song.id,
+            "videopsalm:khiHU2blX0Kb41dGdbDLhA:jtCkrJdPIUOmECjaQylg/g"
+        );
         assert_eq!(song.title, "A Safe Stronghold Our God is Still");
         assert_eq!(song.authors, vec!["Martin Luther".to_string()]);
         assert_eq!(song.composer, "Unknown");
@@ -887,7 +932,10 @@ mod tests {
         assert_eq!(song.verses[0].id, "1");
         assert_eq!(song.verses[1].tag_id, Some(2));
         assert_eq!(song.verses[1].id, "2");
-        assert_eq!(song.verses[0].lines[0], "As safe a stronghold our God is still,");
+        assert_eq!(
+            song.verses[0].lines[0],
+            "As safe a stronghold our God is still,"
+        );
         assert_eq!(song.verses[0].lines.len(), 4);
 
         let source = song.source.as_ref().expect("source");
@@ -954,7 +1002,12 @@ mod tests {
         // `stableHash` in electron-app/src/core/videopsalm.ts.
         let hash = stable_hash("/tmp/SongBooks/SB1.json");
         assert_eq!(hash.len(), 12);
-        assert_eq!(hash, Sha1::from("/tmp/SongBooks/SB1.json".as_bytes()).digest().to_string()[..12]);
+        assert_eq!(
+            hash,
+            Sha1::from("/tmp/SongBooks/SB1.json".as_bytes())
+                .digest()
+                .to_string()[..12]
+        );
     }
 
     #[test]
@@ -968,8 +1021,7 @@ mod tests {
     /// The shared contract with the Electron port: the same native document
     /// must produce the same songbook metadata and the same shared `Song`
     /// fields in both implementations.
-    const NATIVE_FIXTURE: &str =
-        include_str!("../../tests/fixtures/native-songbook.json");
+    const NATIVE_FIXTURE: &str = include_str!("../../tests/fixtures/native-songbook.json");
 
     #[test]
     fn derives_the_same_shared_song_fields_as_the_other_port() {
@@ -981,9 +1033,18 @@ mod tests {
         let root = parse(native).expect("parse");
         let book = songbook_to_songs(&root, file).expect("map");
 
-        assert_eq!(book.songbook.name, expected["songbook"]["name"].as_str().unwrap());
-        assert_eq!(book.songbook.abbrev, expected["songbook"]["abbrev"].as_str().unwrap());
-        assert_eq!(book.songbook.guid, expected["songbook"]["guid"].as_str().unwrap());
+        assert_eq!(
+            book.songbook.name,
+            expected["songbook"]["name"].as_str().unwrap()
+        );
+        assert_eq!(
+            book.songbook.abbrev,
+            expected["songbook"]["abbrev"].as_str().unwrap()
+        );
+        assert_eq!(
+            book.songbook.guid,
+            expected["songbook"]["guid"].as_str().unwrap()
+        );
         assert_eq!(
             book.songbook.song_count as u64,
             expected["songbook"]["songCount"].as_u64().unwrap()
@@ -1000,7 +1061,10 @@ mod tests {
         assert_eq!(song.songbook_id, want["songbookId"].as_str().unwrap());
         assert_eq!(song.memo1, want["memo1"].as_str().unwrap());
         assert_eq!(song.sequence.as_deref(), want["sequence"].as_str());
-        assert_eq!(song.verse_order_index, want["verseOrderIndex"].as_i64().map(|n| n as i32));
+        assert_eq!(
+            song.verse_order_index,
+            want["verseOrderIndex"].as_i64().map(|n| n as i32)
+        );
         let authors: Vec<String> = want["authors"]
             .as_array()
             .unwrap()
@@ -1043,8 +1107,14 @@ mod tests {
         let want_source = &want["source"];
         assert_eq!(source.format, want_source["format"].as_str().unwrap());
         assert_eq!(source.file, want_source["file"].as_str().unwrap());
-        assert_eq!(source.songbook_guid, want_source["songbookGuid"].as_str().unwrap());
-        assert_eq!(source.songbook_name, want_source["songbookName"].as_str().unwrap());
+        assert_eq!(
+            source.songbook_guid,
+            want_source["songbookGuid"].as_str().unwrap()
+        );
+        assert_eq!(
+            source.songbook_name,
+            want_source["songbookName"].as_str().unwrap()
+        );
         assert_eq!(source.song_id, want_source["songId"].as_str().unwrap());
         assert_eq!(source.guid, want_source["guid"].as_str().unwrap());
     }

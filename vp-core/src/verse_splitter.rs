@@ -48,19 +48,18 @@ pub fn split_verse(lines: &[String], opts: &SplitOptions) -> Vec<Vec<String>> {
     //    last line is a single word and the previous line has >1 word, move
     //    the last word of the previous line down. (Removing a word only
     //    shortens the previous line, so it remains within max_chars.)
-    fix_orphan_word(&mut wrapped);
+    fix_orphan_word(&mut wrapped, max_chars);
 
     // 3. Chunk into slides.
-    let mut slides: Vec<Vec<String>> = wrapped
-        .chunks(max_lines)
-        .map(|c| c.to_vec())
-        .collect();
+    let mut slides: Vec<Vec<String>> = wrapped.chunks(max_lines).map(|c| c.to_vec()).collect();
 
     // 4. Orphan-slide fix: a trailing single-line slide borrows the last
-    //    line of the previous slide.
+    //    line of the previous slide — but never empties it (with
+    //    max_lines == 1 every slide is one line; stealing would manufacture
+    //    the exact empty slide this fix exists to prevent).
     if slides.len() > 1 {
         let last_idx = slides.len() - 1;
-        if slides[last_idx].len() == 1 {
+        if slides[last_idx].len() == 1 && slides[last_idx - 1].len() > 1 {
             let stolen = slides[last_idx - 1].pop().unwrap();
             slides[last_idx].insert(0, stolen);
         }
@@ -109,8 +108,9 @@ pub fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
     out
 }
 
-/// Move words down so the last line is never a lone word (when avoidable).
-fn fix_orphan_word(lines: &mut Vec<String>) {
+/// Move words down so the last line is never a lone word (when avoidable
+/// without breaking the char cap the wrapper just enforced).
+fn fix_orphan_word(lines: &mut Vec<String>, max_chars: usize) {
     while lines.len() >= 2 {
         let n = lines.len();
         let last_words: Vec<&str> = lines[n - 1].split_whitespace().collect();
@@ -123,8 +123,12 @@ fn fix_orphan_word(lines: &mut Vec<String>) {
         }
         let mut prev = prev_words;
         let moved = prev.pop().unwrap().to_string();
+        let grown = format!("{} {}", moved, lines[n - 1]);
+        if grown.chars().count() > max_chars {
+            break;
+        }
         lines[n - 2] = prev.join(" ");
-        lines[n - 1] = format!("{} {}", moved, lines[n - 1]);
+        lines[n - 1] = grown;
     }
 }
 
@@ -144,6 +148,36 @@ pub fn split_song_verses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_line_pages_never_manufacture_empty_slide() {
+        // VC-03: max_lines == 1 must not steal into an empty previous slide.
+        let opts = SplitOptions { max_lines: 1, max_chars: 40 };
+        let slides = split_verse(
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+            &opts,
+        );
+        assert_eq!(
+            slides,
+            vec![
+                vec!["a".to_string()],
+                vec!["b".to_string()],
+                vec!["c".to_string()]
+            ]
+        );
+    }
+
+    #[test]
+    fn orphan_word_move_respects_max_chars() {
+        // VC-04: the moved-down word must not overflow the char cap.
+        let opts = SplitOptions { max_lines: 4, max_chars: 8 };
+        let slides = split_verse(&["aa bb ccccdddd".to_string()], &opts);
+        for slide in &slides {
+            for line in slide {
+                assert!(line.chars().count() <= 8, "overflow: {line}");
+            }
+        }
+    }
 
     fn opts(lines: usize, chars: usize) -> SplitOptions {
         SplitOptions {

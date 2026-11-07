@@ -7,7 +7,7 @@
 //! diacritics-insensitive, with selectable songbook scope and these find
 //! methods exposed: title-prefix, full-text, author, composer, CCLI, id.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::bible_ref::normalize;
 use crate::schema::{Song, Songbook};
@@ -135,7 +135,8 @@ pub fn upsert_songbook(conn: &Connection, book: &Songbook) -> Result<(), rusqlit
 }
 
 pub fn list_songbooks(conn: &Connection) -> Result<Vec<Songbook>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT id, name, abbrev, read_only FROM songbooks ORDER BY name")?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, abbrev, read_only FROM songbooks ORDER BY name")?;
     let rows = stmt.query_map([], |row| {
         Ok(Songbook {
             id: row.get(0)?,
@@ -155,7 +156,10 @@ pub fn upsert_song(conn: &Connection, song: &Song) -> Result<(), rusqlite::Error
         .flat_map(|v| v.lines.iter().map(|l| l.as_str()))
         .collect::<Vec<_>>()
         .join("\n");
-    let data = serde_json::to_string(song).unwrap_or_else(|_| "{}".to_string());
+    // Serialize strictly: a corrupt blob must never be stored as "{}"
+    // (it would read back as an empty song and collide on id "").
+    let data = serde_json::to_string(song)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
     conn.execute(
         "INSERT INTO songs (id, title, lyrics, authors, composer, ccli, song_no, songbook_id, data)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -179,19 +183,45 @@ pub fn upsert_song(conn: &Connection, song: &Song) -> Result<(), rusqlite::Error
 
 fn row_to_song(row: &rusqlite::Row) -> Result<Song, rusqlite::Error> {
     let data: String = row.get("data")?;
-    Ok(serde_json::from_str(&data).unwrap_or_default())
+    // Loud on corrupt blobs: silent empty-song defaults collide on id "".
+    let song: Song = serde_json::from_str(&data).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+    })?;
+    Ok(song)
 }
 
 pub fn get_song(conn: &Connection, id: &str) -> Result<Option<Song>, rusqlite::Error> {
     conn.query_row("SELECT data FROM songs WHERE id = ?1", params![id], |row| {
         let data: String = row.get(0)?;
-        Ok(serde_json::from_str(&data).unwrap_or_default())
+        let song: Song = serde_json::from_str(&data).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+        })?;
+        Ok(song)
     })
     .optional()
 }
 
 pub fn count_songs(conn: &Connection) -> Result<i64, rusqlite::Error> {
     conn.query_row("SELECT COUNT(*) FROM songs", [], |r| r.get(0))
+}
+
+/// All songs in the library (boot restore). The app's support folder keeps
+/// the SQLite library across runs; the in-memory browser list is rebuilt
+/// from here plus the bundled samples and the VideoPsalm folder scan.
+pub fn all_songs(conn: &Connection) -> Result<Vec<Song>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT data FROM songs")?;
+    let rows = stmt.query_map([], |row| {
+        let data: String = row.get(0)?;
+        let song: Song = serde_json::from_str(&data).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+        })?;
+        Ok(song)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 /// Strip the spaces from an already-normalized string, producing the
@@ -239,7 +269,11 @@ pub fn instant_find_ex(
     let use_all = methods.is_empty();
     let wants = |m: FindMethod| use_all || methods.contains(&m);
     // A single unbroken word is also tried as a phrase (spaces stripped).
-    let phrase = if q.contains(' ') { None } else { Some(phrase_form(&q)) };
+    let phrase = if q.contains(' ') {
+        None
+    } else {
+        Some(phrase_form(&q))
+    };
 
     let mut stmt = conn.prepare(
         "SELECT data, title, lyrics, authors, composer, ccli, song_no, songbook_id FROM songs",
@@ -277,7 +311,11 @@ pub fn instant_find_ex(
                     || phrase_form(&nlyrics).contains(p.as_str()))
         });
         let hit = (wants(FindMethod::TitlePrefix)
-            && ntitle.split_whitespace().next().map(|w| w.starts_with(&q)).unwrap_or(false))
+            && ntitle
+                .split_whitespace()
+                .next()
+                .map(|w| w.starts_with(&q))
+                .unwrap_or(false))
             || (wants(FindMethod::TitlePrefix) && ntitle.starts_with(&q))
             || (wants(FindMethod::FullText) && (ntitle.contains(&q) || nlyrics.contains(&q)))
             || phrase_hit
@@ -353,7 +391,10 @@ pub fn words_in_order(haystack: &[String], needle: &[String]) -> bool {
     }
     let mut at = 0;
     for n in needle {
-        if let Some(pos) = haystack[at..].iter().position(|h| h.starts_with(n.as_str())) {
+        if let Some(pos) = haystack[at..]
+            .iter()
+            .position(|h| h.starts_with(n.as_str()))
+        {
             at += pos + 1;
         } else {
             return false;
@@ -365,7 +406,10 @@ pub fn words_in_order(haystack: &[String], needle: &[String]) -> bool {
 /// A book-scoped number search: "soc204" -> abbrev "soc", number "204".
 pub fn parse_book_scoped(query: &str) -> Option<(String, String)> {
     let q = query.trim();
-    let num_start = q.rfind(|c: char| !c.is_ascii_digit()).map(|i| i + 1).unwrap_or(0);
+    let num_start = q
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map(|i| i + 1)
+        .unwrap_or(0);
     if num_start > 0 && num_start < q.len() {
         let (prefix, num) = q.split_at(num_start);
         if prefix.chars().all(|c| c.is_alphabetic()) {
@@ -435,7 +479,8 @@ pub fn matches_song(song: &Song, query: &str, scope: SearchScope) -> bool {
         SearchScope::Themes => {
             let themes_text = song.themes.join(" ");
             let theme_words = search_words(&themes_text);
-            theme_words.concat().contains(&needle_phrase) || words_in_any_order(&theme_words, &needle)
+            theme_words.concat().contains(&needle_phrase)
+                || words_in_any_order(&theme_words, &needle)
         }
         SearchScope::References => {
             let refs_text = song.references.join(" ");
@@ -463,7 +508,11 @@ pub fn matches_song(song: &Song, query: &str, scope: SearchScope) -> bool {
         }
         SearchScope::WithChords => {
             let has_chords = !song.chords.overlays.is_empty()
-                || song.chords.chordpro.as_ref().is_some_and(|cp| !cp.trim().is_empty());
+                || song
+                    .chords
+                    .chordpro
+                    .as_ref()
+                    .is_some_and(|cp| !cp.trim().is_empty());
             if !has_chords {
                 return false;
             }
@@ -489,9 +538,7 @@ pub fn instant_find_scoped(
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare("SELECT data, songbook_id FROM songs")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row_to_song(row)?, row.get::<_, String>(1)?))
-    })?;
+    let rows = stmt.query_map([], |row| Ok((row_to_song(row)?, row.get::<_, String>(1)?)))?;
 
     let mut out = Vec::new();
     for row in rows {
@@ -526,9 +573,11 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), rusq
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, rusqlite::Error> {
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| {
-        r.get(0)
-    })
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
     .optional()
 }
 
@@ -550,6 +599,19 @@ pub fn list_recents(conn: &Connection, limit: usize) -> Result<Vec<String>, rusq
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_rows_error_instead_of_empty_song() {
+        // VC-02: a corrupt data blob must Err loudly, never read as id "".
+        let conn = seeded();
+        conn.execute(
+            "INSERT INTO songs (id, title, lyrics, authors, composer, ccli, song_no, songbook_id, data) VALUES ('bad1','t','l','a','c','cc',1,'b','{corrupt')",
+            [],
+        )
+        .unwrap();
+        assert!(get_song(&conn, "bad1").is_err());
+        assert!(all_songs(&conn).is_err());
+    }
     use crate::schema::{SongChords, SongVerse};
 
     fn song(id: &str, title: &str, author: &str, ccli: &str, song_no: &str, book: &str) -> Song {
@@ -593,13 +655,38 @@ mod tests {
         let conn = open_memory().unwrap();
         upsert_songbook(
             &conn,
-            &Songbook { id: "b1".into(), name: "Main".into(), abbrev: "M".into(), read_only: false },
+            &Songbook {
+                id: "b1".into(),
+                name: "Main".into(),
+                abbrev: "M".into(),
+                read_only: false,
+            },
         )
         .unwrap();
-        upsert_song(&conn, &song("s1", "Amazing-Grace", "John Newton", "2762838", "00000001", "b1"))
-            .unwrap();
-        upsert_song(&conn, &song("s2", "Holy Holy Holy", "Reginald Heber", "1142518", "00000002", "b1"))
-            .unwrap();
+        upsert_song(
+            &conn,
+            &song(
+                "s1",
+                "Amazing-Grace",
+                "John Newton",
+                "2762838",
+                "00000001",
+                "b1",
+            ),
+        )
+        .unwrap();
+        upsert_song(
+            &conn,
+            &song(
+                "s2",
+                "Holy Holy Holy",
+                "Reginald Heber",
+                "1142518",
+                "00000002",
+                "b1",
+            ),
+        )
+        .unwrap();
         conn
     }
 
@@ -609,16 +696,30 @@ mod tests {
         let all: &[FindMethod] = &[];
         assert_eq!(instant_find(&conn, "amazing", all, None).unwrap().len(), 1);
         // Hyphen-insensitive: query without hyphen finds hyphenated title.
-        assert_eq!(instant_find(&conn, "amazing grace", all, None).unwrap().len(), 1);
+        assert_eq!(
+            instant_find(&conn, "amazing grace", all, None)
+                .unwrap()
+                .len(),
+            1
+        );
         // Lyrics full-text.
-        assert_eq!(instant_find(&conn, "sweet the sound", all, None).unwrap().len(), 1);
+        assert_eq!(
+            instant_find(&conn, "sweet the sound", all, None)
+                .unwrap()
+                .len(),
+            1
+        );
         // Author.
         assert_eq!(
-            instant_find(&conn, "newton", &[FindMethod::Author], None).unwrap().len(),
+            instant_find(&conn, "newton", &[FindMethod::Author], None)
+                .unwrap()
+                .len(),
             1
         );
         assert_eq!(
-            instant_find(&conn, "newton", &[FindMethod::TitlePrefix], None).unwrap().len(),
+            instant_find(&conn, "newton", &[FindMethod::TitlePrefix], None)
+                .unwrap()
+                .len(),
             0
         );
         // Digit search: CCLI + song id.
@@ -652,7 +753,9 @@ mod tests {
         assert_eq!(r.len(), 1);
         // A word that only appears inside another word does NOT match when
         // the caller restricts to phrase semantics (no bare-word fallback).
-        assert!(instant_find(&conn, "graceful", &[], None).unwrap().is_empty());
+        assert!(instant_find(&conn, "graceful", &[], None)
+            .unwrap()
+            .is_empty());
         // Callers pass an already-normalized string; normalize() is what folds case
         // and diacritics, phrase_form only removes the separators.
         assert_eq!(phrase_form(&normalize(" King  of\tKings ")), "kingofkings");
@@ -663,17 +766,31 @@ mod tests {
         let conn = seeded();
         upsert_songbook(
             &conn,
-            &Songbook { id: "b2".into(), name: "Extra".into(), abbrev: "E".into(), read_only: true },
+            &Songbook {
+                id: "b2".into(),
+                name: "Extra".into(),
+                abbrev: "E".into(),
+                read_only: true,
+            },
         )
         .unwrap();
-        upsert_song(&conn, &song("s3", "Amazing Grace (alt)", "X", "999", "00000003", "b2"))
-            .unwrap();
-        assert_eq!(instant_find_ex(&conn, "amazing", &[], None, &[]).unwrap().len(), 2);
+        upsert_song(
+            &conn,
+            &song("s3", "Amazing Grace (alt)", "X", "999", "00000003", "b2"),
+        )
+        .unwrap();
+        assert_eq!(
+            instant_find_ex(&conn, "amazing", &[], None, &[])
+                .unwrap()
+                .len(),
+            2
+        );
         let r = instant_find_ex(&conn, "amazing", &[], None, &["b2".to_string()]).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].id, "s1");
         // Exclusion composes with the positive scope.
-        let r = instant_find_ex(&conn, "amazing", &[], Some(&["b1".into()]), &["b1".into()]).unwrap();
+        let r =
+            instant_find_ex(&conn, "amazing", &[], Some(&["b1".into()]), &["b1".into()]).unwrap();
         assert!(r.is_empty());
     }
 
@@ -681,7 +798,10 @@ mod tests {
     fn settings_and_recents_round_trip() {
         let conn = open_memory().unwrap();
         set_setting(&conn, "theme", "dark").unwrap();
-        assert_eq!(get_setting(&conn, "theme").unwrap().as_deref(), Some("dark"));
+        assert_eq!(
+            get_setting(&conn, "theme").unwrap().as_deref(),
+            Some("dark")
+        );
         assert_eq!(get_setting(&conn, "missing").unwrap(), None);
         push_recent(&conn, "/a/sunday.vps", 2).unwrap();
         push_recent(&conn, "/a/friday.vps", 3).unwrap();
@@ -696,7 +816,10 @@ mod tests {
     fn song_get_and_count() {
         let conn = seeded();
         assert_eq!(count_songs(&conn).unwrap(), 2);
-        assert_eq!(get_song(&conn, "s1").unwrap().unwrap().title, "Amazing-Grace");
+        assert_eq!(
+            get_song(&conn, "s1").unwrap().unwrap().title,
+            "Amazing-Grace"
+        );
         assert!(get_song(&conn, "nope").unwrap().is_none());
     }
 
@@ -714,7 +837,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut s = song("s10", "A New Commandment", "Author X", "12345", "204", "soc");
+        let mut s = song(
+            "s10",
+            "A New Commandment",
+            "Author X",
+            "12345",
+            "204",
+            "soc",
+        );
         s.copyright = "Copyright 1980 Celebration Music".into();
         s.themes = vec!["Love".into(), "Fellowship".into()];
         s.references = vec!["John 13:34".into()];
@@ -725,7 +855,8 @@ mod tests {
         upsert_song(&conn, &s).unwrap();
 
         // Title and lyrics
-        let r = instant_find_scoped(&conn, "commandment", SearchScope::TitleLyrics, None, &[]).unwrap();
+        let r =
+            instant_find_scoped(&conn, "commandment", SearchScope::TitleLyrics, None, &[]).unwrap();
         assert_eq!(r.len(), 1);
 
         // Title
@@ -733,7 +864,8 @@ mod tests {
         assert_eq!(r.len(), 1);
 
         // Author and composer
-        let r = instant_find_scoped(&conn, "Author X", SearchScope::AuthorComposer, None, &[]).unwrap();
+        let r =
+            instant_find_scoped(&conn, "Author X", SearchScope::AuthorComposer, None, &[]).unwrap();
         assert_eq!(r.len(), 1);
 
         // Themes
@@ -749,16 +881,37 @@ mod tests {
         assert_eq!(r.len(), 1);
 
         // Copyright
-        let r = instant_find_scoped(&conn, "Celebration", SearchScope::Copyright, None, &[]).unwrap();
+        let r =
+            instant_find_scoped(&conn, "Celebration", SearchScope::Copyright, None, &[]).unwrap();
         assert_eq!(r.len(), 1);
 
         // Memos
-        assert_eq!(instant_find_scoped(&conn, "one", SearchScope::Memo1, None, &[]).unwrap().len(), 1);
-        assert_eq!(instant_find_scoped(&conn, "two", SearchScope::Memo2, None, &[]).unwrap().len(), 1);
-        assert_eq!(instant_find_scoped(&conn, "three", SearchScope::Memo3, None, &[]).unwrap().len(), 1);
+        assert_eq!(
+            instant_find_scoped(&conn, "one", SearchScope::Memo1, None, &[])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            instant_find_scoped(&conn, "two", SearchScope::Memo2, None, &[])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            instant_find_scoped(&conn, "three", SearchScope::Memo3, None, &[])
+                .unwrap()
+                .len(),
+            1
+        );
 
         // With chords
-        assert_eq!(instant_find_scoped(&conn, "commandment", SearchScope::WithChords, None, &[]).unwrap().len(), 1);
+        assert_eq!(
+            instant_find_scoped(&conn, "commandment", SearchScope::WithChords, None, &[])
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Book-scoped number search: "soc204"
         let r = instant_find_scoped(&conn, "soc204", SearchScope::TitleLyrics, None, &[]).unwrap();

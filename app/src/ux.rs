@@ -1,7 +1,7 @@
 //! Pure UX helpers for the GPUI target.
 //!
 //! No GPUI dependency here on purpose: everything in this module is unit
-//! testable headless (`cargo test -p videopsalm-gpui`).
+//! testable headless (`cargo test -p perez-rs`).
 //!
 //! * [`RibbonTab`] — toolbar tabs mirroring the original ribbon
 //!   (File | Agenda | Songs | Bibles | Media | Style | View).
@@ -103,12 +103,9 @@ pub fn digit_slide_index(key: char, slide_count: usize) -> Option<usize> {
 /// `V1`, `C1` (chorus), `B1` (bridge), `E1` (ending), `O1` (outro).
 pub fn verse_shortcut_target(verse_ids: &[&str], key: char) -> Option<usize> {
     let want = key.to_ascii_uppercase();
-    verse_ids.iter().position(|id| {
-        id.chars()
-            .next()
-            .map(|c| c.to_ascii_uppercase())
-            == Some(want)
-    })
+    verse_ids
+        .iter()
+        .position(|id| id.chars().next().map(|c| c.to_ascii_uppercase()) == Some(want))
 }
 
 // ---------------------------------------------------------------------------
@@ -145,10 +142,145 @@ pub fn kind_badge(kind: ItemKind) -> &'static str {
 /// cascade; the kind levels (`Bible` | `Media` | `Alert` | `Clock`) keep the
 /// v1 per-kind badges working. All values are plain strings so old layout
 /// files keep loading.
+///
+/// The original shows these in a **style-level dropdown**
+/// (`assets/SCREENSHOT-1.29-LAYOUT.md`: `Song ▾`), not as eight always-visible
+/// buttons — the dropdown preserves all 8 levels behind one control.
 pub fn style_levels() -> [&'static str; 8] {
     [
-        "Base", "Songbooks", "Song", "Verse", "Bible", "Media", "Alert", "Clock",
+        "Base",
+        "Songbooks",
+        "Song",
+        "Verse",
+        "Bible",
+        "Media",
+        "Alert",
+        "Clock",
     ]
+}
+
+/// Caption for the Styles dropdown: the current level plus its `▾` menu mark.
+///
+/// Pure so the dropdown contract is unit-testable without a window: every
+/// level in [`style_levels`] must round-trip through this caption.
+pub fn style_dropdown_label(level: &str) -> String {
+    format!("{level} ▾")
+}
+
+/// Verse numbers leading each Bible slide line (`"16 text..."`).
+///
+/// Pure so per-slide Bible rows are unit-testable: the panel groups verses
+/// into projected slides (like songs), and the badge/checkbox derive from the
+/// verses inside the slide rather than from a per-verse row.
+pub fn bible_slide_verses(lines: &[String]) -> Vec<u32> {
+    lines
+        .iter()
+        .filter_map(|l| {
+            let head: String = l.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if head.is_empty() {
+                None
+            } else {
+                head.parse().ok()
+            }
+        })
+        .collect()
+}
+
+/// Badge for a Bible slide row: first verse number, or `first–last` when the
+/// slide packs several verses. Empty when no verse number leads the lines.
+pub fn bible_slide_badge(lines: &[String]) -> String {
+    let vs = bible_slide_verses(lines);
+    match (vs.first(), vs.last()) {
+        (Some(f), Some(l)) if f != l => format!("{f}–{l}"),
+        (Some(f), _) => f.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The agenda rail: one entry per button, each carrying its own `▾` menu mark
+/// (`assets/SCREENSHOT-1.29-LAYOUT.md`: the rail buttons each have their own
+/// `▾`). Order matches `agenda-panel.png`: add, save, delete, move up,
+/// move down.
+pub fn agenda_rail_buttons() -> [(&'static str, &'static str); 5] {
+    [
+        ("+", "add"),
+        ("S", "save"),
+        ("✕", "delete"),
+        ("⬆", "move up"),
+        ("⬇", "move down"),
+    ]
+}
+
+/// Popup-menu choices for one agenda rail button.
+///
+/// Each entry is `(choice id, caption)`. Every 1.29 rail button carries its
+/// own `▾` (`assets/SCREENSHOT-1.29-LAYOUT.md`, `agenda-panel.png`), and the
+/// menus hold the real 1.29 contents (UX-RESEARCH §3.1): Add offers sources,
+/// Save offers the save variants (`Save as` / comprehensive save), Delete
+/// offers scope, the move buttons offer distance. Pure so the menu contract
+/// is unit-testable without a window.
+pub fn rail_menu_items(action: &str) -> Vec<(&'static str, &'static str)> {
+    match action {
+        "add" => vec![
+            ("add-selected", "Add selected song / verses"),
+            ("add-image", "Add slideshow image…"),
+            ("add-video", "Add standalone video…"),
+            ("add-audio", "Add audio file…"),
+            ("add-ppt", "Add PowerPoint…"),
+            ("add-doc", "Add document (Word/Excel/PDF)…"),
+            ("add-web", "Add web site / YouTube…"),
+        ],
+        "save" => vec![
+            ("save", "Save agenda"),
+            ("save-as", "Save agenda as…"),
+            ("save-full", "Comprehensive save…"),
+        ],
+        "delete" => vec![
+            ("delete-selected", "Delete selected item"),
+            ("delete-all", "Delete all items"),
+        ],
+        "move up" => vec![
+            ("move-up", "Move up"),
+            ("move-top", "Move to top"),
+        ],
+        "move down" => vec![
+            ("move-down", "Move down"),
+            ("move-bottom", "Move to bottom"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Quick-pick style cascade levels for the Styles preset row.
+///
+/// The 1.29 Styles group shows a row of level-selector glyphs under the
+/// dropdown (UX-RESEARCH §4.2: `Base / Songbooks / Song / Verse`). The
+/// `Verse ▾` dropdown stays the level selector; these set the same level,
+/// so the row can never disagree with it. Every entry must be a
+/// [`style_levels`] level.
+pub fn style_preset_levels() -> [&'static str; 4] {
+    ["Base", "Songbooks", "Song", "Verse"]
+}
+
+/// Green-dot override indicator for the Styles group.
+///
+/// The 1.29 Styles group carries a green dot beside the level dropdown
+/// (`assets/SCREENSHOT-1.29-LAYOUT.md` §Ribbon): lit while a non-base level
+/// is active (its attributes override the Base reference), hollow on Base.
+pub fn style_override_dot(level: &str) -> bool {
+    level != "Base"
+}
+
+/// Validate a committed agenda-item rename: blank titles are rejected so a
+/// double-click + Enter on an empty field cannot blank a row. Pure so the
+/// rename contract is unit-testable without a window.
+pub fn valid_rename_title(raw: &str) -> Option<String> {
+    let title = raw.trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
 }
 
 /// Slide transitions for the Animation ribbon group. Stored in the style
@@ -262,6 +394,9 @@ pub enum PresKey {
     /// Show / hide the in-app help. The original calls this contextual help
     /// and hangs it on `F1` (1.7).
     Help,
+    /// Manual update check (F9). Explicit operator consent, one HTTPS GET,
+    /// no download, no background polling — the offline-first contract.
+    CheckUpdates,
     /// Quit (Ctrl+Q).
     Quit,
 }
@@ -436,6 +571,7 @@ pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
         "ctrl-8" => Some(PresKey::AddResult(8)),
         "ctrl-9" => Some(PresKey::AddResult(9)),
         "f1" => Some(PresKey::Help),
+        "f9" => Some(PresKey::CheckUpdates),
         "ctrl-q" => Some(PresKey::Quit),
         "ctrl-*" => Some(PresKey::RangeExtendEnd),
         "ctrl-/" => Some(PresKey::RangeShrinkEnd),
@@ -472,7 +608,10 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Space / → / ↓ / PgDn", "next slide"),
         ("← / ↑ / PgUp / Backspace", "previous slide"),
         ("1…9, 0", "go to verse/slide 1…10"),
-        ("B C I O P N S T U V E", "jump to bridge/chorus/instrumental/other/pre-chorus/intro/slide/tag/outro/verse/ending"),
+        (
+            "B C I O P N S T U V E",
+            "jump to bridge/chorus/instrumental/other/pre-chorus/intro/slide/tag/outro/verse/ending",
+        ),
         (". or ,", "toggle base (black) screen ↔ current slide"),
         ("Shift+→ / Shift+↓", "next slide without displaying it"),
         ("Shift+← / Shift+↑", "previous slide without displaying it"),
@@ -487,11 +626,17 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         // F5 restarts from the beginning (§1.6); the player-focus play/pause
         // the changelog adds has no focusable widget in this port, so media
         // toggling lives on the Message-tab transport button instead.
-        ("F5", "start presentation from the beginning (play/pause: Message-tab transport)"),
+        (
+            "F5",
+            "start presentation from the beginning (play/pause: Message-tab transport)",
+        ),
         ("X", "next PowerPoint slide"),
         ("F6", "focus the slide panel"),
         // Save is per-document: the song in the editor, otherwise the agenda.
-        ("Ctrl+S", "save (the song in the editor, otherwise the agenda)"),
+        (
+            "Ctrl+S",
+            "save (the song in the editor, otherwise the agenda)",
+        ),
         ("Alt+S / Alt+B", "jump to Songbooks / Bibles"),
         // 1.10: "add one of those songs by pressing Ctrl+song position" —
         // never view switches, which the original does not bind.
@@ -501,13 +646,26 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+* / Ctrl+/", "extend / shrink verse range end"),
         ("Shift+* / Shift+/", "extend / shrink verse range start"),
         ("Ctrl+Q", "quit"),
+        ("F9", "check for updates (manual; needs network)"),
     ]
 }
 
 /// Font families for the Font ribbon group (system names only; nothing is
 /// bundled — GPUI falls back when a family is missing).
-pub fn font_families() -> [&'static str; 4] {
-    ["Sans", "Serif", "Mono", "Candara"]
+/// Lyric font families: real Windows families, verified present on the
+/// operator's machine (WI-026) — no aliases that resolve unpredictably.
+/// Worship default is Verdana (highly legible projected sans).
+pub fn font_families() -> [&'static str; 8] {
+    [
+        "Verdana",
+        "Arial",
+        "Tahoma",
+        "Trebuchet MS",
+        "Georgia",
+        "Times New Roman",
+        "Calibri",
+        "Segoe UI",
+    ]
 }
 
 /// The vertical command strip beside the slide list, in the original's exact
@@ -571,6 +729,7 @@ pub enum BibleSearch {
 
 impl BibleSearch {
     /// The other mode — what the magnifier button switches to.
+    #[allow(dead_code)] // kept for magnifier-button rewire
     pub fn toggled(self) -> BibleSearch {
         match self {
             BibleSearch::Reference => BibleSearch::Keyword,
@@ -596,6 +755,51 @@ impl BibleSearch {
     }
 }
 
+/// Vendor 3-state search-mode cycle for the magnifier button at the left of
+/// the Bible search box (`RESEARCH-org.md` §1.5, 1.13): reference entry →
+/// keyword hunt → reference *with surrounding context* → plain reference.
+/// Returns the next `(mode, context)` pair; pure so it is unit-testable.
+pub fn next_bible_search(mode: BibleSearch, context: bool) -> (BibleSearch, bool) {
+    match (mode, context) {
+        (BibleSearch::Reference, false) => (BibleSearch::Keyword, false),
+        (BibleSearch::Keyword, _) => (BibleSearch::Reference, true),
+        (BibleSearch::Reference, true) => (BibleSearch::Reference, false),
+    }
+}
+
+/// Browser song row, vendor order (`songbooks-grouped.png` inline rows,
+/// `SCREENSHOT-1.29-LAYOUT.md` tree rows): an optional `*` for unsaved
+/// changes, then the bare songbook abbreviation, the bare song number, then
+/// the title — space-separated, no brackets, no `#`, no author suffix.
+/// Empty abbreviation/number collapse away without leaving gaps.
+pub fn format_song_row(dirty: bool, abbrev: &str, number: &str, title: &str) -> String {
+    let mut t = String::new();
+    if dirty {
+        t.push('*');
+    }
+    if !abbrev.is_empty() {
+        t.push_str(abbrev);
+        t.push(' ');
+    }
+    if !number.is_empty() {
+        t.push_str(number);
+        t.push(' ');
+    }
+    t.push_str(title);
+    t
+}
+
+/// Empty-state line for a keyword hunt that matched nothing
+/// (`bible-search-mode-toggle.png`: `No Bible verse found.`). Shown only for
+/// a real (non-empty) query — an untouched box shows no scolding.
+pub fn keyword_empty_message(query_empty: bool, hits_empty: bool) -> Option<&'static str> {
+    if !hits_empty || query_empty {
+        None
+    } else {
+        Some("No Bible verse found.")
+    }
+}
+
 /// Glyphs the app may use for kind badges, tool-strip buttons and other
 /// icon-like labels.
 ///
@@ -605,15 +809,16 @@ impl BibleSearch {
 /// `font_safe_glyphs_cover_every_glyph_the_app_draws` fails if one comes back.
 /// Read by the font-safety test; see the note on `APP_GLYPHS` in main.rs.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const FONT_SAFE_GLYPHS: &str = "◈○◐◑◒◓▸⊕⊗⊖◌≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕⬌▪▫✳❀";
+pub const FONT_SAFE_GLYPHS: &str =
+    "◈○◐◑◒◓▸⊕⊗⊖◌⌕≡≣▣▩♪✝♫⌂◎©⚠⛢❄▤▦✎⚙⊘◘❖⬢◆◇◔◕►◄◀▲■☐☒☑✦✹✓▶◉A⬇●◊⊙◴◵◶◷⎔⬣➤➥⇢⇥⇧⇩⇦↔↕↑↓▾↗▦✖…•⬌▪▫✳❀";
 
 /// Chapter counts for the 66-book Protestant canon, indexed by
 /// 1-based book number (Genesis .. Revelation). Plain factual data backing
 /// the Bible browser's chapter-number grid.
 const CHAPTERS: [u32; 66] = [
-    50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13, 10, 42, 150, 31, 12, 8, 66,
-    52, 5, 48, 12, 14, 3, 9, 1, 4, 7, 3, 3, 3, 2, 14, 4, 28, 16, 24, 21, 28, 16, 16, 13, 6, 6,
-    4, 4, 5, 3, 6, 4, 3, 1, 13, 5, 5, 3, 5, 1, 1, 1, 22,
+    50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13, 10, 42, 150, 31, 12, 8, 66, 52,
+    5, 48, 12, 14, 3, 9, 1, 4, 7, 3, 3, 3, 2, 14, 4, 28, 16, 24, 21, 28, 16, 16, 13, 6, 6, 4, 4, 5,
+    3, 6, 4, 3, 1, 13, 5, 5, 3, 5, 1, 1, 1, 22,
 ];
 
 /// Chapters in a book (0 for out-of-range numbers).
@@ -628,16 +833,16 @@ pub fn chapter_count(book_number: u8) -> u32 {
 /// translation carries that chapter (B-10/B-29/B-34 3rd-column verse grid).
 pub fn default_verse_count(book_number: u8, chapter: u32) -> u32 {
     match (book_number, chapter) {
-        (1, 1) => 31,   // Genesis 1
-        (19, 23) => 6,  // Psalm 23
-        (19, 117) => 2, // Psalm 117
+        (1, 1) => 31,     // Genesis 1
+        (19, 23) => 6,    // Psalm 23
+        (19, 117) => 2,   // Psalm 117
         (19, 119) => 176, // Psalm 119
-        (40, 26) => 75, // Matthew 26
-        (43, 3) => 36,  // John 3
-        (45, 3) => 31,  // Romans 3
-        (46, 2) => 16,  // 1 Corinthians 2
-        (55, 3) => 17,  // 2 Timothy 3
-        (58, 11) => 40, // Hebrews 11
+        (40, 26) => 75,   // Matthew 26
+        (43, 3) => 36,    // John 3
+        (45, 3) => 31,    // Romans 3
+        (46, 2) => 16,    // 1 Corinthians 2
+        (55, 3) => 17,    // 2 Timothy 3
+        (58, 11) => 40,   // Hebrews 11
         _ => 31,
     }
 }
@@ -655,7 +860,9 @@ pub fn apply_verse_grid_click(
     ctrl: bool,
 ) -> (Vec<u32>, u32) {
     if shift {
-        let a = anchor.or_else(|| current.first().copied()).unwrap_or(clicked);
+        let a = anchor
+            .or_else(|| current.first().copied())
+            .unwrap_or(clicked);
         let lo = a.min(clicked);
         let hi = a.max(clicked);
         ((lo..=hi).collect(), a)
@@ -697,7 +904,11 @@ pub fn slide_verse_id(header: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn d_font() -> String {
-    "Sans".into()
+    "Verdana".into()
+}
+
+fn d_font_size() -> f32 {
+    44.0
 }
 
 fn d_align() -> String {
@@ -708,6 +919,10 @@ fn d_transition() -> String {
     "none".into()
 }
 
+fn d_bg_fit() -> String {
+    "cover".into()
+}
+
 /// Panel-layout + style prefs persisted to `videopsalm-layout.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayoutPrefs {
@@ -715,6 +930,9 @@ pub struct LayoutPrefs {
     pub lang: String,
     pub ribbon: String,
     pub accent_override: Option<String>,
+    /// Lyric text color override (`None` = theme default, "Auto").
+    #[serde(default)]
+    pub fg_override: Option<String>,
     pub style_level: String,
     pub max_lines: usize,
     pub max_chars: usize,
@@ -726,10 +944,20 @@ pub struct LayoutPrefs {
     pub show_chords_proj: bool,
     pub clock_overlay: bool,
     pub bg_kind: String,
+    /// Background image fit literal (`"cover"`/`"contain"`, default cover).
+    #[serde(default = "d_bg_fit")]
+    pub bg_fit: String,
+    /// Assigned background file path (`""` = none). Restored only when
+    /// the file still exists — never a ghost path (WI-024).
+    #[serde(default)]
+    pub bg_file: String,
     /// Font ribbon state (new keys carry serde defaults so pre-existing
     /// layout files keep loading).
     #[serde(default = "d_font")]
     pub font_family: String,
+    /// Projector lyric base size in px (WI-026); pre-WI-026 files load 44.
+    #[serde(default = "d_font_size")]
+    pub font_size: f32,
     #[serde(default)]
     pub bold: bool,
     #[serde(default)]
@@ -738,6 +966,8 @@ pub struct LayoutPrefs {
     pub underline: bool,
     #[serde(default = "d_align")]
     pub align: String,
+    #[serde(default = "d_align")]
+    pub valign: String,
     #[serde(default = "d_transition")]
     pub transition: String,
     /// Presentation flags (all default off; old layout files still load).
@@ -775,6 +1005,23 @@ pub struct LayoutPrefs {
     /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
     #[serde(default)]
     pub projector_display: usize,
+    /// Gallery library paths (persisted so backgrounds survive restart —
+    /// lens 2/3: an in-memory-only library meant every background vanished
+    /// on relaunch and USB-stick picks ghosted). Missing files are skipped
+    /// on load, never ghosted.
+    #[serde(default)]
+    pub gallery_images: Vec<String>,
+    #[serde(default)]
+    pub gallery_videos: Vec<String>,
+    /// Gallery chrome: expanded 2×5-compact → full grid (vendor §9:
+    /// collapsed compact + arrow to expand). Persisted so a large library
+    /// stays in the operator's chosen density across restarts.
+    #[serde(default)]
+    pub gallery_expanded: bool,
+    /// "Keep the gallery opened" pin (RESEARCH §5). Persistence is GAP
+    /// in the vendor docs; v1 persists it so the choice survives restart.
+    #[serde(default)]
+    pub gallery_keep_open: bool,
 }
 
 fn d_bible_search() -> String {
@@ -788,10 +1035,12 @@ fn d_aspect_ratio() -> String {
 impl Default for LayoutPrefs {
     fn default() -> Self {
         LayoutPrefs {
-            theme_id: "dark".to_string(),
+            theme_id: "light".to_string(),
             lang: "en".to_string(),
             ribbon: "agenda".to_string(),
             accent_override: None,
+            fg_override: None,
+            bg_file: String::new(),
             style_level: "Song".to_string(),
             max_lines: 4,
             max_chars: 40,
@@ -803,11 +1052,14 @@ impl Default for LayoutPrefs {
             show_chords_proj: false,
             clock_overlay: false,
             bg_kind: "color".to_string(),
+            bg_fit: d_bg_fit(),
             font_family: d_font(),
+            font_size: d_font_size(),
             bold: false,
             italic: false,
             underline: false,
             align: d_align(),
+            valign: d_align(),
             transition: d_transition(),
             text_hidden: false,
             shield: false,
@@ -821,6 +1073,10 @@ impl Default for LayoutPrefs {
             bible_search: d_bible_search(),
             aspect_ratio: d_aspect_ratio(),
             projector_display: 0,
+            gallery_images: Vec::new(),
+            gallery_videos: Vec::new(),
+            gallery_expanded: false,
+            gallery_keep_open: false,
         }
     }
 }
@@ -907,7 +1163,16 @@ mod tests {
     fn kind_badges_are_distinct_for_core_kinds() {
         use ItemKind::*;
         let kinds = [
-            Song, BibleVerses, Image, Video, Audio, Pdf, PowerPoint, YouTube, Clock, Alert,
+            Song,
+            BibleVerses,
+            Image,
+            Video,
+            Audio,
+            Pdf,
+            PowerPoint,
+            YouTube,
+            Clock,
+            Alert,
         ];
         let mut badges: Vec<&str> = kinds.iter().map(|k| kind_badge(*k)).collect();
         badges.sort_unstable();
@@ -924,6 +1189,10 @@ mod tests {
         p.theme_id = "blue".to_string();
         p.accent_override = Some("#22C55E".to_string());
         p.max_lines = 6;
+        p.gallery_images = vec!["/tmp/a.png".to_string()];
+        p.gallery_videos = vec!["/tmp/b.mp4".to_string()];
+        p.gallery_expanded = true;
+        p.gallery_keep_open = true;
         let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
         assert_eq!(back, p);
     }
@@ -931,7 +1200,7 @@ mod tests {
     #[test]
     fn layout_prefs_defaults_match_app_boot() {
         let p = LayoutPrefs::default();
-        assert_eq!(p.theme_id, "dark");
+        assert_eq!(p.theme_id, "light");
         assert_eq!(p.lang, "en");
         assert_eq!(p.max_lines, 4);
         assert_eq!(p.max_chars, 40);
@@ -967,10 +1236,19 @@ mod tests {
     }
 
     #[test]
-    fn font_families_have_system_defaults() {
+    fn font_families_are_real_installed_windows_families() {
         let fams = font_families();
-        assert!(fams.contains(&"Sans"));
-        assert!(fams.len() >= 3);
+        // No generic aliases: every entry names a family verified present
+        // on the operator's machine (WI-026).
+        for alias in ["Sans", "Serif", "Mono"] {
+            assert!(
+                !fams.contains(&alias),
+                "alias {alias} must not ship as a font"
+            );
+        }
+        assert!(fams.contains(&"Verdana"));
+        assert!(fams.contains(&"Arial"));
+        assert!(fams.len() >= 6);
     }
 
     #[test]
@@ -987,10 +1265,7 @@ mod tests {
 
     #[test]
     fn slide_headers_yield_verse_ids() {
-        assert_eq!(
-            slide_verse_id("Amazing Grace — V1"),
-            Some("V1".to_string())
-        );
+        assert_eq!(slide_verse_id("Amazing Grace — V1"), Some("V1".to_string()));
         assert_eq!(slide_verse_id("Holy — C (2/3)"), Some("C".to_string()));
         assert_eq!(slide_verse_id("John 3:16-18"), None);
         assert_eq!(slide_verse_id(""), None);
@@ -1017,8 +1292,23 @@ mod tests {
         // Badges for all agenda kinds.
         use vp_core::schema::ItemKind::*;
         for kind in [
-            Song, SongPowerPoint, Bible, BibleVerses, Image, Video, Audio, Pdf,
-            PowerPoint, PowerPointSlide, Excel, Word, YouTube, WebSite, Ccli, Alert, Clock,
+            Song,
+            SongPowerPoint,
+            Bible,
+            BibleVerses,
+            Image,
+            Video,
+            Audio,
+            Pdf,
+            PowerPoint,
+            PowerPointSlide,
+            Excel,
+            Word,
+            YouTube,
+            WebSite,
+            Ccli,
+            Alert,
+            Clock,
         ] {
             used.extend(kind_badge(kind).chars());
         }
@@ -1050,14 +1340,19 @@ mod tests {
         let actions: Vec<&str> = strip.iter().map(|(_, a)| *a).collect();
         assert_eq!(
             actions,
-            vec!["next", "base", "text", "shield", "freeze", "project", "mode"]
+            vec![
+                "next", "base", "text", "shield", "freeze", "project", "mode"
+            ]
         );
         // The pencil is the last entry and is separated from the six.
         assert_eq!(TOOL_STRIP_PENCIL_INDEX, 6);
         assert_eq!(strip.len(), TOOL_STRIP_PENCIL_INDEX + 1);
         // Alert and stage-view are NOT in this strip; they live elsewhere.
         for absent in ["alert", "stage", "show"] {
-            assert!(!actions.contains(&absent), "{absent} does not belong in the command strip");
+            assert!(
+                !actions.contains(&absent),
+                "{absent} does not belong in the command strip"
+            );
         }
     }
 
@@ -1086,13 +1381,68 @@ mod tests {
         assert_eq!(BibleSearch::default(), BibleSearch::Reference);
         assert_eq!(BibleSearch::Reference.toggled(), BibleSearch::Keyword);
         assert_eq!(BibleSearch::Keyword.toggled(), BibleSearch::Reference);
-        assert_eq!(BibleSearch::Reference.toggled().toggled(), BibleSearch::Reference);
+        assert_eq!(
+            BibleSearch::Reference.toggled().toggled(),
+            BibleSearch::Reference
+        );
         assert_eq!(BibleSearch::Reference.id(), "reference");
         assert_eq!(BibleSearch::Keyword.id(), "keyword");
         // Placeholders tell the operator what the box expects, per language.
-        assert!(BibleSearch::Reference.placeholder("en").contains("Reference"));
+        assert!(
+            BibleSearch::Reference
+                .placeholder("en")
+                .contains("Reference")
+        );
         assert!(BibleSearch::Keyword.placeholder("en").contains("phrase"));
-        assert!(BibleSearch::Reference.placeholder("fr").contains("Référence"));
+        assert!(
+            BibleSearch::Reference
+                .placeholder("fr")
+                .contains("Référence")
+        );
+    }
+
+    #[test]
+    fn bible_search_button_cycles_three_states() {
+        use super::next_bible_search;
+        // Reference -> keyword -> reference-with-context -> plain reference.
+        assert_eq!(
+            next_bible_search(BibleSearch::Reference, false),
+            (BibleSearch::Keyword, false)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Keyword, false),
+            (BibleSearch::Reference, true)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Keyword, true),
+            (BibleSearch::Reference, true)
+        );
+        assert_eq!(
+            next_bible_search(BibleSearch::Reference, true),
+            (BibleSearch::Reference, false)
+        );
+    }
+
+    #[test]
+    fn song_rows_lead_with_number_not_brackets() {
+        use super::format_song_row;
+        assert_eq!(format_song_row(false, "M", "2762838", "Amazing Grace"), "M 2762838 Amazing Grace");
+        assert_eq!(format_song_row(true, "M", "2762838", "Amazing Grace"), "*M 2762838 Amazing Grace");
+        assert_eq!(format_song_row(false, "", "", "New song"), "New song");
+        assert_eq!(format_song_row(true, "", "", "New song"), "*New song");
+        assert_eq!(format_song_row(false, "", "1", "Can It Make It Like the Lord"), "1 Can It Make It Like the Lord");
+        assert_eq!(format_song_row(false, "M", "", "Amazing Grace"), "M Amazing Grace");
+    }
+
+    #[test]
+    fn keyword_empty_state_only_scolds_real_queries() {
+        use super::keyword_empty_message;
+        assert_eq!(keyword_empty_message(true, true), None);
+        assert_eq!(keyword_empty_message(false, false), None);
+        assert_eq!(
+            keyword_empty_message(false, true),
+            Some("No Bible verse found.")
+        );
     }
 
     // ------------------------------------------------------------ keymap
@@ -1164,6 +1514,9 @@ mod tests {
         // Message-tab transport button is the documented play/pause path.
         assert_eq!(route_pres_key("f5"), Some(PresKey::StartPres));
         assert_eq!(route_pres_key("f6"), Some(PresKey::FocusSlides));
+        // F9 is the manual update check: explicit consent, one HTTPS GET,
+        // no download, no background polling.
+        assert_eq!(route_pres_key("f9"), Some(PresKey::CheckUpdates));
         assert_eq!(route_pres_key("ctrl-*"), Some(PresKey::RangeExtendEnd));
         assert_eq!(route_pres_key("ctrl-/"), Some(PresKey::RangeShrinkEnd));
         assert_eq!(route_pres_key("shift-*"), Some(PresKey::RangeExtendStart));
@@ -1282,11 +1635,30 @@ mod tests {
     fn shortcut_help_covers_every_documented_group() {
         let rows = shortcut_help();
         assert!(rows.len() >= 20);
-        let text = rows.iter().map(|(k, d)| format!("{k} {d}")).collect::<Vec<_>>().join("\n");
+        let text = rows
+            .iter()
+            .map(|(k, d)| format!("{k} {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         for needle in [
-            "Space", "PgDn", "1…9", "B C I O P N S T U V E", "Escape", "Ctrl+P",
-            "Ctrl+T", "Ctrl+B", "Ctrl+R", "Ctrl+E", "Ctrl+F1", "Alt", "Shift+→", "+ / -", "Home / End",
-            "F5", "Ctrl+1…9", "Alt+S / Alt+B",
+            "Space",
+            "PgDn",
+            "1…9",
+            "B C I O P N S T U V E",
+            "Escape",
+            "Ctrl+P",
+            "Ctrl+T",
+            "Ctrl+B",
+            "Ctrl+R",
+            "Ctrl+E",
+            "Ctrl+F1",
+            "Alt",
+            "Shift+→",
+            "+ / -",
+            "Home / End",
+            "F5",
+            "Ctrl+1…9",
+            "Alt+S / Alt+B",
         ] {
             assert!(text.contains(needle), "help table missing {needle}");
         }
@@ -1349,7 +1721,8 @@ mod tests {
             "show_abbrev":true,"show_number":true,"show_chords_proj":false,
             "clock_overlay":false,"bg_kind":"color"}"#;
         let p = LayoutPrefs::from_json(old).expect("old layout must still load");
-        assert_eq!(p.font_family, "Sans");
+        assert_eq!(p.font_family, "Verdana");
+        assert_eq!(p.font_size, 44.0);
         assert_eq!(p.align, "center");
         assert_eq!(p.transition, "none");
         assert!(!p.bold && !p.italic && !p.underline);
@@ -1378,7 +1751,85 @@ mod tests {
 
         // Canonical chapter verse counts for documented screenshot chapters.
         assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
-        assert_eq!(default_verse_count(43, 3), 36);  // John 3
-        assert_eq!(default_verse_count(19, 23), 6);  // Psalm 23
+        assert_eq!(default_verse_count(43, 3), 36); // John 3
+        assert_eq!(default_verse_count(19, 23), 6); // Psalm 23
+    }
+
+    #[test]
+    fn styles_dropdown_preserves_all_eight_levels() {
+        // SCREENSHOT-1.29-LAYOUT.md: the Styles group is a `Song ▾`
+        // dropdown, not 8 buttons. Every level must survive behind it.
+        let levels = style_levels();
+        assert_eq!(levels.len(), 8);
+        for level in levels {
+            let caption = style_dropdown_label(level);
+            assert!(caption.starts_with(level), "caption {caption:?}");
+            assert!(caption.contains('▾'), "caption {caption:?} lacks its menu mark");
+        }
+        assert_eq!(style_dropdown_label("Song"), "Song ▾");
+    }
+
+    #[test]
+    fn agenda_rail_gives_every_button_its_own_menu_mark() {
+        // The rail's five buttons each carry a `▾` affordance in the render
+        // layer; the spec fixes the order (add, save, delete, up, down).
+        let buttons = agenda_rail_buttons();
+        assert_eq!(buttons.len(), 5);
+        let actions: Vec<&str> = buttons.iter().map(|(_, a)| *a).collect();
+        assert_eq!(
+            actions,
+            vec!["add", "save", "delete", "move up", "move down"]
+        );
+        // Every rail button opens a true popup menu with the real 1.29
+        // contents (UX-RESEARCH §3.1): Add offers sources, Save offers the
+        // save variants, Delete offers scope, moves offer distance.
+        for (_, action) in buttons {
+            let items = rail_menu_items(action);
+            assert!(!items.is_empty(), "{action} menu must not be empty");
+        }
+        let add: Vec<&str> = rail_menu_items("add").iter().map(|(id, _)| *id).collect();
+        assert!(add.contains(&"add-selected"));
+        assert!(add.iter().any(|id| id.starts_with("add-") && *id != "add-selected"));
+        let save: Vec<&str> = rail_menu_items("save").iter().map(|(id, _)| *id).collect();
+        assert!(save.contains(&"save"));
+        assert!(save.contains(&"save-as"));
+        assert!(save.contains(&"save-full"));
+        assert!(rail_menu_items("nope").is_empty());
+    }
+
+    #[test]
+    fn styles_preset_row_and_override_dot() {
+        // The Styles preset row glyphs are cascade levels (UX-RESEARCH
+        // §4.2), so picking one can never disagree with the dropdown.
+        let presets = style_preset_levels();
+        assert_eq!(presets, ["Base", "Songbooks", "Song", "Verse"]);
+        let levels = style_levels();
+        for preset in presets {
+            assert!(levels.contains(&preset), "{preset} not a style level");
+        }
+        // The green dot is lit on any override level, hollow on Base.
+        assert!(!style_override_dot("Base"));
+        assert!(style_override_dot("Song"));
+        assert!(style_override_dot("Verse"));
+    }
+
+    #[test]
+    fn agenda_rename_rejects_blank_titles() {
+        assert_eq!(valid_rename_title("  Opening loop  "), Some("Opening loop".into()));
+        assert_eq!(valid_rename_title("   "), None);
+        assert_eq!(valid_rename_title(""), None);
+    }
+
+    #[test]
+    fn bible_slides_group_verses_into_badged_rows() {
+        // Per-slide Bible rows: the badge derives from the verses packed
+        // into that slide's lines.
+        let lines = vec!["16 For God so loved".to_string(), "17 continued".to_string()];
+        assert_eq!(bible_slide_verses(&lines), vec![16, 17]);
+        assert_eq!(bible_slide_badge(&lines), "16–17");
+        let single = vec!["18 alone".to_string()];
+        assert_eq!(bible_slide_badge(&single), "18");
+        assert!(bible_slide_badge(&[]).is_empty());
+        assert!(bible_slide_verses(&["(no Bible translation installed)".to_string()]).is_empty());
     }
 }

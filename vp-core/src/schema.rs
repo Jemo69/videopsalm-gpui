@@ -274,8 +274,7 @@ pub enum Versification {
 
 impl Versification {
     /// Canonical literals in declaration order.
-    pub const ALL: [Versification; 3] =
-        [Versification::En, Versification::Ru, Versification::Fr];
+    pub const ALL: [Versification; 3] = [Versification::En, Versification::Ru, Versification::Fr];
     /// [`Versification::ALL`] as wire literals, same indices.
     pub const LITERALS: [&'static str; 3] = ["EN", "RU", "FR"];
     /// Canonical literal for this versification.
@@ -478,8 +477,7 @@ impl FlowType {
     ];
 
     /// [`FlowType::ALL`] as wire literals, same indices.
-    pub const LITERALS: [&'static str; 5] =
-        ["default", "manual", "auto", "AutoAdvance", "Loop"];
+    pub const LITERALS: [&'static str; 5] = ["default", "manual", "auto", "AutoAdvance", "Loop"];
     /// Accepted (canonical + legacy alias) literals, in canonical order.
     pub const ACCEPTED: [&'static str; 10] = [
         "default",
@@ -711,6 +709,63 @@ impl Align {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VAlign {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
+impl VAlign {
+    /// Canonical literals in declaration order.
+    pub const ALL: [VAlign; 3] = [VAlign::Top, VAlign::Center, VAlign::Bottom];
+    /// [`VAlign::ALL`] as wire literals, same indices.
+    pub const LITERALS: [&'static str; 3] = ["top", "center", "bottom"];
+    /// Canonical literal for this alignment.
+    pub fn literal(&self) -> &'static str {
+        VAlign::LITERALS[VAlign::ALL.iter().position(|a| a == self).unwrap()]
+    }
+    /// `true` for the default (centered) placement — used to skip the key
+    /// on write, so files written before WI-021 round-trip byte-identical.
+    pub fn is_center(&self) -> bool {
+        matches!(self, VAlign::Center)
+    }
+}
+
+/// How a background image fills the screen (WI-025): `Cover` crops to fill
+/// every pixel (the vendor's only background mode — RESEARCH §1.1), `Contain`
+/// shows the whole image with bars (the vendor's *slideshow* mode, offered
+/// here for backgrounds on user request). Never stretched: the vendor never
+/// stretches, and neither do we.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BgFit {
+    #[default]
+    Cover,
+    Contain,
+}
+
+impl BgFit {
+    /// Canonical literals in declaration order.
+    pub const ALL: [BgFit; 2] = [BgFit::Cover, BgFit::Contain];
+    /// [`BgFit::ALL`] as wire literals, same indices.
+    pub const LITERALS: [&'static str; 2] = ["cover", "contain"];
+    /// Canonical literal for this fit.
+    pub fn literal(&self) -> &'static str {
+        BgFit::LITERALS[BgFit::ALL.iter().position(|a| a == self).unwrap()]
+    }
+    /// Parse a wire/prefs literal; unknown (or empty) means the default.
+    pub fn from_literal(s: &str) -> Option<BgFit> {
+        match s {
+            "cover" => Some(BgFit::Cover),
+            "contain" => Some(BgFit::Contain),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Margins {
     #[serde(default)]
@@ -733,6 +788,11 @@ pub struct BodyStyle {
     pub color: String,
     #[serde(default)]
     pub align: Align,
+    /// Vertical placement of the lyric block in its frame (WI-021): top,
+    /// center or bottom. Global operator setting like `align`; the cascade
+    /// `vAlign` leaf stays model-only until per-level editing lands.
+    #[serde(default, skip_serializing_if = "VAlign::is_center")]
+    pub valign: VAlign,
     #[serde(default)]
     pub margins: Margins,
     /// Lyric frame, normalized (B-06). `None` means "not authored at this
@@ -748,6 +808,7 @@ impl Default for BodyStyle {
             size: default_body_size(),
             color: default_fg(),
             align: Align::Center,
+            valign: VAlign::Center,
             margins: Margins::default(),
             rect: None,
         }
@@ -937,8 +998,7 @@ mod tests {
     /// The single cross-port fixture. `electron-app/tests/crossPort.test.ts`
     /// parses the same file and asserts the same things, which is what turns
     /// AGENTS.md rule 3 from a convention into a checked invariant.
-    const FIXTURE: &str =
-        include_str!("../../tests/fixtures/cross-port-schema.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/cross-port-schema.json");
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(FIXTURE).expect("cross-port fixture must be valid JSON")
@@ -1031,6 +1091,8 @@ mod tests {
         assert_literals_match_serde(&ItemKind::ALL, &ItemKind::LITERALS);
         assert_literals_match_serde(&Versification::ALL, &Versification::LITERALS);
         assert_literals_match_serde(&Align::ALL, &Align::LITERALS);
+        assert_literals_match_serde(&VAlign::ALL, &VAlign::LITERALS);
+        assert_literals_match_serde(&BgFit::ALL, &BgFit::LITERALS);
         assert_literals_match_serde(&BackgroundKind::ALL, &BackgroundKind::LITERALS);
     }
 
@@ -1039,17 +1101,15 @@ mod tests {
         // Guards against an alias that was documented but never wired to
         // serde: every entry in ACCEPTED must deserialize.
         for lit in ChordNotation::ACCEPTED {
-            let parsed: ChordNotation =
-                serde_json::from_value(serde_json::json!(lit)).unwrap_or_else(|_| {
+            let parsed: ChordNotation = serde_json::from_value(serde_json::json!(lit))
+                .unwrap_or_else(|_| {
                     panic!("ChordNotation::ACCEPTED lists {lit} but serde rejects it")
                 });
             assert!(ChordNotation::LITERALS.contains(&parsed.literal()));
         }
         for lit in FlowType::ACCEPTED {
             let parsed: FlowType = serde_json::from_value(serde_json::json!(lit))
-                .unwrap_or_else(|_| {
-                    panic!("FlowType::ACCEPTED lists {lit} but serde rejects it")
-                });
+                .unwrap_or_else(|_| panic!("FlowType::ACCEPTED lists {lit} but serde rejects it"));
             assert!(FlowType::LITERALS.contains(&parsed.literal()));
         }
         // No alias shadows a canonical spelling.
@@ -1060,11 +1120,25 @@ mod tests {
     #[test]
     fn canonical_literal_tables_agree_with_cross_port_fixture() {
         let f = fixture();
-        assert_eq!(f["enums"]["chordNotations"], serde_json::json!(ChordNotation::LITERALS));
-        assert_eq!(f["enums"]["flowTypes"], serde_json::json!(FlowType::LITERALS));
-        assert_eq!(f["enums"]["itemKinds"], serde_json::json!(ItemKind::LITERALS));
-        assert_eq!(f["enums"]["versifications"], serde_json::json!(Versification::LITERALS));
+        assert_eq!(
+            f["enums"]["chordNotations"],
+            serde_json::json!(ChordNotation::LITERALS)
+        );
+        assert_eq!(
+            f["enums"]["flowTypes"],
+            serde_json::json!(FlowType::LITERALS)
+        );
+        assert_eq!(
+            f["enums"]["itemKinds"],
+            serde_json::json!(ItemKind::LITERALS)
+        );
+        assert_eq!(
+            f["enums"]["versifications"],
+            serde_json::json!(Versification::LITERALS)
+        );
         assert_eq!(f["enums"]["aligns"], serde_json::json!(Align::LITERALS));
+        assert_eq!(f["enums"]["vAligns"], serde_json::json!(VAlign::LITERALS));
+        assert_eq!(f["enums"]["bgFits"], serde_json::json!(BgFit::LITERALS));
         assert_eq!(
             f["enums"]["backgroundKinds"],
             serde_json::json!(BackgroundKind::LITERALS)
@@ -1081,8 +1155,8 @@ mod tests {
     /// new field was missing from its own model.
     #[test]
     fn geometry_constants_agree_with_cross_port_fixture() {
-        use crate::geometry::{AspectRatio, FitMode, Viewport, resolve_percent, TEXT_SIZE_SPACE};
         use crate::geometry::{resolve, text_size};
+        use crate::geometry::{resolve_percent, AspectRatio, FitMode, Viewport, TEXT_SIZE_SPACE};
 
         let f = fixture();
         let g = &f["geometry"];
@@ -1131,7 +1205,12 @@ mod tests {
 
         // A rect authored once, resolved against two outputs, under the
         // projection default: the same fraction of the frame on both.
-        let body = Rect { x: 0, y: 0, w: 10_000, h: 9_300 };
+        let body = Rect {
+            x: 0,
+            y: 0,
+            w: 10_000,
+            h: 9_300,
+        };
         for case in g["resolveBody9300Fill"].as_array().unwrap() {
             let vp = Viewport::from_pixels(
                 case["viewport"]["width"].as_i64().unwrap() as i32,
@@ -1158,8 +1237,22 @@ mod tests {
         // uniformity over output fidelity.
         let vp43 = Viewport::from_pixels(1024, 768);
         let boxed = resolve_percent(body, vp43, FitMode::Letterbox);
-        assert!((boxed.x - g["resolveBody9300Letterbox4x3"]["percent"]["x"].as_f64().unwrap()).abs() < 1e-6);
-        assert!((boxed.w - g["resolveBody9300Letterbox4x3"]["percent"]["w"].as_f64().unwrap()).abs() < 1e-6);
+        assert!(
+            (boxed.x
+                - g["resolveBody9300Letterbox4x3"]["percent"]["x"]
+                    .as_f64()
+                    .unwrap())
+            .abs()
+                < 1e-6
+        );
+        assert!(
+            (boxed.w
+                - g["resolveBody9300Letterbox4x3"]["percent"]["w"]
+                    .as_f64()
+                    .unwrap())
+            .abs()
+                < 1e-6
+        );
         assert_eq!(
             resolve(body, vp43, FitMode::Letterbox),
             pixel_rect_from_fixture(&g["resolveBody9300Letterbox4x3"]["pixels"])
@@ -1172,7 +1265,10 @@ mod tests {
         assert!((t70 - want70).abs() < 0.01, "70 units at 1080p was {t70}");
         let t100 = text_size(100.0, hd, FitMode::Letterbox);
         let want100 = g["textSize100At1080p"].as_f64().unwrap() as f32;
-        assert!((t100 - want100).abs() < 0.01, "100 units at 1080p was {t100}");
+        assert!(
+            (t100 - want100).abs() < 0.01,
+            "100 units at 1080p was {t100}"
+        );
     }
 
     /// Fixture helper: a `PixelRect` from the fixture's `{x,y,w,h}` object.
@@ -1249,6 +1345,36 @@ mod tests {
     }
 
     #[test]
+    fn bgfit_literals_round_trip_with_cover_default() {
+        assert_eq!(BgFit::LITERALS, ["cover", "contain"]);
+        assert_eq!(BgFit::default(), BgFit::Cover);
+        for v in BgFit::ALL {
+            assert_eq!(BgFit::from_literal(v.literal()), Some(v));
+        }
+        assert_eq!(BgFit::from_literal("stretch"), None);
+        assert_eq!(BgFit::from_literal(""), None);
+    }
+
+    #[test]
+    fn valign_literals_round_trip_with_center_default() {
+        assert_eq!(VAlign::LITERALS, ["top", "center", "bottom"]);
+        assert_eq!(VAlign::default(), VAlign::Center);
+        for v in VAlign::ALL {
+            let lit = v.literal();
+            let back: VAlign =
+                serde_json::from_value(serde_json::Value::String(lit.into())).unwrap();
+            assert_eq!(back, v);
+        }
+        // Old agenda/style files without the key still load, centered.
+        let body: BodyStyle = serde_json::from_value(serde_json::json!({
+            "font": "Sans", "size": 48.0, "color": "#fff", "align": "left", "margins": {}
+        }))
+        .unwrap();
+        assert_eq!(body.valign, VAlign::Center);
+        assert_eq!(body.align, Align::Left);
+    }
+
+    #[test]
     fn fixture_styles_round_trip_with_transition() {
         let f = fixture();
         let styles: Vec<Style> = serde_json::from_value(f["styles"].clone()).unwrap();
@@ -1258,10 +1384,7 @@ mod tests {
         for a in Align::LITERALS {
             assert!(aligns.contains(&a), "fixture missing align {a}");
         }
-        let kinds: Vec<&str> = styles
-            .iter()
-            .map(|s| s.background.kind.literal())
-            .collect();
+        let kinds: Vec<&str> = styles.iter().map(|s| s.background.kind.literal()).collect();
         for k in BackgroundKind::LITERALS {
             assert!(kinds.contains(&k), "fixture missing background kind {k}");
         }
@@ -1290,10 +1413,22 @@ mod tests {
 
         // Overrides: typed fields and free-form extras both survive.
         let song_item = &agenda.items[0];
-        assert_eq!(song_item.overrides.verse_order.as_ref().unwrap(), &["V2", "V1"]);
-        assert_eq!(song_item.overrides.extra["pptxImport"], serde_json::json!(true));
-        assert_eq!(song_item.overrides.extra["linkCardOnly"], serde_json::json!(false));
-        let ppt = &agenda.items[ItemKind::ALL.iter().position(|k| *k == ItemKind::PowerPoint).unwrap()];
+        assert_eq!(
+            song_item.overrides.verse_order.as_ref().unwrap(),
+            &["V2", "V1"]
+        );
+        assert_eq!(
+            song_item.overrides.extra["pptxImport"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            song_item.overrides.extra["linkCardOnly"],
+            serde_json::json!(false)
+        );
+        let ppt = &agenda.items[ItemKind::ALL
+            .iter()
+            .position(|k| *k == ItemKind::PowerPoint)
+            .unwrap()];
         assert_eq!(ppt.overrides.start_slide, Some(1));
         assert_eq!(ppt.overrides.end_slide, Some(12));
         let bible = &agenda.items[1];
@@ -1303,7 +1438,10 @@ mod tests {
         );
 
         // autoAdvanceMs rides along with the timed modes.
-        let auto_idx = ItemKind::ALL.iter().position(|k| *k == ItemKind::Bible).unwrap();
+        let auto_idx = ItemKind::ALL
+            .iter()
+            .position(|k| *k == ItemKind::Bible)
+            .unwrap();
         assert_eq!(agenda.items[auto_idx].flow_type, FlowType::Auto);
         assert_eq!(agenda.items[auto_idx].auto_advance_ms, Some(30000));
 
@@ -1409,7 +1547,10 @@ mod tests {
             chordpro: None,
         };
         let json = serde_json::to_value(&without).unwrap();
-        assert!(json.get("chordpro").is_none(), "absent chordpro must be omitted");
+        assert!(
+            json.get("chordpro").is_none(),
+            "absent chordpro must be omitted"
+        );
         assert_eq!(
             json,
             serde_json::json!({"notation": "ABC", "transpose": 0, "overlays": []})
@@ -1426,14 +1567,18 @@ mod tests {
             "secondTranslationId": null
         });
         for (json, want) in [
-            (serde_json::json!({"id": "i", "kind": "Song", "title": "t",
+            (
+                serde_json::json!({"id": "i", "kind": "Song", "title": "t",
                                "ref": {"songId": "s"}, "flowType": "AutoAdvance",
                                "autoAdvanceMs": 5000, "overrides": empty_overrides}),
-             FlowType::AutoAdvance),
-            (serde_json::json!({"id": "i", "kind": "Video", "title": "t",
+                FlowType::AutoAdvance,
+            ),
+            (
+                serde_json::json!({"id": "i", "kind": "Video", "title": "t",
                                "ref": {"file": "a.mp4"}, "flowType": "Loop",
                                "autoAdvanceMs": null, "overrides": empty_overrides}),
-             FlowType::Loop),
+                FlowType::Loop,
+            ),
         ] {
             let item: AgendaItem = serde_json::from_value(json.clone()).unwrap();
             assert_eq!(item.flow_type, want);

@@ -38,15 +38,15 @@
 //! this file. Rendering is thin glue over `crate` helpers and is NOT
 //! unit-testable headless (needs `cx` + a window).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use gpui::{Context, Div, div, px};
 use gpui::prelude::*;
+use gpui::{App, Context, Div, MouseButton, ObjectFit, Rgba, ScrollHandle, Window, div, img, px, rgb};
 use vp_core::cascade::{Chain, Level};
 use vp_core::media::{self, MediaFileKind, MediaLibrary, MediaPlayer, filter_media};
-use vp_core::schema::BackgroundKind;
+use vp_core::schema::{BackgroundKind, BgFit};
 
-use crate::{Root, UI, btn, label, row, section};
+use crate::{Root, TooltipLabel, UI, btn, btn_disabled, btn_tip, label, row, section};
 
 /// Sentinel id for the video gallery's leading black entry (RESEARCH §7):
 /// picking it *unassigns* the background (falls through the cascade to
@@ -54,21 +54,55 @@ use crate::{Root, UI, btn, label, row, section};
 pub const BLACK_SENTINEL_ID: &str = "black";
 
 /// Gallery UI state, owned by [`Root`](crate::Root).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GalleryState {
     pub library: MediaLibrary,
     pub image_filter: String,
     pub video_filter: String,
     pub selected_image: Option<String>,
     pub selected_video: Option<String>,
+    /// Which gallery dropdown is open, if any (vendor: the Background tab
+    /// opens a gallery flyout; v1 renders it inline under the tab buttons —
+    /// press Images/Videos to drop it down, pick a thumbnail to assign and
+    /// it closes unless pinned). `None` = both closed.
+    pub open: Option<MediaFileKind>,
     /// "Keep the gallery opened" pin (RESEARCH §5): without it, picking a
-    /// thumbnail collapses the panel back to its one-line summary.
+    /// thumbnail closes the dropdown back to the tab buttons.
     pub keep_open: bool,
-    pub collapsed: bool,
+    /// Compact/expanded switch. Operator-requested density (the vendor's §9
+    /// only documents a collapsed state + an expanded resizable grid with
+    /// remembered *size* — the 2×5-no-names compact strip is the operator's
+    /// large-library ask, not a vendor measurement). One flag covers both
+    /// galleries (simplification: the vendor remembers each gallery's
+    /// geometry separately — noted, not hidden). Persisted in
+    /// `LayoutPrefs::gallery_expanded`.
+    pub expanded: bool,
     /// Last reported gallery folder for the Explore-folder row. Defaults to
     /// the vendor's documented `…/VideoPsalm/Images|Videos` layout *as a
     /// label only* — v1 never creates directories there.
     pub folder: Option<String>,
+    /// Per-gallery scroll handles (WI-034): each thumbnail grid scrolls
+    /// inside its own bounded box instead of clipping.
+    pub scroll_images: ScrollHandle,
+    pub scroll_videos: ScrollHandle,
+}
+
+impl Default for GalleryState {
+    fn default() -> Self {
+        Self {
+            library: MediaLibrary::default(),
+            image_filter: String::new(),
+            video_filter: String::new(),
+            selected_image: None,
+            selected_video: None,
+            open: None,
+            keep_open: false,
+            expanded: false,
+            folder: None,
+            scroll_images: ScrollHandle::new(),
+            scroll_videos: ScrollHandle::new(),
+        }
+    }
 }
 
 impl GalleryState {
@@ -132,6 +166,47 @@ impl GalleryState {
             MediaFileKind::Video => self.selected_video.as_deref(),
         }
     }
+
+    /// Compact density (operator request for large libraries): 2 rows × 5
+    /// columns of small previews with no filenames; the arrow expands to
+    /// the full captioned grid. (Vendor §9 documents collapsed + expanded
+    /// + remembered size, not this exact density.)
+    pub const COMPACT_CAP: usize = 10;
+    /// Full-grid cap so a big folder stays fast (count line + Search
+    /// narrow it further).
+    pub const GRID_CAP: usize = 60;
+
+    /// File cells the compact strip holds for `kind`: the video sentinel
+    /// (§7, chrome not a file) occupies one of the 10 cells, so 9 files +
+    /// sentinel = a true 2×5 strip. Images hold 10 files.
+    pub fn compact_file_limit(kind: MediaFileKind) -> usize {
+        match kind {
+            MediaFileKind::Image => Self::COMPACT_CAP,
+            MediaFileKind::Video => Self::COMPACT_CAP - 1,
+        }
+    }
+
+    /// Which entry positions to render (pure, tested): the first `limit`
+    /// entries, plus the assigned one when it falls outside — the
+    /// highlighted thumbnail (§3/S3) must always be visible, never silently
+    /// cropped by the compact strip.
+    pub fn visible_positions(
+        total: usize,
+        limit: usize,
+        assigned_pos: Option<usize>,
+    ) -> Vec<usize> {
+        let mut out: Vec<usize> = (0..total.min(limit)).collect();
+        if let Some(a) = assigned_pos {
+            if a < total && !out.contains(&a) {
+                // Room for the pin: drop the last unassigned cell so the
+                // strip stays exactly 2×5.
+                out.pop();
+                out.push(a);
+            }
+        }
+        out
+    }
+
 }
 
 /// Read the gallery folder label (Explore-folder row).
@@ -149,56 +224,102 @@ pub fn gallery_folder(state: &GalleryState, kind: MediaFileKind) -> String {
 // Rendering (thin glue; needs cx, not unit-tested)
 // ---------------------------------------------------------------------------
 
-/// The Background ribbon tab: both galleries + the shared import row.
-///
-/// The vendor docks galleries as an expandable flyout off the Background tab
-/// (RESEARCH §9); v1 renders them inline in the tab body with the same rows,
-/// collapsed to a one-line summary by Close and restored by clicking it.
+/// The Background ribbon tab: Images/Videos dropdown buttons, exactly the
+/// vendor interaction (the real tab drops a gallery flyout; v1 drops the
+/// same panel inline under the buttons). Picking a thumbnail assigns it as
+/// the background and closes the dropdown unless pinned open.
 pub(crate) fn background_tab(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
-    let collapsed = root.galleries.collapsed;
-    if collapsed {
-        let (ni, nv) = (
-            root.galleries.library.images().count(),
-            root.galleries.library.videos().count(),
-        );
-        return section(
+    let (ni, nv) = (
+        root.galleries.library.images().count(),
+        root.galleries.library.videos().count(),
+    );
+    let open = root.galleries.open;
+    let mut kids = vec![row(vec![
+        btn(
             ui,
-            "Background — galleries",
-            vec![row(vec![btn(
+            cx,
+            &format!("▦ Images ({ni}) ▾"),
+            open == Some(MediaFileKind::Image),
+            |this, _, _, cx| {
+                this.galleries.open = if this.galleries.open == Some(MediaFileKind::Image) {
+                    None
+                } else {
+                    Some(MediaFileKind::Image)
+                };
+                cx.notify();
+            },
+        ),
+        btn(
+            ui,
+            cx,
+            &format!("▶ Videos ({nv}) ▾"),
+            open == Some(MediaFileKind::Video),
+            |this, _, _, cx| {
+                this.galleries.open = if this.galleries.open == Some(MediaFileKind::Video) {
+                    None
+                } else {
+                    Some(MediaFileKind::Video)
+                };
+                cx.notify();
+            },
+        ),
+        label(
+            ui,
+            "Compact 2×5 previews (no names) — ▾ Expand for the full grid. Click a thumbnail to set the background.",
+            12.,
+        ),
+    ])];
+    // Image aspect handling (WI-025): cover crops to fill every pixel (the
+    // vendor's only background mode); contain shows the whole image with
+    // bars. Never stretched, like the original.
+    kids.push(row(vec![
+        label(ui, "Background image fit:", 12.),
+        btn(
+            ui,
+            cx,
+            "Cover (crop to fill)",
+            root.bg_fit == BgFit::Cover,
+            |this, _, _, cx| {
+                this.bg_fit = BgFit::Cover;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ),
+        btn(
+            ui,
+            cx,
+            "Contain (whole image)",
+            root.bg_fit == BgFit::Contain,
+            |this, _, _, cx| {
+                this.bg_fit = BgFit::Contain;
+                this.persist_layout_quiet();
+                cx.notify();
+            },
+        ),
+    ]));
+    if let Some(kind) = open {
+        kids.push(gallery_panel(root, ui, cx, kind));
+        kids.push(row(vec![
+            btn(
                 ui,
                 cx,
-                &format!("▸ Galleries: {ni} image(s), {nv} video(s) — click to expand"),
+                "Browse & assign background…",
                 false,
                 |this, _, _, cx| {
-                    this.galleries.collapsed = false;
-                    cx.notify();
+                    browse_assign_background(this, cx);
                 },
-            )])],
-        );
+            ),
+            label(
+                ui,
+                "Pick any image/video file; it is imported and assigned in one step.",
+                12.,
+            ),
+        ]));
     }
     section(
         ui,
         "Background — image + video galleries (user files only)",
-        vec![
-            row(vec![label(
-                ui,
-                "Backgrounds are a style-level property: pick a thumbnail to assign it. Search filters file names as you type.",
-                12.,
-            )]),
-            gallery_panel(root, ui, cx, MediaFileKind::Image),
-            gallery_panel(root, ui, cx, MediaFileKind::Video),
-            import_row(root, ui, cx),
-            row(vec![btn(
-                ui,
-                cx,
-                "✖ Close galleries",
-                false,
-                |this, _, _, cx| {
-                    this.galleries.collapsed = true;
-                    cx.notify();
-                },
-            )]),
-        ],
+        kids,
     )
 }
 
@@ -212,21 +333,51 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
 
     // Search row (§2.1 row 5).
     let (filter_text, count) = match kind {
-        MediaFileKind::Image => (root.galleries.image_filter.clone(), root.galleries.filtered_images().len()),
-        MediaFileKind::Video => (root.galleries.video_filter.clone(), root.galleries.filtered_videos().len()),
+        MediaFileKind::Image => (
+            root.galleries.image_filter.clone(),
+            root.galleries.filtered_images().len(),
+        ),
+        MediaFileKind::Video => (
+            root.galleries.video_filter.clone(),
+            root.galleries.filtered_videos().len(),
+        ),
     };
     kids.push(row(vec![
         label(ui, "Search:", 12.),
         div_field(root, ui, cx, &filter_text, kind),
     ]));
 
-    // Thumbnail grid. The video gallery leads with the black sentinel (§7).
+    // Import row first, per the vendor control stack (RESEARCH §3 row 1:
+    // `+ Import videos`, file dialog, bottom-anchored in the original).
+    kids.push(import_row(root, ui, cx, kind));
+
+    // Thumbnail grid — operator-requested density on the vendor §9
+    // collapsed/expanded shape: collapsed = 2 rows × 5 small previews with
+    // NO filenames + an arrow to expand; expanded = the full captioned
+    // grid. Both modes scroll inside a bounded box (their own ScrollHandle)
+    // so a large library never pushes the layout around. Preview/projector
+    // stay in sync via republish-on-assign below.
+    // The video gallery leads with the black sentinel (§7, chrome — not a
+    // file, never counted against the cap).
+    let expanded = root.galleries.expanded;
     let mut thumbs: Vec<Div> = Vec::new();
     if kind == MediaFileKind::Video {
         let assigned = root.bg_kind == BackgroundKind::Color;
-        thumbs.push(thumb_btn(ui, cx, kind, BLACK_SENTINEL_ID, "■ black (remove bg)", assigned));
+        if expanded {
+            thumbs.push(thumb_btn(
+                ui,
+                cx,
+                kind,
+                BLACK_SENTINEL_ID,
+                "■ black (remove bg)",
+                assigned,
+                None,
+            ));
+        } else {
+            thumbs.push(thumb_compact_sentinel(ui, cx, assigned));
+        }
     }
-    let entries: Vec<(String, String, bool)> = {
+    let entries: Vec<(String, String, bool, Option<PathBuf>)> = {
         let shown = match kind {
             MediaFileKind::Image => root.galleries.filtered_images(),
             MediaFileKind::Video => root.galleries.filtered_videos(),
@@ -235,61 +386,216 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
             .into_iter()
             .map(|e| {
                 let assigned = root.bg_file.as_deref() == Some(e.path.as_path());
-                (e.id.clone(), e.caption(), assigned)
+                (e.id.clone(), e.caption(), assigned, Some(e.path.clone()))
             })
             .collect()
     };
     if thumbs.is_empty() && entries.is_empty() {
+        // Images only (the video grid always holds the black sentinel): a
+        // one-line way in, not a void. The import row sits directly below.
         thumbs.push(label(
             ui,
-            "(empty — galleries list user-added files only; add one below)",
+            "No images yet — Browse… below (or type a path + Import). Thumbnails appear here; click one to set it as the background.",
             12.,
         ));
     }
-    for (id, caption, assigned) in entries {
-        thumbs.push(thumb_btn(ui, cx, kind, &id, &caption, assigned));
+    let total = entries.len();
+    // File cells this mode holds (compact video leaves one cell for the
+    // sentinel so the strip stays exactly 2×5).
+    let file_limit = if expanded {
+        GalleryState::GRID_CAP
+    } else {
+        GalleryState::compact_file_limit(kind)
+    };
+    // The highlighted (assigned) thumbnail must stay visible even when it
+    // falls outside the first N (§3/S3) — pin it into the rendered set.
+    let assigned_pos = entries.iter().position(|(_, _, a, _)| *a);
+    let positions = GalleryState::visible_positions(total, file_limit, assigned_pos);
+    let shown_files = positions.len();
+    for i in positions {
+        // Compact tile number = 1-based match position (stable under the
+        // filter): tiles stay distinguishable without filenames, and the
+        // operator can say "click 7". The pinned assigned entry keeps its
+        // true number, not its strip slot.
+        let n = i + 1;
+        let (id, caption, assigned, path) = &entries[i];
+        if expanded {
+            thumbs.push(thumb_btn(
+                ui,
+                cx,
+                kind,
+                id,
+                caption,
+                *assigned,
+                path.as_deref(),
+            ));
+        } else {
+            thumbs.push(thumb_compact(
+                ui,
+                cx,
+                kind,
+                id,
+                caption,
+                *assigned,
+                path.as_deref(),
+                n,
+            ));
+        }
     }
-    kids.push(
-        div_grid()
-            .children(thumbs)
-            .child(label(ui, &format!("{count} shown"), 11.)),
-    );
-
-    // Control stack (§3): Delete · Explore · Rebuild · Luminosité · Keep-open.
-    let selected = root.galleries.selection(kind).map(str::to_string);
-    let sel_label = selected.clone().unwrap_or_default();
-    kids.push(row(vec![
-        btn(
-            ui,
-            cx,
-            "Delete selected video/image",
-            false,
-            move |this, _, _, cx| {
-                delete_selected(this, cx, kind);
-            },
-        ),
-        label(
+    // Bounded, breathing grid: 5 columns, 8px gaps/padding (was 4px —
+    // the "suffocated" report), own scroller per gallery so the scroll
+    // offset never leaks between Images/Videos and never shoves the
+    // control stack off-screen. Compact ≈ 2 rows (10 cells, no captions);
+    // expanded shows captioned tiles in the same box height with a scroll
+    // (≈3 rows visible, the rest scrolls).
+    let (scroll_id, max_h, handle): (&'static str, f32, ScrollHandle) = match (kind, expanded) {
+        (MediaFileKind::Image, false) => ("gallery-images-compact", 184., root.galleries.scroll_images.clone()),
+        (MediaFileKind::Image, true) => ("gallery-images-full", 336., root.galleries.scroll_images.clone()),
+        (MediaFileKind::Video, false) => ("gallery-videos-compact", 184., root.galleries.scroll_videos.clone()),
+        (MediaFileKind::Video, true) => ("gallery-videos-full", 336., root.galleries.scroll_videos.clone()),
+    };
+    let grid_list = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(8.))
+        .p(px(8.))
+        .flex_1()
+        .min_h_0()
+        .id(scroll_id)
+        .overflow_y_scroll()
+        .track_scroll(&handle)
+        .max_h(px(max_h))
+        .children(thumbs);
+    // `grid_list` is Stateful (it has an id so it can scroll) while the
+    // count/overflow lines are plain Divs — wrap so the column has one
+    // child type. The overflow note lives HERE, not in the wrapping grid
+    // (as a grid cell it became a wide 12th tile and broke the 2×5).
+    // Counts name matches, never rendered tiles: "200 match" with 10
+    // tiles shown is honest; "200 shown" was the lie.
+    let mut grid_body: Div = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .child(grid_list)
+        .child(label(
             ui,
             &format!(
-                "{}",
-                if sel_label.is_empty() {
-                    "(nothing selected — row is greyed in the original)"
-                } else {
-                    "selected — Delete removes it from the library"
-                }
+                "{count} match{}, showing {shown_files}{}",
+                if count == 1 { "" } else { "es" },
+                if expanded { " — full grid" } else { " — 2×5 compact, no names" },
             ),
             11.,
-        ),
-    ]));
+        ));
+    if total > file_limit {
+        grid_body = grid_body.child(label(
+            ui,
+            &format!(
+                "+{} more — {}.",
+                total - file_limit,
+                if expanded {
+                    "refine Search to narrow the grid"
+                } else {
+                    "expand ▾ for the captioned grid or refine Search"
+                },
+            ),
+            11.,
+        ));
+    }
+    kids.push(grid_body);
+    // The expand/collapse arrow: vendor §9 "expand the gallery". Compact
+    // is the default (large libraries stay a calm 2×5 strip); one press
+    // opens the full captioned grid, another collapses back. The label
+    // promises matches, not rendered tiles (above GRID_CAP only the first
+    // 60 render — Search narrows the rest).
+    let expand_label: String = if expanded {
+        "▴ Collapse to 2×5 compact".to_string()
+    } else if count > GalleryState::GRID_CAP {
+        format!("▾ Expand — show first {} of {count}", GalleryState::GRID_CAP)
+    } else {
+        format!("▾ Expand — show all {count}")
+    };
     kids.push(row(vec![btn(
         ui,
         cx,
-        "Explore media folder",
-        false,
-        move |this, _, _, cx| {
-            explore_folder(this, cx, kind);
+        &expand_label,
+        expanded,
+        |this, _, _, cx| {
+            this.galleries.expanded = !this.galleries.expanded;
+            this.persist_layout_quiet();
+            cx.notify();
         },
+    ), label(
+        ui,
+        if expanded {
+            "full grid with names — scrollable"
+        } else {
+            "compact: small previews only, scrollable"
+        },
+        11.,
     )]));
+
+    // Control stack (§3): Import is first (above); Delete · Explore ·
+    // Rebuild · Luminosité · Keep-open · Close follow the vendor order.
+    // Delete is greyed with nothing selected (the original greys the row).
+    let delete_label = match kind {
+        MediaFileKind::Image => "Delete selected image",
+        MediaFileKind::Video => "Delete selected video",
+    };
+    let selected = root.galleries.selection(kind).map(str::to_string);
+    let has_sel = selected.is_some();
+    kids.push(row(vec![
+        if has_sel {
+            btn(
+                ui,
+                cx,
+                delete_label,
+                false,
+                move |this, _, _, cx| {
+                    delete_selected(this, cx, kind);
+                },
+            )
+        } else {
+            btn_disabled(ui, delete_label)
+        },
+        label(
+            ui,
+            if has_sel {
+                "selected — Delete removes it from the library"
+            } else {
+                "(nothing selected)"
+            },
+            11.,
+        ),
+    ]));
+    let has_folder = root.galleries.folder.is_some();
+    kids.push(row(vec![
+        if has_folder {
+            btn(
+                ui,
+                cx,
+                "Explore media folder",
+                false,
+                move |this, _, _, cx| {
+                    explore_folder(this, cx, kind);
+                },
+            )
+        } else {
+            btn_disabled(ui, "Explore media folder")
+        },
+        label(
+            ui,
+            if has_folder {
+                ""
+            } else {
+                "(opens the gallery folder — none yet; open a VideoPsalm folder first)"
+            },
+            11.,
+        ),
+    ]));
     kids.push(row(vec![btn(
         ui,
         cx,
@@ -305,10 +611,26 @@ fn gallery_panel(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKi
     kids.push(row(vec![btn(
         ui,
         cx,
-        if pin { "☑ Keep the gallery opened" } else { "☐ Keep the gallery opened" },
+        if pin {
+            "☑ Keep the gallery opened"
+        } else {
+            "☐ Keep the gallery opened"
+        },
         pin,
         |this, _, _, cx| {
             this.galleries.keep_open = !this.galleries.keep_open;
+            this.persist_layout_quiet();
+            cx.notify();
+        },
+    )]));
+    // Close collapses the dropdown (vendor stack row 7, `Fermer`).
+    kids.push(row(vec![btn(
+        ui,
+        cx,
+        "✖ Close",
+        false,
+        |this, _, _, cx| {
+            this.galleries.open = None;
             cx.notify();
         },
     )]));
@@ -323,8 +645,50 @@ fn thumb_btn(
     id: &str,
     caption: &str,
     assigned: bool,
+    thumb: Option<&Path>,
 ) -> Div {
     let id_owned = id.to_string();
+    // Images with a reachable file render a real thumbnail (vendor parity);
+    // everything else (videos, sentinel, missing files) stays a captioned
+    // tile — gpui 0.2.2 has no video decoder for poster frames.
+    // Breathing room (operator "suffocated" report): 6px padding, 6px
+    // gaps, 112×63 previews (was 4px / 96×54).
+    if kind == MediaFileKind::Image
+        && let Some(p) = thumb
+        && p.exists()
+    {
+        let file = p.to_path_buf();
+        let mut cell = div()
+            .p(px(6.))
+            .rounded_sm()
+            .bg(ui.panel)
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer();
+        cell = if assigned {
+            cell.border_2().border_color(ui.engaged)
+        } else {
+            cell.border_1().border_color(ui.border)
+        };
+        return cell
+            .child(img(file).object_fit(ObjectFit::Cover).w(px(112.)).h(px(63.)))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(ui.fg)
+                    .max_w(px(120.))
+                    .overflow_hidden()
+                    .child(caption.to_string()),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    assign_pick(this, cx, kind, &id_owned);
+                }),
+            );
+    }
     let prefix = match kind {
         MediaFileKind::Image => "▦",
         MediaFileKind::Video => "▶",
@@ -333,6 +697,112 @@ fn thumb_btn(
     btn(ui, cx, &text, assigned, move |this, _, _, cx| {
         assign_pick(this, cx, kind, &id_owned);
     })
+}
+
+/// Compact thumbnail: small preview ONLY, no filename (operator request
+/// for large libraries: "small preview not name of the file"). The
+/// filename survives as a hover tooltip (a11y + parity), `n` (1-based match
+/// position) keeps tiles distinguishable without names, and captions return
+/// in the expanded grid. Same 112×63 preview so compact and expanded tiles
+/// align when the arrow flips.
+fn thumb_compact(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    kind: MediaFileKind,
+    id: &str,
+    caption: &str,
+    assigned: bool,
+    thumb: Option<&Path>,
+    n: usize,
+) -> Div {
+    let id_owned = id.to_string();
+    let tip = caption.to_string();
+    let badge = format!("{n}");
+    if kind == MediaFileKind::Image
+        && let Some(p) = thumb
+        && p.exists()
+    {
+        let file = p.to_path_buf();
+        let mut cell = div()
+            .p(px(6.))
+            .rounded_sm()
+            .bg(ui.panel)
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(4.))
+            .cursor_pointer();
+        cell = if assigned {
+            cell.border_2().border_color(ui.engaged)
+        } else {
+            cell.border_1().border_color(ui.border)
+        };
+        // Position badge overlaid top-left: the tile stays nameless but
+        // countable ("click 7"), and the pinned assigned entry shows its
+        // true match number.
+        cell = cell.child(
+            div()
+                .relative()
+                .child(
+                    img(file)
+                        .object_fit(ObjectFit::Cover)
+                        .w(px(112.))
+                        .h(px(63.)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(2.))
+                        .left(px(2.))
+                        .px(px(5.))
+                        .rounded_sm()
+                        .bg(Rgba {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.65,
+                        })
+                        .text_size(px(10.))
+                        .text_color(rgb(0xFFFFFF))
+                        .child(badge),
+                ),
+        );
+        // Hover tooltip carries the filename the tile hides.
+        cell.interactivity().tooltip(
+            move |_: &mut Window, cx: &mut App| cx.new(|_| TooltipLabel(tip.clone())).into(),
+        );
+        return cell.on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                assign_pick(this, cx, kind, &id_owned);
+            }),
+        );
+    }
+    // Videos + missing files: numbered glyph tile with the filename on
+    // hover — bare "▶" tiles are otherwise indistinguishable.
+    let glyph = match kind {
+        MediaFileKind::Image => format!("▦ {n}"),
+        MediaFileKind::Video => format!("▶ {n}"),
+    };
+    btn_tip(ui, cx, &glyph, caption, assigned, move |this, _, _, cx| {
+        assign_pick(this, cx, kind, &id_owned);
+    })
+}
+
+/// Compact black sentinel: ■ only, no "(remove bg)" caption — the full
+/// caption returns in the expanded grid. Hover names it.
+fn thumb_compact_sentinel(ui: &UI, cx: &mut Context<Root>, assigned: bool) -> Div {
+    let id_owned = BLACK_SENTINEL_ID.to_string();
+    btn_tip(
+        ui,
+        cx,
+        "■",
+        "■ black (remove bg) — falls through to Base",
+        assigned,
+        move |this, _, _, cx| {
+            assign_pick(this, cx, MediaFileKind::Video, &id_owned);
+        },
+    )
 }
 
 /// Luminosité row: the documented ⊟/⊞ steppers over a signed, zero-centred,
@@ -346,7 +816,9 @@ fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileK
         (p.value, p.source)
     };
     let shown = value.round() as i32;
-    let src = source.map(|l| l.literal().to_string()).unwrap_or_else(|| "default".to_string());
+    let src = source
+        .map(|l| l.literal().to_string())
+        .unwrap_or_else(|| "default".to_string());
     row(vec![
         label(ui, &format!("Luminosité [{}]:", level.literal()), 12.),
         btn(ui, cx, "⊟", false, move |this, _, _, cx| {
@@ -359,28 +831,47 @@ fn luminosity_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileK
     ])
 }
 
-/// Shared import row: a path field plus per-kind Import buttons. v1 adds by
-/// path (no embedded file picker, no folder watching — there is no live
-/// gallery folder in this port).
-fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>) -> Div {
+/// Shared import row: a path field plus Browse and the per-kind Import
+/// button (vendor stack row 1). The path can be typed, pasted, or filled
+/// from the OS file picker (Browse); imports stay path-based (no folder
+/// watching — there is no live gallery folder in this port).
+fn import_row(root: &Root, ui: &UI, cx: &mut Context<Root>, kind: MediaFileKind) -> Div {
+    let import_label = match kind {
+        MediaFileKind::Image => "+ Import images",
+        MediaFileKind::Video => "+ Import videos",
+    };
     row(vec![
         label(ui, "Import file path:", 12.),
         div().flex_1().child(root.gallery_import_field.clone()),
-        btn(ui, cx, "+ Import image", false, |this, _, _, cx| {
-            import_path(this, cx, MediaFileKind::Image);
+        btn(ui, cx, "Browse…", false, |this, _, _, cx| {
+            if let Some(p) = crate::file_picker::pick_file(
+                "Import image or video",
+                &[
+                    crate::file_picker::IMAGE_FILTER,
+                    crate::file_picker::VIDEO_FILTER,
+                ],
+            ) {
+                this.gallery_import_field
+                    .update(cx, |f, cx| f.set_text(&p.to_string_lossy(), cx));
+                cx.notify();
+            } else {
+                this.set_status(cx, "Browse cancelled — no file chosen.");
+            }
         }),
-        btn(ui, cx, "+ Import video", false, |this, _, _, cx| {
-            import_path(this, cx, MediaFileKind::Video);
+        btn(ui, cx, import_label, false, move |this, _, _, cx| {
+            import_path(this, cx, kind);
         }),
     ])
 }
 
-fn div_grid() -> Div {
-    div().flex().flex_row().flex_wrap().gap(px(4.)).p(px(4.))
-}
-
 /// Filter text field for one gallery (search-as-you-type, RESEARCH §8).
-fn div_field(root: &Root, ui: &UI, _cx: &mut Context<Root>, current: &str, kind: MediaFileKind) -> Div {
+fn div_field(
+    root: &Root,
+    ui: &UI,
+    _cx: &mut Context<Root>,
+    current: &str,
+    kind: MediaFileKind,
+) -> Div {
     let _ = current;
     let field = match kind {
         MediaFileKind::Image => root.gallery_image_filter.clone(),
@@ -397,29 +888,144 @@ fn div_field(root: &Root, ui: &UI, _cx: &mut Context<Root>, current: &str, kind:
 pub(crate) fn wire_gallery_fields(root: &mut Root, cx: &mut Context<Root>) {
     use crate::text_field::Changed;
     let f = root.gallery_image_filter.clone();
-    root._subs.push(cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
-        if emitter == this.gallery_image_filter {
-            this.galleries.image_filter = ev.text.clone();
-            cx.notify();
-        }
-    }));
+    root._subs.push(
+        cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
+            if emitter == this.gallery_image_filter {
+                this.galleries.image_filter = ev.text.clone();
+                cx.notify();
+            }
+        }),
+    );
     let f = root.gallery_video_filter.clone();
-    root._subs.push(cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
-        if emitter == this.gallery_video_filter {
-            this.galleries.video_filter = ev.text.clone();
-            cx.notify();
-        }
-    }));
+    root._subs.push(
+        cx.subscribe(&f, |this: &mut Root, emitter, ev: &Changed, cx| {
+            if emitter == this.gallery_video_filter {
+                this.galleries.video_filter = ev.text.clone();
+                cx.notify();
+            }
+        }),
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Mutations (called from button closures above and from tests via Root)
 // ---------------------------------------------------------------------------
 
+/// Browse-button flow: pick any image/video file, import it, assign it as
+/// the background — one step. When a native folder is open (the typed path
+/// points at a directory), the file is copied into its Images/Videos
+/// library first, so the background survives as managed media; otherwise
+/// the picked path is listed directly, like a typed import.
+/// Application folder (like other apps): picks are COPIED into the app's own
+/// `Media/Images|Videos` support folder so backgrounds survive restart and
+/// USB-stick removal (lens 2/3). The native doc-folder path above wins when
+/// set; otherwise the file lands in `<app-data>/Media/Images|Videos`.
+fn persistent_media_copy(src: &Path, kind: &str) -> Result<PathBuf, String> {
+    let sub = match kind {
+        "video" => "Videos",
+        _ => "Images",
+    };
+    // App support folder first (Windows `%APPDATA%/VideoPsalm`, Linux
+    // `~/.local/share/videopsalm`, macOS `~/Library/Application Support`).
+    // Falls back to `./media` beside the layout file when the support
+    // folder cannot be created (read-only profile, headless test).
+    let dir = match vp_core::native_folder::ensure_app_dirs() {
+        Ok(base) => base.join("Media").join(sub),
+        Err(_) => {
+            let base = std::path::Path::new(crate::ux::LayoutPrefs::FILE)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            if base.as_os_str().is_empty() {
+                Path::new(".").join("media").join(sub)
+            } else {
+                base.join("media").join(sub)
+            }
+        }
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dest = dir.join(vp_core::native_folder::free_media_name(&dir, &name));
+    std::fs::copy(src, &dest).map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
+    Ok(dest)
+}
+
+pub(crate) fn browse_assign_background(root: &mut Root, cx: &mut Context<Root>) {
+    let Some(picked) = crate::file_picker::pick_file(
+        "Pick background image or video",
+        &[
+            crate::file_picker::IMAGE_FILTER,
+            crate::file_picker::VIDEO_FILTER,
+        ],
+    ) else {
+        root.set_status(cx, "Browse cancelled — no file chosen.");
+        return;
+    };
+    let kind = match picked
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v") => MediaFileKind::Video,
+        _ => MediaFileKind::Image,
+    };
+    let doc = root.native_path_field.read(cx).text();
+    let listed = if !doc.trim().is_empty() && Path::new(doc.trim()).is_dir() {
+        let sub = if kind == MediaFileKind::Video {
+            "video"
+        } else {
+            "image"
+        };
+        match vp_core::native_folder::import_media_file(&picked, doc.trim(), sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(
+                    cx,
+                    format!("Copy failed ({e}) — listing the picked file instead."),
+                );
+                picked.clone()
+            }
+        }
+    } else {
+        // No doc folder: copy into persistent ./media so the pick
+        // survives restart (lens 2/3) instead of referencing a temp path.
+        let sub = if kind == MediaFileKind::Video { "video" } else { "image" };
+        match persistent_media_copy(&picked, sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(
+                    cx,
+                    format!("Copy failed ({e}) — listing the picked file instead."),
+                );
+                picked.clone()
+            }
+        }
+    };
+    root.gallery_import_field
+        .update(cx, |f, cx| f.set_text(&listed.to_string_lossy(), cx));
+    import_path(root, cx, kind);
+    if let Some(id) = root.galleries.selection(kind).map(str::to_string) {
+        assign_pick(root, cx, kind, &id);
+    }
+    cx.notify();
+}
+
 /// Click-to-assign: set the background kind + file, highlight the thumbnail,
 /// collapse unless pinned (RESEARCH §§5–6.2). Assigning a video also loads it
 /// into the media player (stopped) so F5 / the Message-tab transport acts on
 /// the loop the room sees.
+///
+/// Preview/projector sync: the background is part of the published snapshot,
+/// so every assign re-publishes — otherwise the control preview and the room
+/// disagree until the next slide (the reported "out of sync" class). A
+/// display change must obey even under a freeze hold, hence `republish`
+/// semantics via [`crate::presentation::publish`] (same as blank/text).
+/// Collapse-on-pick is skipped while pinned; scroll position is kept by the
+/// per-gallery ScrollHandle (the grid never rebuilds its id).
 pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFileKind, id: &str) {
     root.galleries.select(kind, id);
     match root.galleries.assign_path(kind, id) {
@@ -430,18 +1036,29 @@ pub(crate) fn assign_pick(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
                 root.media.open(path);
             }
             root.persist_layout_quiet();
-            root.set_status(cx, format!("Background assigned: {} (level Images/Videos — tune Luminosité above).", GalleryState::assigned_kind(kind).literal()));
+            root.set_status(
+                cx,
+                format!(
+                    "Background assigned: {} (level Images/Videos — tune Luminosité above).",
+                    GalleryState::assigned_kind(kind).literal()
+                ),
+            );
         }
         None => {
             // Black sentinel (§7): unassign; the level falls through to Base.
             root.bg_kind = BackgroundKind::Color;
             root.bg_file = None;
             root.persist_layout_quiet();
-            root.set_status(cx, "Background removed (black sentinel) — falls through to Base.");
+            root.set_status(
+                cx,
+                "Background removed (black sentinel) — falls through to Base.",
+            );
         }
     }
+    // Keep preview + projector + control header on the same background.
+    crate::presentation::publish(root, cx);
     if !root.galleries.keep_open {
-        root.galleries.collapsed = true;
+        root.galleries.open = None;
     }
     cx.notify();
 }
@@ -452,7 +1069,10 @@ pub(crate) fn delete_selected(root: &mut Root, cx: &mut Context<Root>, kind: Med
         return;
     };
     if id == BLACK_SENTINEL_ID {
-        root.set_status(cx, "Delete: the black sentinel is built in — it cannot be deleted.");
+        root.set_status(
+            cx,
+            "Delete: the black sentinel is built in — it cannot be deleted.",
+        );
         return;
     }
     // If the assigned file is deleted, fall back to a plain color (§7 logic).
@@ -468,15 +1088,33 @@ pub(crate) fn delete_selected(root: &mut Root, cx: &mut Context<Root>, kind: Med
         MediaFileKind::Image => root.galleries.selected_image = None,
         MediaFileKind::Video => root.galleries.selected_video = None,
     }
+    // The room was showing this file: fall-through must reach preview +
+    // projector now, not on the next slide (same sync class as assign).
+    crate::presentation::publish(root, cx);
     root.set_status(cx, "Gallery entry deleted.");
     cx.notify();
 }
 
-pub(crate) fn step_luminosity(root: &mut Root, cx: &mut Context<Root>, kind: MediaFileKind, delta: f32) {
+pub(crate) fn step_luminosity(
+    root: &mut Root,
+    cx: &mut Context<Root>,
+    kind: MediaFileKind,
+    delta: f32,
+) {
     let level = GalleryState::luminosity_level(kind);
     let cur = media::resolve_luminosity(&root.cascade, GalleryState::chain(kind)).value;
     media::set_luminosity(&mut root.cascade, level, cur + delta);
-    root.set_status(cx, format!("Luminosité {kind:?}: {:+} at {} (cascade).", (cur + delta).round() as i32, level.literal()));
+    // Luminosity grades the projected pixels: preview + projector must
+    // re-render now (same out-of-sync class as background assigns).
+    crate::presentation::publish(root, cx);
+    root.set_status(
+        cx,
+        format!(
+            "Luminosité {kind:?}: {:+} at {} (cascade).",
+            (cur + delta).round() as i32,
+            level.literal()
+        ),
+    );
     cx.notify();
 }
 
@@ -492,12 +1130,44 @@ pub(crate) fn import_path(root: &mut Root, cx: &mut Context<Root>, kind: MediaFi
         // Still list it: the file may appear later (network share, USB stick
         // plugged in at the venue). The projector shows an honest
         // "missing file" note rather than failing silently.
-        root.set_status(cx, format!("Import: {p} is not reachable now — listed anyway, projector will say so."));
-    } else {
-        root.set_status(cx, format!("Imported {p}."));
+        root.set_status(
+            cx,
+            format!("Import: {p} is not reachable now — listed anyway, projector will say so."),
+        );
+        let id = root.galleries.library.add(path, kind);
+        root.galleries.select(kind, &id);
+        cx.notify();
+        return;
     }
-    let id = root.galleries.library.add(path, kind);
+    // Store the import: copy into the VideoPsalm document folder when one is
+    // open (`Images/` / `Videos/`), else into the application's own support
+    // folder — an imported image/video is stored, not just referenced.
+    let sub = if kind == MediaFileKind::Video { "video" } else { "image" };
+    let doc = root.native_path_field.read(cx).text();
+    let stored = if !doc.trim().is_empty() && Path::new(doc.trim()).is_dir() {
+        match vp_core::native_folder::import_media_file(&path, doc.trim(), sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(cx, format!("Import: copy failed ({e}) — listed in place."));
+                path.clone()
+            }
+        }
+    } else {
+        match persistent_media_copy(&path, sub) {
+            Ok(dst) => dst,
+            Err(e) => {
+                root.set_status(cx, format!("Import: copy failed ({e}) — listed in place."));
+                path.clone()
+            }
+        }
+    };
+    let stored_msg = stored.to_string_lossy().into_owned();
+    let id = root.galleries.library.add(stored, kind);
     root.galleries.select(kind, &id);
+    // Only overwrite the "copy failed" note when the store succeeded.
+    if !root.status.starts_with("Import: copy failed") {
+        root.set_status(cx, format!("Imported {p} → stored at {stored_msg}."));
+    }
     cx.notify();
 }
 
@@ -508,7 +1178,10 @@ pub(crate) fn explore_folder(root: &mut Root, cx: &mut Context<Root>, kind: Medi
     let folder = gallery_folder(&root.galleries, kind);
     // A `…`-prefixed label means "no real folder configured".
     if folder.starts_with('…') {
-        root.set_status(cx, "Explore: no gallery folder configured — imports are by path in v1.");
+        root.set_status(
+            cx,
+            "Explore: no gallery folder configured — imports are by path in v1.",
+        );
         return;
     }
     #[cfg(target_os = "linux")]
@@ -542,39 +1215,62 @@ mod tests {
 
     #[test]
     fn assignment_kind_follows_the_gallery() {
-        assert_eq!(GalleryState::assigned_kind(MediaFileKind::Image), BackgroundKind::Image);
-        assert_eq!(GalleryState::assigned_kind(MediaFileKind::Video), BackgroundKind::VideoLoop);
+        assert_eq!(
+            GalleryState::assigned_kind(MediaFileKind::Image),
+            BackgroundKind::Image
+        );
+        assert_eq!(
+            GalleryState::assigned_kind(MediaFileKind::Video),
+            BackgroundKind::VideoLoop
+        );
     }
 
     #[test]
     fn media_resolve_through_their_own_chains() {
         assert_eq!(GalleryState::chain(MediaFileKind::Image), Chain::Images);
         assert_eq!(GalleryState::chain(MediaFileKind::Video), Chain::Videos);
-        assert_eq!(GalleryState::luminosity_level(MediaFileKind::Image), Level::Images);
-        assert_eq!(GalleryState::luminosity_level(MediaFileKind::Video), Level::Videos);
+        assert_eq!(
+            GalleryState::luminosity_level(MediaFileKind::Image),
+            Level::Images
+        );
+        assert_eq!(
+            GalleryState::luminosity_level(MediaFileKind::Video),
+            Level::Videos
+        );
     }
 
     #[test]
     fn black_sentinel_unassigns_unknown_ids_do_nothing() {
         let mut s = GalleryState::default();
-        s.library.add(PathBuf::from("/v/a.mp4"), MediaFileKind::Video);
+        s.library
+            .add(PathBuf::from("/v/a.mp4"), MediaFileKind::Video);
         // Sentinel first: None = unassign (§7).
         assert_eq!(s.assign_path(MediaFileKind::Video, BLACK_SENTINEL_ID), None);
         assert_eq!(s.assign_path(MediaFileKind::Video, "nope"), None);
         // Images have no sentinel (GAP in §7: unverified for images).
         assert_eq!(s.assign_path(MediaFileKind::Image, BLACK_SENTINEL_ID), None);
-        let id = s.library.add(PathBuf::from("/p/b.jpg"), MediaFileKind::Image);
-        assert_eq!(s.assign_path(MediaFileKind::Image, &id), Some(PathBuf::from("/p/b.jpg")));
+        let id = s
+            .library
+            .add(PathBuf::from("/p/b.jpg"), MediaFileKind::Image);
+        assert_eq!(
+            s.assign_path(MediaFileKind::Image, &id),
+            Some(PathBuf::from("/p/b.jpg"))
+        );
     }
 
     #[test]
     fn filters_are_per_gallery_and_order_free() {
         let mut s = GalleryState::default();
-        s.library.add(PathBuf::from("/v/Red Sunset.mp4"), MediaFileKind::Video);
-        s.library.add(PathBuf::from("/p/Red Sunset.jpg"), MediaFileKind::Image);
+        s.library
+            .add(PathBuf::from("/v/Red Sunset.mp4"), MediaFileKind::Video);
+        s.library
+            .add(PathBuf::from("/p/Red Sunset.jpg"), MediaFileKind::Image);
         s.video_filter = "sunset red".into();
         assert_eq!(s.filtered_videos().len(), 1);
-        assert!(s.filtered_images().len() == 1, "image filter is independent (empty = all)");
+        assert!(
+            s.filtered_images().len() == 1,
+            "image filter is independent (empty = all)"
+        );
         s.image_filter = "desert".into();
         assert!(s.filtered_images().is_empty());
     }
@@ -602,5 +1298,65 @@ mod tests {
         let s = GalleryState::default();
         assert!(gallery_folder(&s, MediaFileKind::Image).ends_with("Images"));
         assert!(gallery_folder(&s, MediaFileKind::Video).ends_with("Videos"));
+    }
+
+    #[test]
+    fn compact_defaults_to_two_by_five_with_full_grid_on_expand() {
+        // Operator ask on the vendor §9 collapsed/expanded shape: collapsed
+        // = 2 rows × 5 small previews (no names); the arrow expands to the
+        // full captioned grid (capped for speed, Search narrows the rest).
+        let s = GalleryState::default();
+        assert!(!s.expanded, "compact is the default — large libraries stay calm");
+        assert_eq!(GalleryState::COMPACT_CAP, 10, "2 rows × 5");
+        assert_eq!(GalleryState::GRID_CAP, 60);
+        // Per-kind compact budgets (video leaves a cell for the sentinel).
+        assert_eq!(GalleryState::compact_file_limit(MediaFileKind::Image), 10);
+        assert_eq!(GalleryState::compact_file_limit(MediaFileKind::Video), 9);
+        // Rendered sets clamp: compact clamps, expanded caps for speed.
+        assert!(GalleryState::visible_positions(0, 10, None).is_empty());
+        assert_eq!(GalleryState::visible_positions(8, 10, None).len(), 8);
+        assert_eq!(GalleryState::visible_positions(200, 10, None).len(), 10);
+        assert_eq!(GalleryState::visible_positions(200, 60, None).len(), 60);
+        assert_eq!(GalleryState::visible_positions(25, 60, None).len(), 25);
+    }
+
+    #[test]
+    fn sentinel_never_counts_against_the_compact_cap() {
+        // The black sentinel (§7) is chrome, not a file: video compact
+        // holds 9 files + sentinel = exactly 10 cells (2×5).
+        assert_eq!(
+            GalleryState::compact_file_limit(MediaFileKind::Image),
+            10
+        );
+        assert_eq!(
+            GalleryState::compact_file_limit(MediaFileKind::Video),
+            9,
+            "sentinel takes the 10th cell"
+        );
+    }
+
+    #[test]
+    fn assigned_thumbnail_is_pinned_into_the_compact_strip() {
+        // §3/S3: the assigned thumbnail is highlighted — it must render
+        // even when it falls outside the first N.
+        assert_eq!(
+            GalleryState::visible_positions(200, 10, None),
+            (0..10).collect::<Vec<_>>()
+        );
+        // Assigned at position 50: pinned in, strip stays 10 cells.
+        let pinned = GalleryState::visible_positions(200, 10, Some(50));
+        assert_eq!(pinned.len(), 10);
+        assert!(pinned.contains(&50));
+        // Assigned inside the window: unchanged.
+        assert_eq!(
+            GalleryState::visible_positions(200, 10, Some(3)),
+            (0..10).collect::<Vec<_>>()
+        );
+        // Assigned out of range / empty library: no panic, no ghost.
+        assert_eq!(
+            GalleryState::visible_positions(5, 10, Some(99)),
+            (0..5).collect::<Vec<_>>()
+        );
+        assert!(GalleryState::visible_positions(0, 10, None).is_empty());
     }
 }

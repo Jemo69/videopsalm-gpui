@@ -12,19 +12,20 @@
 //! `videopsalm-aes.vpc` fixture (written by the TypeScript side) is
 //! decrypted here in tests, pinning both ports to one artifact.
 
-use aes::Aes256;
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
+use aes::Aes256;
 use crc32fast::Hasher as Crc32;
-use flate2::Compression;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
+use flate2::Compression;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use std::io::{Read, Write};
 
 /// VideoPsalm's fixed container password (`Extension.GetFileName`, 1.29).
 /// Not a user secret: it is the same ASCII constant for every install.
-pub const VPC_PASSWORD: &str = "5$l(va\\7N_0!',/:5?M0.(d_<8+5!Um2#~M@{5#2(C3]$'f|#:Y/}wG+-)Nt:x^8!Y.5Eq$)'7stk$y)\\.~Tg=&<l";
+pub const VPC_PASSWORD: &str =
+    "5$l(va\\7N_0!',/:5?M0.(d_<8+5!Um2#~M@{5#2(C3]$'f|#:Y/}wG+-)Nt:x^8!Y.5Eq$)'7stk$y)\\.~Tg=&<l";
 
 const LOCAL_SIG: u32 = 0x0403_4b50;
 const CENTRAL_SIG: u32 = 0x0201_4b50;
@@ -156,7 +157,8 @@ fn central_entries(buf: &[u8]) -> Result<Vec<CentralEntry>, String> {
 
 fn deflate(data: &[u8]) -> Vec<u8> {
     let mut enc = DeflateEncoder::new(Vec::new(), Compression::best());
-    enc.write_all(data).expect("deflate into memory cannot fail");
+    enc.write_all(data)
+        .expect("deflate into memory cannot fail");
     enc.finish().expect("deflate finish cannot fail")
 }
 
@@ -201,7 +203,12 @@ fn aes_ctr_crypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn extract_aes(payload: &[u8], aes: AesInfo, uncompressed_size: u32, password: &str) -> Result<Vec<u8>, String> {
+fn extract_aes(
+    payload: &[u8],
+    aes: AesInfo,
+    uncompressed_size: u32,
+    password: &str,
+) -> Result<Vec<u8>, String> {
     let salt_len = match aes.strength {
         1 => 8,
         2 => 12,
@@ -226,7 +233,8 @@ fn extract_aes(payload: &[u8], aes: AesInfo, uncompressed_size: u32, password: &
     if verifier != expected {
         return Err("Incorrect .vpc password (or the archive is not WinZip-AES)".to_string());
     }
-    let mut mac = Hmac::<Sha1>::new_from_slice(auth_key).map_err(|e| format!("Bad HMAC key: {e}"))?;
+    let mut mac =
+        Hmac::<Sha1>::new_from_slice(auth_key).map_err(|e| format!("Bad HMAC key: {e}"))?;
     mac.update(ciphertext);
     let digest = mac.finalize().into_bytes();
     if auth != &digest[..10] {
@@ -258,7 +266,11 @@ pub fn read_vpac_entries(data: &[u8], password: &str) -> Result<Vec<ArchiveEntry
             .get(local + 30 + name_len..data_start)
             .ok_or_else(|| "Malformed .vpc local file header".to_string())?;
         let flags = entry.flags | local_flags;
-        let method = if entry.method != 0 { entry.method } else { local_method };
+        let method = if entry.method != 0 {
+            entry.method
+        } else {
+            local_method
+        };
         let size = entry.compressed_size as usize;
         if data_start + size > data.len() {
             return Err("Truncated .vpc entry data".to_string());
@@ -274,7 +286,10 @@ pub fn read_vpac_entries(data: &[u8], password: &str) -> Result<Vec<ArchiveEntry
             continue;
         }
         if method != 99 {
-            return Err("This .vpc uses legacy ZipCrypto encryption, which VideoPsalm 1.29 does not write".to_string());
+            return Err(
+                "This .vpc uses legacy ZipCrypto encryption, which VideoPsalm 1.29 does not write"
+                    .to_string(),
+            );
         }
         let aes = parse_aes_extra(local_extra)
             .or_else(|| parse_aes_extra(&entry.extra))
@@ -339,10 +354,8 @@ pub fn build_vpc_entry(entry_name: &str, data: &[u8], password: &str, encrypt: b
         rand_bytes::fill_random(&mut salt);
         let mut derived = [0u8; 66];
         pbkdf2::pbkdf2_hmac::<Sha1>(password.as_bytes(), &salt, 1000, &mut derived);
-        let keystream_ct =
-            aes_ctr_crypt(&derived[..32], &payload).expect("CTR cannot fail");
-        let mut mac =
-            Hmac::<Sha1>::new_from_slice(&derived[32..64]).expect("HMAC key");
+        let keystream_ct = aes_ctr_crypt(&derived[..32], &payload).expect("CTR cannot fail");
+        let mut mac = Hmac::<Sha1>::new_from_slice(&derived[32..64]).expect("HMAC key");
         mac.update(&keystream_ct);
         let digest = mac.finalize().into_bytes();
         let mut blob = Vec::with_capacity(16 + 2 + keystream_ct.len() + 10);
@@ -377,7 +390,17 @@ fn put_u32(out: &mut Vec<u8>, v: u32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn local_record(name: &[u8], extra: &[u8], flags: u16, method: u16, time: u16, date: u16, crc: u32, payload: &[u8], uncompressed: u32) -> Vec<u8> {
+fn local_record(
+    name: &[u8],
+    extra: &[u8],
+    flags: u16,
+    method: u16,
+    time: u16,
+    date: u16,
+    crc: u32,
+    payload: &[u8],
+    uncompressed: u32,
+) -> Vec<u8> {
     let mut rec = Vec::with_capacity(30 + name.len() + extra.len() + payload.len());
     put_u32(&mut rec, LOCAL_SIG);
     put_u16(&mut rec, if method == 99 { 51 } else { 20 });
@@ -397,7 +420,19 @@ fn local_record(name: &[u8], extra: &[u8], flags: u16, method: u16, time: u16, d
 }
 
 #[allow(clippy::too_many_arguments)]
-fn central_record(name: &[u8], extra: &[u8], flags: u16, method: u16, time: u16, date: u16, crc: u32, payload_len: u32, uncompressed: u32, local_offset: u32, made_by: u16) -> Vec<u8> {
+fn central_record(
+    name: &[u8],
+    extra: &[u8],
+    flags: u16,
+    method: u16,
+    time: u16,
+    date: u16,
+    crc: u32,
+    payload_len: u32,
+    uncompressed: u32,
+    local_offset: u32,
+    made_by: u16,
+) -> Vec<u8> {
     let mut rec = Vec::with_capacity(46 + name.len() + extra.len());
     put_u32(&mut rec, CENTRAL_SIG);
     put_u16(&mut rec, made_by);
@@ -476,9 +511,31 @@ pub fn build_zip_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let compressed = deflate(data);
         let crc = crc32(data);
         let flags: u16 = if name_str.is_ascii() { 0 } else { 0x800 };
-        let local = local_record(name, &[], flags, 8, dos_time, dos_date, crc, &compressed, data.len() as u32);
+        let local = local_record(
+            name,
+            &[],
+            flags,
+            8,
+            dos_time,
+            dos_date,
+            crc,
+            &compressed,
+            data.len() as u32,
+        );
         offset += local.len() as u32;
-        let central = central_record(name, &[], flags, 8, dos_time, dos_date, crc, compressed.len() as u32, data.len() as u32, offset - local.len() as u32, 0x033f);
+        let central = central_record(
+            name,
+            &[],
+            flags,
+            8,
+            dos_time,
+            dos_date,
+            crc,
+            compressed.len() as u32,
+            data.len() as u32,
+            offset - local.len() as u32,
+            0x033f,
+        );
         locals.push(local);
         centrals.push(central);
     }
@@ -500,10 +557,29 @@ fn assemble_single(
     payload: &[u8],
     uncompressed: u32,
 ) -> Vec<u8> {
-    let local = local_record(name, extra, flags, method, time, date, crc, payload, uncompressed);
+    let local = local_record(
+        name,
+        extra,
+        flags,
+        method,
+        time,
+        date,
+        crc,
+        payload,
+        uncompressed,
+    );
     let central = central_record(
-        name, extra, flags, method, time, date, crc,
-        payload.len() as u32, uncompressed, 0, 0x033f,
+        name,
+        extra,
+        flags,
+        method,
+        time,
+        date,
+        crc,
+        payload.len() as u32,
+        uncompressed,
+        0,
+        0x033f,
     );
     let eocd = eocd_record(1, central.len(), local.len());
     [local, central, eocd].concat()
@@ -560,13 +636,20 @@ mod tests {
 
     #[test]
     fn vpc_tampered_ciphertext_fails_auth() {
-        let mut vpc = build_vpc_entry("SB1.json", b"{Text:\"tamper me please, this is long enough\"}", VPC_PASSWORD, true);
+        let mut vpc = build_vpc_entry(
+            "SB1.json",
+            b"{Text:\"tamper me please, this is long enough\"}",
+            VPC_PASSWORD,
+            true,
+        );
         // Flip a byte just past the local header (inside the AES blob).
         let at = vpc.len() / 2;
         vpc[at] ^= 0x01;
         let err = read_vpac_entry(&vpc, VPC_PASSWORD).unwrap_err();
         assert!(
-            err.contains("authentication") || err.contains("size mismatch") || err.contains("deflate"),
+            err.contains("authentication")
+                || err.contains("size mismatch")
+                || err.contains("deflate"),
             "unexpected error: {err}"
         );
     }
@@ -583,7 +666,8 @@ mod tests {
     #[test]
     fn decrypts_typescript_written_fixture() {
         let bytes = crate::cross_port_fixture("videopsalm-aes.vpc");
-        let entry = read_vpac_entry(&bytes, VPC_PASSWORD).expect("fixture must decrypt with the fixed password");
+        let entry = read_vpac_entry(&bytes, VPC_PASSWORD)
+            .expect("fixture must decrypt with the fixed password");
         assert!(entry.encrypted);
         let root = native_songbook::parse(&String::from_utf8_lossy(&entry.data))
             .expect("fixture payload must parse as the native dialect");

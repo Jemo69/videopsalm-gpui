@@ -7,4 +7,4 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export WAYLAND_DISPLAY=
 export RUSTFLAGS="${RUSTFLAGS:-} -L /home/jemo/.local/lib"
-exec cargo run -p videopsalm-gpui "$@"
+exec cargo run -p perez-rs "$@"

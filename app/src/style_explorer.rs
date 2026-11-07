@@ -255,21 +255,15 @@ impl Root {
             chain_title(chain),
             chain_path(chain)
         );
-        let mut kids: Vec<Div> = vec![btn(
-            ui,
-            cx,
-            &title,
-            open,
-            move |this, _, _, cx| {
-                let k = chain_key(chain);
-                if this.explorer.expanded.contains(&k) {
-                    this.explorer.expanded.remove(&k);
-                } else {
-                    this.explorer.expanded.insert(k);
-                }
-                cx.notify();
-            },
-        )];
+        let mut kids: Vec<Div> = vec![btn(ui, cx, &title, open, move |this, _, _, cx| {
+            let k = chain_key(chain);
+            if this.explorer.expanded.contains(&k) {
+                this.explorer.expanded.remove(&k);
+            } else {
+                this.explorer.expanded.insert(k);
+            }
+            cx.notify();
+        })];
         if open {
             for level in chain.levels() {
                 kids.push(self.explorer_level(ui, cx, chain, *level));
@@ -287,8 +281,7 @@ impl Root {
     ) -> Div {
         let open = self.explorer.expanded.contains(&level_key(chain, level));
         // Straight from the model — the view never resolves on its own.
-        let rows: Vec<ExplorerRow> =
-            self.cascade.resolve(chain).explorer_rows(Some(level));
+        let rows: Vec<ExplorerRow> = self.cascade.resolve(chain).explorer_rows(Some(level));
         let local = self.cascade.attribute_set(level).len();
         let current = self.explorer.level == level;
         let head = format!(
@@ -369,11 +362,17 @@ mod tests {
         let mut c = Cascade::default();
         c.set(
             Level::Base,
-            LevelValues { font: Some("Times".into()), ..LevelValues::empty() },
+            LevelValues {
+                font: Some("Times".into()),
+                ..LevelValues::empty()
+            },
         );
         c.set(
             Level::Song,
-            LevelValues { size: Some(64.0), ..LevelValues::empty() },
+            LevelValues {
+                size: Some(64.0),
+                ..LevelValues::empty()
+            },
         );
         c
     }
@@ -386,7 +385,13 @@ mod tests {
         );
         assert_eq!(
             SELECTOR_LEVELS,
-            [Level::Verse, Level::Song, Level::Songbook, Level::Songbooks, Level::Base]
+            [
+                Level::Verse,
+                Level::Song,
+                Level::Songbook,
+                Level::Songbooks,
+                Level::Base
+            ]
         );
         // Media levels are reachable through the gallery path, not the selector.
         for media in [
@@ -432,11 +437,17 @@ mod tests {
         let mut c = seeded();
         c.set(
             Level::Base,
-            LevelValues { size: Some(50.0), ..LevelValues::empty() },
+            LevelValues {
+                size: Some(50.0),
+                ..LevelValues::empty()
+            },
         );
         c.set(
             Level::Song,
-            LevelValues { size: Some(80.0), ..LevelValues::empty() },
+            LevelValues {
+                size: Some(80.0),
+                ..LevelValues::empty()
+            },
         );
         c.reset(Level::Song);
         let rows = c.resolve(Chain::Songs).explorer_rows(Some(Level::Song));
@@ -485,7 +496,12 @@ mod tests {
         // The tree renders `Chain::levels` per chain, so this is also the
         // proof that no Bible level renders under Songs.
         let songs = Chain::Songs.levels();
-        for other in [Chain::Bibles, Chain::Images, Chain::Videos, Chain::PowerPoint] {
+        for other in [
+            Chain::Bibles,
+            Chain::Images,
+            Chain::Videos,
+            Chain::PowerPoint,
+        ] {
             for level in other.levels() {
                 if *level == Level::Base {
                     continue;

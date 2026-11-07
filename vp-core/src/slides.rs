@@ -12,7 +12,7 @@ use crate::bible_data::BibleLibrary;
 use crate::bible_ref::{compact_verses, format_header, merge_bilingual};
 use crate::chord_transpose::strip_chords;
 use crate::schema::{AgendaItem, ItemKind, ItemRef, Song};
-use crate::verse_splitter::{SplitOptions, split_verse};
+use crate::verse_splitter::{split_verse, SplitOptions};
 
 /// One rendered projector slide.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,22 +68,24 @@ pub fn compute_item_slides_templated(
         ItemKind::Song | ItemKind::SongPowerPoint => {
             song_slides(item, songs, opts, header_template, footer_template)
         }
-        ItemKind::Bible | ItemKind::BibleVerses => {
-            bible_slides(
-                item,
-                bibles,
-                opts,
-                bilingual_suppress_empty,
-                whole_reference_header,
-                header_template,
-                footer_template,
-            )
-        }
+        ItemKind::Bible | ItemKind::BibleVerses => bible_slides(
+            item,
+            bibles,
+            opts,
+            bilingual_suppress_empty,
+            whole_reference_header,
+            header_template,
+            footer_template,
+        ),
         ItemKind::Alert => vec![Slide::text("Alert", vec![alert_text(item)], String::new())],
         ItemKind::Clock => vec![Slide::text("Clock", vec![clock_text(item)], String::new())],
         ItemKind::PowerPoint | ItemKind::PowerPointSlide => pptx_slides(item),
         ItemKind::YouTube | ItemKind::WebSite => match &item.reference {
-            ItemRef::Url { url } => vec![Slide::text(item.title.clone(), vec![url.clone()], kind_label(item.kind))],
+            ItemRef::Url { url } => vec![Slide::text(
+                item.title.clone(),
+                vec![url.clone()],
+                kind_label(item.kind),
+            )],
             other => ref_mismatch(item, other),
         },
         ItemKind::Ccli => vec![Slide::text(
@@ -172,9 +174,17 @@ fn song_slides(
     let mut verses: Vec<&crate::schema::SongVerse> = song.verses.iter().collect();
     // Verse-order override (verse order editor) wins over stored order.
     if let Some(order) = &item.overrides.verse_order {
-        let pos: HashMap<&str, usize> =
-            order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
-        verses.sort_by_key(|v| (pos.get(v.id.as_str()).copied().unwrap_or(usize::MAX), v.order));
+        let pos: HashMap<&str, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+        verses.sort_by_key(|v| {
+            (
+                pos.get(v.id.as_str()).copied().unwrap_or(usize::MAX),
+                v.order,
+            )
+        });
     } else {
         verses.sort_by_key(|v| v.order);
     }
@@ -219,7 +229,11 @@ fn song_slides(
         }
     }
     if slides.is_empty() {
-        slides.push(Slide::text(song.title.clone(), vec!["(no lyrics)".to_string()], default_footer));
+        slides.push(Slide::text(
+            song.title.clone(),
+            vec!["(no lyrics)".to_string()],
+            default_footer,
+        ));
     }
     slides
 }
@@ -266,14 +280,13 @@ fn bible_slides(
     };
     let default_sub = format!("{} {}", footer, verse_list);
 
-    let ctx = crate::template::SlideTemplateContext::new()
-        .with_bible(
-            &bref.book,
-            bref.chapter,
-            &verse_list,
-            Some(&primary.translation_id),
-            &full_ref,
-        );
+    let ctx = crate::template::SlideTemplateContext::new().with_bible(
+        &bref.book,
+        bref.chapter,
+        &verse_list,
+        Some(&primary.translation_id),
+        &full_ref,
+    );
 
     let header = match header_template {
         Some(tpl) if !tpl.is_empty() => crate::template::format_template(tpl, &ctx),
@@ -332,14 +345,26 @@ mod tests {
     use crate::schema::*;
 
     fn songs() -> HashMap<String, Song> {
-        let a: Song = serde_json::from_str(include_str!("../../assets/samples/songs/amazing-grace.json")).unwrap();
-        let b: Song = serde_json::from_str(include_str!("../../assets/samples/songs/holy-holy-chords.json")).unwrap();
+        let a: Song = serde_json::from_str(include_str!(
+            "../../assets/samples/songs/amazing-grace.json"
+        ))
+        .unwrap();
+        let b: Song = serde_json::from_str(include_str!(
+            "../../assets/samples/songs/holy-holy-chords.json"
+        ))
+        .unwrap();
         HashMap::from([(a.id.clone(), a), (b.id.clone(), b)])
     }
 
     fn bibles() -> BibleLibrary {
-        let en = Translation::from_json(include_str!("../../assets/samples/bible/sample-bible-en.json")).unwrap();
-        let fr = Translation::from_json(include_str!("../../assets/samples/bible/sample-bible-fr.json")).unwrap();
+        let en = Translation::from_json(include_str!(
+            "../../assets/samples/bible/sample-bible-en.json"
+        ))
+        .unwrap();
+        let fr = Translation::from_json(include_str!(
+            "../../assets/samples/bible/sample-bible-fr.json"
+        ))
+        .unwrap();
         let mut lib = BibleLibrary::default();
         lib.install(en);
         lib.install(fr);
@@ -347,18 +372,31 @@ mod tests {
     }
 
     fn opts() -> SplitOptions {
-        SplitOptions { max_lines: 4, max_chars: 40 }
+        SplitOptions {
+            max_lines: 4,
+            max_chars: 40,
+        }
     }
 
     #[test]
     fn sample_agenda_loads_and_covers_all_core_kinds() {
-        let agenda = Agenda::from_json(include_str!("../../assets/samples/agenda/sample-agenda.json")).unwrap();
+        let agenda = Agenda::from_json(include_str!(
+            "../../assets/samples/agenda/sample-agenda.json"
+        ))
+        .unwrap();
         assert!(agenda.validate().is_ok());
         let kinds: Vec<ItemKind> = agenda.items.iter().map(|i| i.kind).collect();
         for need in [
-            ItemKind::Song, ItemKind::BibleVerses, ItemKind::Image, ItemKind::Video,
-            ItemKind::Audio, ItemKind::Pdf, ItemKind::PowerPoint, ItemKind::YouTube,
-            ItemKind::Clock, ItemKind::Alert,
+            ItemKind::Song,
+            ItemKind::BibleVerses,
+            ItemKind::Image,
+            ItemKind::Video,
+            ItemKind::Audio,
+            ItemKind::Pdf,
+            ItemKind::PowerPoint,
+            ItemKind::YouTube,
+            ItemKind::Clock,
+            ItemKind::Alert,
         ] {
             assert!(kinds.contains(&need), "missing {need:?}");
         }
@@ -366,8 +404,12 @@ mod tests {
 
     #[test]
     fn song_item_yields_lyric_slides() {
-        let agenda = Agenda::from_json(include_str!("../../assets/samples/agenda/sample-agenda.json")).unwrap();
-        let slides = compute_item_slides(&agenda.items[0], &songs(), &bibles(), &opts(), true, true);
+        let agenda = Agenda::from_json(include_str!(
+            "../../assets/samples/agenda/sample-agenda.json"
+        ))
+        .unwrap();
+        let slides =
+            compute_item_slides(&agenda.items[0], &songs(), &bibles(), &opts(), true, true);
         assert!(!slides.is_empty());
         assert!(slides[0].header.contains("Amazing Grace"));
         // No ChordPro markers leak into projection.
@@ -384,7 +426,9 @@ mod tests {
             id: "x".into(),
             kind: ItemKind::Song,
             title: "Holy".into(),
-            reference: ItemRef::Song { song_id: "song-holy-holy".into() },
+            reference: ItemRef::Song {
+                song_id: "song-holy-holy".into(),
+            },
             flow_type: FlowType::Manual,
             auto_advance_ms: None,
             overrides: ItemOverrides {
@@ -401,7 +445,10 @@ mod tests {
 
     #[test]
     fn bible_item_resolves_with_bilingual_merge_and_header() {
-        let agenda = Agenda::from_json(include_str!("../../assets/samples/agenda/sample-agenda.json")).unwrap();
+        let agenda = Agenda::from_json(include_str!(
+            "../../assets/samples/agenda/sample-agenda.json"
+        ))
+        .unwrap();
         let item = &agenda.items[2];
         let slides = compute_item_slides(item, &songs(), &bibles(), &opts(), true, true);
         assert!(!slides.is_empty());
@@ -413,13 +460,21 @@ mod tests {
 
     #[test]
     fn alert_clock_media_file_slides() {
-        let agenda = Agenda::from_json(include_str!("../../assets/samples/agenda/sample-agenda.json")).unwrap();
+        let agenda = Agenda::from_json(include_str!(
+            "../../assets/samples/agenda/sample-agenda.json"
+        ))
+        .unwrap();
         let songs = songs();
         for i in [3usize, 4, 5, 6, 8, 9, 10] {
-            let slides = compute_item_slides(&agenda.items[i], &songs, &bibles(), &opts(), true, true);
+            let slides =
+                compute_item_slides(&agenda.items[i], &songs, &bibles(), &opts(), true, true);
             assert!(!slides.is_empty(), "item {} yielded no slides", i);
         }
-        assert!(compute_item_slides(&agenda.items[10], &songs, &bibles(), &opts(), true, true)[0].lines[0].contains("Welcome"));
+        assert!(
+            compute_item_slides(&agenda.items[10], &songs, &bibles(), &opts(), true, true)[0].lines
+                [0]
+            .contains("Welcome")
+        );
     }
 
     #[test]
@@ -428,7 +483,9 @@ mod tests {
             id: "x".into(),
             kind: ItemKind::Song,
             title: "Ghost".into(),
-            reference: ItemRef::Song { song_id: "nope".into() },
+            reference: ItemRef::Song {
+                song_id: "nope".into(),
+            },
             flow_type: FlowType::Manual,
             auto_advance_ms: None,
             overrides: Default::default(),
@@ -439,7 +496,10 @@ mod tests {
 
     #[test]
     fn compute_item_slides_templated_expands_tokens() {
-        let agenda = Agenda::from_json(include_str!("../../assets/samples/agenda/sample-agenda.json")).unwrap();
+        let agenda = Agenda::from_json(include_str!(
+            "../../assets/samples/agenda/sample-agenda.json"
+        ))
+        .unwrap();
         let item = &agenda.items[0]; // Holy, Holy, Holy
         let slides = compute_item_slides_templated(
             item,
@@ -456,4 +516,3 @@ mod tests {
         assert!(slides[0].footer.contains("John Newton"));
     }
 }
-

@@ -7,9 +7,10 @@
 //! v1 backends:
 //!
 //! * [`StubPlayer`] — in-memory fake used by tests and headless runs.
-//! * [`ExternalPlayer`] — default backend: opens the file with the OS
-//!   handler (`xdg-open` / `open` / `start`) and tracks play/pause/range
-//!   state locally.
+//! * [`ExternalPlayer`] — default backend: shows the file to the congregation
+//!   with a fullscreen-capable player when one is installed (mpv, then VLC)
+//!   and the OS handler (`xdg-open` / `open` / `start`) otherwise; tracks
+//!   play/pause/range state locally.
 //!
 //! HOOK-UP POINT (GStreamer): to use real in-window playback, add a
 //! `media_gst.rs` module implementing `MediaPlayer for GstPlayer` on top of
@@ -120,32 +121,74 @@ impl ExternalPlayer {
         }
     }
 
-    /// Launch the OS default handler for the current file (best effort).
+    /// Launch the file for the congregation (best effort).
+    /// Video prefers mpv/VLC in fullscreen so the congregation sees the
+    /// video itself — the same visible result as the Electron port's
+    /// in-window `<video>` — instead of a windowed player chrome; audio
+    /// and bare systems fall back to the OS default handler.
     /// Never performs network access.
     pub fn launch_external(&mut self) {
         let Some(path) = self.current.clone() else {
             self.last_error = Some("no media file selected".to_string());
             return;
         };
-        #[cfg(target_os = "linux")]
-        let mut cmd = std::process::Command::new("xdg-open");
-        #[cfg(target_os = "macos")]
-        let mut cmd = std::process::Command::new("open");
-        #[cfg(target_os = "windows")]
-        let mut cmd = {
-            let mut c = std::process::Command::new("cmd");
-            c.args(["/C", "start", ""]);
-            c
-        };
-        let res = cmd.arg(&path).spawn();
+        let os = std::env::consts::OS;
+        let (program, args) = player_command(os, self.kind, &have_program, &path);
+        let res = std::process::Command::new(&program).args(&args).spawn();
         match res {
             Ok(_) => {
                 self.state = PlaybackState::Playing;
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(format!("cannot open {path:?}: {e}")),
+            Err(e) => self.last_error = Some(format!("cannot open {path:?} via {program}: {e}")),
         }
     }
+}
+
+/// `true` when `name` resolves on PATH (`which` / `where`). Used once per
+/// launch; failure to probe just means "not installed".
+fn have_program(name: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let probe = std::process::Command::new("where").arg(name).output();
+    #[cfg(not(target_os = "windows"))]
+    let probe = std::process::Command::new("which").arg(name).output();
+    matches!(probe, Ok(out) if out.status.success())
+}
+
+/// Pick the program + args that show `path` to the congregation.
+///
+/// `os` is `std::env::consts::OS`; `have` reports installed program names
+/// (mocked in tests). Pure, so the choice is pinned headlessly:
+/// video prefers mpv (`--fullscreen`), then VLC (`--fullscreen`),
+/// because the congregation must see the video, not player chrome — the
+/// visible equal of the Electron port's projector `<video>`. Everything
+/// else (audio, bare systems) uses the OS default handler.
+pub fn player_command(
+    os: &str,
+    kind: MediaKind,
+    have: &dyn Fn(&str) -> bool,
+    path: &std::path::Path,
+) -> (String, Vec<String>) {
+    if kind == MediaKind::Video {
+        if have("mpv") {
+            return ("mpv".into(), vec!["--fullscreen".into(), path_string(path)]);
+        }
+        if have("vlc") {
+            return ("vlc".into(), vec!["--fullscreen".into(), path_string(path)]);
+        }
+    }
+    match os {
+        "macos" => ("open".into(), vec![path_string(path)]),
+        "windows" => (
+            "cmd".into(),
+            vec!["/C".into(), "start".into(), String::new(), path_string(path)],
+        ),
+        _ => ("xdg-open".into(), vec![path_string(path)]),
+    }
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 impl MediaPlayer for ExternalPlayer {
@@ -270,7 +313,11 @@ impl MediaLibrary {
     /// Add a user file. Duplicate *paths* are rejected (same file picked
     /// twice); the existing id is returned so the UI can select it.
     pub fn add(&mut self, path: PathBuf, kind: MediaFileKind) -> String {
-        if let Some(e) = self.entries.iter().find(|e| e.path == path && e.kind == kind) {
+        if let Some(e) = self
+            .entries
+            .iter()
+            .find(|e| e.path == path && e.kind == kind)
+        {
             return e.id.clone();
         }
         let id = format!("m{}", self.entries.len() + 1);
@@ -294,11 +341,15 @@ impl MediaLibrary {
     }
 
     pub fn images(&self) -> impl Iterator<Item = &MediaEntry> {
-        self.entries.iter().filter(|e| e.kind == MediaFileKind::Image)
+        self.entries
+            .iter()
+            .filter(|e| e.kind == MediaFileKind::Image)
     }
 
     pub fn videos(&self) -> impl Iterator<Item = &MediaEntry> {
-        self.entries.iter().filter(|e| e.kind == MediaFileKind::Video)
+        self.entries
+            .iter()
+            .filter(|e| e.kind == MediaFileKind::Video)
     }
 }
 
@@ -374,6 +425,48 @@ pub fn luminosity_overlay(value: f32) -> (bool, f32) {
     }
     let alpha = (value.abs() * 0.08).clamp(0.0, 0.8);
     (value > 0.0, alpha)
+}
+
+/// Shrink-or-grow factor so a verse fills its frame without clipping,
+/// mirroring the Electron projector's auto-fit (`MIN_SCALE = 0.45`): the
+/// authored size is scaled by the output height (1080p reference), then
+/// adjusted until the estimated text block fits the frame. GPUI 0.2.2
+/// cannot measure laid-out text during render, so the block height is
+/// estimated from the line count — conservative on purpose (slightly
+/// small beats clipped). Growing is capped at 2x: different families
+/// render the same nominal size at visibly different heights, and the
+/// user asked to be able to make the font as big as possible — the frame
+/// decides, not the font's metrics. Width is not estimated: verses are
+/// short lines and the frame clips width only on pathological input.
+/// Pure and tested; the renderer applies it to every projected text size.
+pub fn fit_text_factor(line_count: usize, base_px: f32, avail_h_px: f32) -> f32 {
+    if line_count == 0 || base_px <= 0.0 || avail_h_px <= 0.0 {
+        return 1.0;
+    }
+    // 1.3 ≈ line-height plus the flex gap between lines.
+    let est_h = line_count as f32 * base_px * 1.3;
+    (avail_h_px / est_h).clamp(0.45, 2.0)
+}
+
+/// Names of the engaged projection holds, most-visible first (pure, tested).
+///
+/// Powers the one-press "Go live" button: it clears exactly these three —
+/// frozen (holds the slide), hidden (text gone, background playing) and
+/// blank (black base screen). Shield is deliberately absent: it locks
+/// *browsing*, never the projected picture, so leaving it is a separate,
+/// deliberate act.
+pub fn hold_names(frozen: bool, hidden: bool, blank: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if frozen {
+        out.push("frozen");
+    }
+    if hidden {
+        out.push("text hidden");
+    }
+    if blank {
+        out.push("base screen");
+    }
+    out
 }
 
 /// What the projector window shows. Computed purely from live/freeze/blank/
@@ -494,7 +587,11 @@ mod tests {
 
     #[test]
     fn caption_is_the_file_name_never_blank() {
-        let e = MediaEntry::new("m1", PathBuf::from("/v/4a1a7a75-5346.mp4"), MediaFileKind::Video);
+        let e = MediaEntry::new(
+            "m1",
+            PathBuf::from("/v/4a1a7a75-5346.mp4"),
+            MediaFileKind::Video,
+        );
         assert_eq!(e.caption(), "4a1a7a75-5346.mp4");
         assert_eq!(file_caption(std::path::Path::new("")), "(unnamed)");
     }
@@ -509,7 +606,10 @@ mod tests {
     #[test]
     fn filter_matches_filename_words_order_free() {
         let mut lib = MediaLibrary::new();
-        lib.add(PathBuf::from("/v/Red Sunset Loop.mp4"), MediaFileKind::Video);
+        lib.add(
+            PathBuf::from("/v/Red Sunset Loop.mp4"),
+            MediaFileKind::Video,
+        );
         lib.add(PathBuf::from("/v/Blue Ocean.jpg"), MediaFileKind::Image);
         let all: Vec<&MediaEntry> = lib.entries().iter().collect();
         assert_eq!(filter_media(all.clone().into_iter(), "").len(), 2);
@@ -548,6 +648,36 @@ mod tests {
         assert!(!up);
         let (_, a) = luminosity_overlay(1000.0);
         assert_eq!(a, 0.8, "unbounded model value, bounded overlay");
+    }
+
+    #[test]
+    fn hold_names_lists_only_engaged_statuses_in_order() {
+        assert!(hold_names(false, false, false).is_empty());
+        assert_eq!(hold_names(true, false, false), vec!["frozen"]);
+        assert_eq!(
+            hold_names(false, true, true),
+            vec!["text hidden", "base screen"]
+        );
+        assert_eq!(
+            hold_names(true, true, true),
+            vec!["frozen", "text hidden", "base screen"]
+        );
+    }
+
+    #[test]
+    fn fit_factor_fits_short_verses_and_floors_long_ones() {
+        // 4 lines at 44px ≈ 229px est; 500px available → grow, capped.
+        assert_eq!(fit_text_factor(4, 44.0, 500.0), 2.0);
+        // 8 lines at 44px ≈ 458px est; 300px available → shrink, no floor.
+        let f = fit_text_factor(8, 44.0, 300.0);
+        assert!(f > 0.45 && f < 1.0, "{f}");
+        // A wall of text floors at the Electron MIN_SCALE.
+        assert_eq!(fit_text_factor(40, 44.0, 300.0), 0.45);
+        // A lone line in a tall frame grows, but never past 2x base.
+        assert_eq!(fit_text_factor(1, 44.0, 10000.0), 2.0);
+        // Degenerate inputs never shrink or explode.
+        assert_eq!(fit_text_factor(0, 44.0, 300.0), 1.0);
+        assert_eq!(fit_text_factor(4, 44.0, 0.0), 1.0);
     }
 
     // --- B-12 projector state machine ------------------------------------
@@ -621,5 +751,49 @@ mod tests {
         // Frozen with no item (cleared agenda row) is also black.
         let f = projector_frame(false, false, Some((None, 0)), Some(1), 0, 4, 3);
         assert!(f.black);
+    }
+}
+
+#[cfg(test)]
+mod player_command_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn have<'a>(list: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
+        move |name| list.contains(&name)
+    }
+
+    #[test]
+    fn video_prefers_mpv_fullscreen_then_vlc_then_os_default() {
+        let p = Path::new("/srv/media/intro.mp4");
+        let (prog, args) = player_command("linux", MediaKind::Video, &have(&["mpv", "vlc"]), p);
+        assert_eq!(prog, "mpv");
+        assert_eq!(args, vec!["--fullscreen", "/srv/media/intro.mp4"]);
+        let (prog, args) = player_command("linux", MediaKind::Video, &have(&["vlc"]), p);
+        assert_eq!(prog, "vlc");
+        assert_eq!(args, vec!["--fullscreen", "/srv/media/intro.mp4"]);
+        let (prog, args) = player_command("linux", MediaKind::Video, &have(&[]), p);
+        assert_eq!(prog, "xdg-open");
+        assert_eq!(args, vec!["/srv/media/intro.mp4"]);
+    }
+
+    #[test]
+    fn audio_always_uses_the_os_default_even_with_players_installed() {
+        let p = Path::new("/srv/media/hymn.mp3");
+        let (prog, _) = player_command("linux", MediaKind::Audio, &have(&["mpv", "vlc"]), p);
+        assert_eq!(prog, "xdg-open");
+        let (prog, _) = player_command("macos", MediaKind::Audio, &have(&["mpv"]), p);
+        assert_eq!(prog, "open");
+        let (prog, args) = player_command("windows", MediaKind::Audio, &have(&[]), p);
+        assert_eq!(prog, "cmd");
+        assert_eq!(args[..3], vec!["/C", "start", ""]);
+    }
+
+    #[test]
+    fn windows_video_without_players_keeps_cmd_start_shape() {
+        let p = Path::new("C:\\media\\intro.mp4");
+        let (prog, args) = player_command("windows", MediaKind::Video, &have(&[]), p);
+        assert_eq!(prog, "cmd");
+        assert_eq!(args.len(), 4);
     }
 }

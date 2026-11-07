@@ -123,7 +123,9 @@ impl Translation {
         }
         out.sort_by_key(|h| {
             (
-                crate::bible_ref::match_book(&h.book).map(|b| b.number).unwrap_or(0),
+                crate::bible_ref::match_book(&h.book)
+                    .map(|b| b.number)
+                    .unwrap_or(0),
                 h.chapter,
                 h.verse,
             )
@@ -132,15 +134,17 @@ impl Translation {
     }
 
     /// Surrounding-verse context (SPEC 2.3): `before`/`after` extra verses.
-    pub fn context(
-        &self,
-        r: &crate::schema::BibleRef,
-        before: u32,
-        after: u32,
-    ) -> Vec<String> {
+    pub fn context(&self, r: &crate::schema::BibleRef, before: u32, after: u32) -> Vec<String> {
         let mut wide = r.clone();
         if !wide.verses.is_empty() {
-            let lo = wide.verses.iter().min().copied().unwrap_or(1).saturating_sub(before).max(1);
+            let lo = wide
+                .verses
+                .iter()
+                .min()
+                .copied()
+                .unwrap_or(1)
+                .saturating_sub(before)
+                .max(1);
             let hi = wide.verses.iter().max().copied().unwrap_or(1) + after;
             wide.verses = (lo..=hi).collect();
         }
@@ -277,12 +281,14 @@ mod tests {
     #[test]
     fn resolve_and_context() {
         let t = Translation::from_json(SAMPLE).unwrap();
-        let r = crate::bible_ref::parse_reference("John 3:1-2", "SAMPLE-EN", Versification::En).unwrap();
+        let r = crate::bible_ref::parse_reference("John 3:1-2", "SAMPLE-EN", Versification::En)
+            .unwrap();
         assert_eq!(t.resolve(&r), vec!["1 x".to_string(), "2 y".to_string()]);
         let ctx = t.context(&r, 0, 1);
         assert_eq!(ctx.len(), 3);
         // French name resolves against the same book.
-        let fr = crate::bible_ref::parse_reference("Jean 3:1", "SAMPLE-EN", Versification::En).unwrap();
+        let fr =
+            crate::bible_ref::parse_reference("Jean 3:1", "SAMPLE-EN", Versification::En).unwrap();
         assert_eq!(t.resolve(&fr), vec!["1 x".to_string()]);
     }
 
