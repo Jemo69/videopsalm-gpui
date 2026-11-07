@@ -1095,6 +1095,27 @@ impl Root {
                         }
                         Err(e) => boot_import_errors.push(format!("{}: {e}", p.display())),
                     }
+                } else if ext == "vpc" {
+                    let loaded = std::fs::read(&p)
+                        .map_err(|e| e.to_string())
+                        .and_then(|bytes| {
+                            vp_core::native_archive::read_vpac_entries(
+                                &bytes,
+                                vp_core::native_archive::VPC_PASSWORD,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .and_then(|entries| {
+                            vp_core::bible_import::import_bible_vpc(&entries, &name)
+                                .map_err(|e| e.to_string())
+                        });
+                    match loaded {
+                        Ok(t) => {
+                            bibles.install(t);
+                            boot_imports += 1;
+                        }
+                        Err(e) => boot_import_errors.push(format!("{}: {e}", p.display())),
+                    }
                 } else if ext == "json" {
                     let loaded = std::fs::read_to_string(&p)
                         .map_err(|e| e.to_string())

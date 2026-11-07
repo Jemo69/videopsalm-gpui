@@ -92,15 +92,25 @@ impl Element {
             .map(|(_, v)| v.as_str())
     }
 
-    /// `GetNodeText` — concatenated **direct text child nodes only**
-    /// (`NodeType == 3`), no element content, no descendants.
-    fn direct_text(&self) -> String {
-        let mut s = String::new();
-        for c in &self.children {
-            if let Node::Text(t) = c {
-                s.push_str(t);
+    /// Verse body text (OSIS): every descendant text node **except**
+    /// `<note>` subtrees (footnotes cross-references are commentary, not
+    /// Scripture text). The original concatenated only direct text children
+    /// (`GetNodeText`, `NodeType == 3`), so verse text wrapped in child
+    /// markup (`<w>` word tags, `<q>`, `<DivineName>`, `<l>`) was
+    /// silently dropped — the import "succeeded" with blank verses that
+    /// `resolve` then skips. Modern OSIS files import with content instead.
+    fn verse_body_text(&self) -> String {
+        fn walk(el: &Element, out: &mut String) {
+            for c in &el.children {
+                match c {
+                    Node::Text(t) => out.push_str(t),
+                    Node::Element(e) if e.name == "note" => {}
+                    Node::Element(e) => walk(e, out),
+                }
             }
         }
+        let mut s = String::new();
+        walk(self, &mut s);
         s
     }
 
@@ -190,6 +200,16 @@ fn parse_doc(xml: &str) -> Result<Element, ImportError> {
                 }
             }
             Ok(Event::Eof) => break,
+            Ok(Event::CData(t)) => {
+                // CDATA is literal text (never entity-decoded): some Zefania
+                // and OSIS exports wrap verse text in it. Dropping it
+                // silently emptied those verses.
+                if let Some(top) = stack.last_mut() {
+                    top.children.push(Node::Text(
+                        String::from_utf8_lossy(t.as_ref()).into_owned(),
+                    ));
+                }
+            }
             Ok(_) => {}
             Err(e) => return Err(ImportError::Bad(format!("XML error: {e}"))),
         }
@@ -599,7 +619,7 @@ fn import_osis(doc: &Element, fallback_name: &str) -> Result<Translation, Import
                 }
             }
         }
-        let own = clean_osis_text(&verse.direct_text());
+        let own = clean_osis_text(&verse.verse_body_text());
         let text = if own.is_empty() {
             // Milestone style (<verse …/>text): the original reads nothing
             // here; we take the text run until the next element so modern
@@ -1101,6 +1121,55 @@ mod tests {
         // Verse 2 never existed: it must not render with the wrong text.
         let lines = t.resolve(&r);
         assert_eq!(lines, vec!["1 v one".to_string(), "3 v three".to_string()]);
+    }
+
+    #[test]
+    fn osis_verses_with_child_markup_keep_their_words() {
+        // NIV-style OSIS (Zondervan/Biblica export) wraps verse text in
+        // child elements (<w> word markup, <l> poetry lines, <DivineName>);
+        // footnotes live in <note>. `GetNodeText` saw only direct text
+        // children, so these verses imported as EMPTY strings and
+        // `resolve` silently skipped them — "Imported NIV: 66 books"
+        // with blank verses. Word/line content must survive; note content
+        // (commentary) must not leak in.
+        let xml = r#"<osis><osisText xml:lang="en" osisIDWork="NIV">
+          <chapter osisID="Gen.1">
+            <verse osisID="Gen.1.1"><w>In</w> <w>the</w> beginning<note type="footnote">a study note</note> God created.</verse>
+            <verse osisID="Gen.1.2"><l>And the earth was</l> <l>without form.</l></verse>
+          </chapter>
+          <chapter osisID="John.3">
+            <verse osisID="John.3.16">For God so <DivineName>loved</DivineName> the world</verse>
+          </chapter>
+        </osisText></osis>"#;
+        let t = import_osis(&parse_doc(xml).unwrap(), "x").unwrap();
+        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "NIV", Versification::En).unwrap();
+        let lines = t.resolve(&r);
+        assert_eq!(
+            lines,
+            vec![
+                "1 In the beginning God created.".to_string(),
+                "2 And the earth was without form.".to_string()
+            ]
+        );
+        assert!(!lines.iter().any(|l| l.contains("study note")), "{lines:?}");
+        let r = crate::bible_ref::parse_reference("John 3:16", "NIV", Versification::En).unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec!["16 For God so loved the world".to_string()]
+        );
+    }
+
+    #[test]
+    fn osis_cdata_verse_text_is_not_silently_dropped() {
+        // Some OSIS exports wrap verse text in CDATA. `parse_doc` used to
+        // ignore Event::CData entirely, emptying those verses silently.
+        let xml = r#"<osis><osisText xml:lang="en" osisIDWork="X"><verse osisID="Ps.23.1"><![CDATA[The LORD is my shepherd;]]></verse></osisText></osis>"#;
+        let t = import_osis(&parse_doc(xml).unwrap(), "x").unwrap();
+        let r = crate::bible_ref::parse_reference("Psalm 23:1", "X", Versification::En).unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec!["1 The LORD is my shepherd;".to_string()]
+        );
     }
 
     #[test]
