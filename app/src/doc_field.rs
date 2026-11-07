@@ -12,15 +12,17 @@
 //! is content — it yields an empty slide. `Shift+Enter` is not a soft break.
 
 use std::ops::Range;
+use std::time::Duration;
 
+use super::ux::CARET_BLINK_MS;
 use unicode_segmentation::UnicodeSegmentation;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, GlobalElementId,
-    HighlightStyle, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, SharedString, StyledText, UTF16Selection, Window, actions, div,
-    hsla, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, AnyElement, App, Bounds, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight,
+    GlobalElementId, HighlightStyle, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText,
+    UTF16Selection, Window, actions, div, hsla, prelude::*, px, rgb, rgba,
 };
 
 actions!(
@@ -860,11 +862,36 @@ impl Render for DocField {
             // blank line — that gap *is* the slide boundary, so collapsing it
             // would hide the structure from the operator.
             .children(if empty {
-                vec![div().text_color(hsla(0., 0., 0., 0.4)).child(if focused {
-                    format!("| {placeholder}")
+                // Empty document: the same animated `|` as text lines (no
+                // static stare), followed by the static hint.
+                let hint: AnyElement = if focused {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .child("|")
+                                .with_animation(
+                                    ElementId::Name("lyrics-caret-empty".into()),
+                                    Animation::new(Duration::from_millis(
+                                        (CARET_BLINK_MS * 2) as u64,
+                                    ))
+                                    .repeat(),
+                                    |el, delta| {
+                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                    },
+                                ),
+                        )
+                        .child(format!(" {placeholder}"))
+                        .into_any_element()
                 } else {
-                    placeholder.to_string()
-                })]
+                    placeholder.to_string().into_any_element()
+                };
+                vec![div()
+                    .text_color(hsla(0., 0., 0., 0.4))
+                    .child(hint)]
             } else {
                 content
                     .split('\n')
@@ -897,18 +924,25 @@ impl Render for DocField {
                         } else {
                             None
                         };
-                        let display_line = if cursor_on_line {
+                        // The caret is a real `|` glyph (not an overlay quad)
+                        // so it flows with the text it sits in. It blinks via
+                        // a window-driven `with_animation` step (530ms each
+                        // way): task + notify loops never re-rendered the
+                        // field, so the caret stared instead of blinking.
+                        // The animation id tracks the cursor, so a click or
+                        // keystroke remounts it at full opacity first. Cost:
+                        // an animation frame repaints while focused —
+                        // accepted, since nothing else repaints a stale caret.
+                        let pipe: Option<(String, String)> = if cursor_on_line {
                             let local = (cursor - start).min(line.len());
                             let safe = line
                                 .char_indices()
                                 .map(|(b, _)| b)
                                 .find(|&b| b >= local)
                                 .unwrap_or(line.len());
-                            format!("{}|{}", &line[..safe], &line[safe..])
-                        } else if line.is_empty() {
-                            " ".to_string()
+                            Some((line[..safe].to_string(), line[safe..].to_string()))
                         } else {
-                            line.to_string()
+                            None
                         };
                         let content: AnyElement = match sel_run {
                             Some(range) => StyledText::new(line.to_string())
@@ -920,11 +954,36 @@ impl Render for DocField {
                                     },
                                 )])
                                 .into_any_element(),
-                            None => display_line.into_any_element(),
+                            None => match pipe {
+                                Some((before, after)) => div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .child(StyledText::new(before))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .child("|")
+                                            .with_animation(
+                                                ElementId::Name(
+                                                    format!("lyrics-caret-{cursor}").into(),
+                                                ),
+                                                Animation::new(Duration::from_millis((CARET_BLINK_MS * 2) as u64)).repeat(),
+                                                |el, delta| {
+                                                    el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                                },
+                                            ),
+                                    )
+                                    .child(StyledText::new(after))
+                                    .into_any_element(),
+                                None if line.is_empty() => " ".to_string().into_any_element(),
+                                None => line.to_string().into_any_element(),
+                            },
                         };
                         let d = if is_tag {
                             div()
-                                .h(px(22.))
+                                .min_h(px(22.))
+                                .flex_shrink_0()
                                 .w_full()
                                 .flex()
                                 .flex_row()
@@ -941,7 +1000,7 @@ impl Render for DocField {
                                         .child(content),
                                 )
                         } else {
-                            div().h(px(20.)).w_full().child(content)
+                            div().min_h(px(20.)).flex_shrink_0().w_full().child(content)
                         };
                         // A blank line has no characters to highlight, so a
                         // selection crossing it lights the whole row.

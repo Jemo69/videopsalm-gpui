@@ -33,6 +33,7 @@ impl PresentationState {
             snapshot: ProjectorSnapshot {
                 bg_kind: vp_core::schema::BackgroundKind::Color,
                 bg_file: None,
+                bg_website: None,
                 bg_fit: vp_core::schema::BgFit::Cover,
                 bg_color: Rgba {
                     r: 0.0,
@@ -84,9 +85,8 @@ impl PresentationState {
                     a: 1.0,
                 },
                 standalone: None,
-                // Live frames are attached per-repaint by the projector
-                // window owning the LoopPlayer; snapshots start empty.
-                bg_frame: None,
+                video_poster: None,
+                video_frame: None,
                 danger: Rgba {
                     r: 1.0,
                     g: 0.0,

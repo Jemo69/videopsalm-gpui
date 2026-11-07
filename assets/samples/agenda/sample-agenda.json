@@ -12,7 +12,8 @@
     { "id": "item-08", "kind": "PowerPoint", "title": "Sermon slides (import)", "ref": { "file": "assets/docs/sermon.pptx" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
     { "id": "item-09", "kind": "YouTube", "title": "Worship video", "ref": { "url": "https://www.youtube.com/watch?v=sample" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
     { "id": "item-10", "kind": "Clock", "title": "Countdown 5 min", "ref": { "text": "countdown:300" }, "flowType": "auto", "autoAdvanceMs": null, "overrides": {} },
-    { "id": "item-11", "kind": "Alert", "title": "Welcome alert", "ref": { "text": "Welcome! Please silence your phones." }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} }
+    { "id": "item-11", "kind": "Alert", "title": "Welcome alert", "ref": { "text": "Welcome! Please silence your phones." }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} },
+    { "id": "item-12", "kind": "Song", "title": "Website Demo", "ref": { "songId": "song-website-demo" }, "flowType": "manual", "autoAdvanceMs": null, "overrides": {} }
   ],
   "settings": {
     "bilingualSuppressEmpty": true,

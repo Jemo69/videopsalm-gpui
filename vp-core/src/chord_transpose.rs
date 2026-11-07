@@ -211,6 +211,8 @@ pub fn transpose_chord(chord: &str, semitones: i32, target: Option<ChordNotation
 }
 
 /// Transpose every `[chord]` marker in ChordPro text.
+/// Byte-index safe: lyric text may contain multi-byte UTF-8 (e.g. French
+/// accents); we only ever slice at `[` (ASCII) and advance by full chars.
 pub fn transpose_chordpro(text: &str, semitones: i32, target: Option<ChordNotation>) -> String {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
@@ -225,9 +227,11 @@ pub fn transpose_chordpro(text: &str, semitones: i32, target: Option<ChordNotati
                 i += end + 1;
                 continue;
             }
+            out.push('[');
+            i += 1;
+            continue;
         }
-        // Whole-char step: byte-stepping splits multi-byte UTF-8 (É→Ã©).
-        let ch = text[i..].chars().next().unwrap_or('\u{FFFD}');
+        let ch = text[i..].chars().next().unwrap();
         out.push(ch);
         i += ch.len_utf8();
     }
@@ -252,9 +256,11 @@ pub fn extract_overlays(verse_id: &str, lines: &[String]) -> Vec<ChordOverlay> {
                     i += end + 1;
                     continue;
                 }
+                i += 1;
+                continue;
             }
-            // Whole-char step: byte-stepping splits multi-byte UTF-8.
-            i += line[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            let ch = line[i..].chars().next().unwrap();
+            i += ch.len_utf8();
         }
     }
     overlays
@@ -271,9 +277,11 @@ pub fn strip_chords(text: &str) -> String {
                 i += end + 1;
                 continue;
             }
+            out.push('[');
+            i += 1;
+            continue;
         }
-        // Whole-char step: byte-stepping splits multi-byte UTF-8 (É→Ã©).
-        let ch = text[i..].chars().next().unwrap_or('\u{FFFD}');
+        let ch = text[i..].chars().next().unwrap();
         out.push(ch);
         i += ch.len_utf8();
     }
@@ -283,19 +291,6 @@ pub fn strip_chords(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn chordpro_preserves_french_unicode() {
-        // VC-01: byte-stepping split É (0xC3 0x89) into Ã© outside [chords].
-        assert_eq!(strip_chords("[C]Ésaïe [G]Genèse"), "Ésaïe Genèse");
-        let ov = extract_overlays("v1", &["[C]Ésaïe".to_string()]);
-        assert_eq!(ov.len(), 1);
-        assert_eq!(ov[0].chord, "C");
-        assert_eq!(ov[0].pos, 0);
-        let tp = transpose_chordpro("[C]Ésaïe", 2, None);
-        assert!(tp.starts_with("[D]"), "chord transposed: {tp}");
-        assert!(tp.contains("Ésaïe"), "lyrics preserved: {tp}");
-    }
 
     #[test]
     fn abc_basic_transpose_up() {
@@ -356,6 +351,31 @@ mod tests {
         assert_eq!(
             transpose_chordpro("no chords here", 2, None),
             "no chords here"
+        );
+    }
+
+    #[test]
+    fn non_ascii_lyrics_do_not_panic() {
+        // Regression: byte-wise scan panicked on multi-byte UTF-8 lyrics.
+        let line = "[Do]S\u{e9}igneur \u{e9}coute [Sol]ma pri\u{e8}re caf\u{e9} na\u{ef}ve \u{6f22}\u{5b57}";
+        assert_eq!(
+            transpose_chordpro(line, 2, None),
+            "[Re]S\u{e9}igneur \u{e9}coute [La]ma pri\u{e8}re caf\u{e9} na\u{ef}ve \u{6f22}\u{5b57}"
+        );
+        assert_eq!(
+            strip_chords(line),
+            "S\u{e9}igneur \u{e9}coute ma pri\u{e8}re caf\u{e9} na\u{ef}ve \u{6f22}\u{5b57}"
+        );
+        let lines = vec![line.to_string()];
+        let ov = extract_overlays("V1", &lines);
+        assert_eq!(ov.len(), 2);
+        assert_eq!(ov[0].chord, "Do");
+        // Exotic solfege sharps never emit non-standard "Re#":
+        // Do(#1) is Reb enharmonically, rendered flat-style as Reb.
+        assert_eq!(transpose_chord("Do#", 0, None), "Do#");
+        assert_eq!(
+            transpose_chord("Do", 3, Some(ChordNotation::DoReMi)),
+            "Mib"
         );
     }
 

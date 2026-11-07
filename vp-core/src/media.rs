@@ -7,10 +7,9 @@
 //! v1 backends:
 //!
 //! * [`StubPlayer`] — in-memory fake used by tests and headless runs.
-//! * [`ExternalPlayer`] — default backend: shows the file to the congregation
-//!   with a fullscreen-capable player when one is installed (mpv, then VLC)
-//!   and the OS handler (`xdg-open` / `open` / `start`) otherwise; tracks
-//!   play/pause/range state locally.
+//! * [`ExternalPlayer`] — default backend: opens the file with the OS
+//!   handler (`xdg-open` / `open` / `start`) and tracks play/pause/range
+//!   state locally.
 //!
 //! HOOK-UP POINT (GStreamer): to use real in-window playback, add a
 //! `media_gst.rs` module implementing `MediaPlayer for GstPlayer` on top of
@@ -121,74 +120,396 @@ impl ExternalPlayer {
         }
     }
 
-    /// Launch the file for the congregation (best effort).
-    /// Video prefers mpv/VLC in fullscreen so the congregation sees the
-    /// video itself — the same visible result as the Electron port's
-    /// in-window `<video>` — instead of a windowed player chrome; audio
-    /// and bare systems fall back to the OS default handler.
-    /// Never performs network access.
+    /// Launch the OS default handler for the current file (best effort).
+    /// Never performs network access. A missing file is reported
+    /// immediately instead of spawning a handler that can only fail
+    /// silently (a vanished USB stick otherwise reads as "playing").
+    /// On Linux a known-absent handler (`xdg-mime` reports no default app
+    /// for the type) is also loud for the same reason: spawning `xdg-open`
+    /// with no handler exits silently while the UI would claim "playing".
     pub fn launch_external(&mut self) {
         let Some(path) = self.current.clone() else {
             self.last_error = Some("no media file selected".to_string());
             return;
         };
-        let os = std::env::consts::OS;
-        let (program, args) = player_command(os, self.kind, &have_program, &path);
-        let res = std::process::Command::new(&program).args(&args).spawn();
+        if !path.exists() {
+            self.last_error = Some(format!("file not found: {}", path.display()));
+            self.state = PlaybackState::Stopped;
+            return;
+        }
+        if let Some(err) = missing_handler_error(&path) {
+            self.last_error = Some(err);
+            self.state = PlaybackState::Stopped;
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        let res = cmd.arg(&path).spawn();
         match res {
             Ok(_) => {
                 self.state = PlaybackState::Playing;
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(format!("cannot open {path:?} via {program}: {e}")),
+            Err(e) => self.last_error = Some(format!("cannot open {path:?}: {e}")),
         }
     }
 }
 
-/// `true` when `name` resolves on PATH (`which` / `where`). Used once per
-/// launch; failure to probe just means "not installed".
-fn have_program(name: &str) -> bool {
-    #[cfg(target_os = "windows")]
-    let probe = std::process::Command::new("where").arg(name).output();
-    #[cfg(not(target_os = "windows"))]
-    let probe = std::process::Command::new("which").arg(name).output();
-    matches!(probe, Ok(out) if out.status.success())
+/// MIME type for a media file extension (case-insensitive, dot optional).
+/// Small table of the formats the galleries accept; unknown extensions
+/// yield `None` (unknown = try the spawn, never block it). Pure so the
+/// mapping is unit-testable without touching the OS mime database.
+pub fn mime_for_extension(ext: &str) -> Option<&'static str> {
+    match ext.trim_start_matches('.').to_ascii_lowercase().as_str() {
+        "mp4" | "m4v" => Some("video/mp4"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
+        "mov" => Some("video/quicktime"),
+        "wmv" => Some("video/x-ms-wmv"),
+        "webm" => Some("video/webm"),
+        "mpg" | "mpeg" => Some("video/mpeg"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "ogg" | "oga" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        _ => None,
+    }
 }
 
-/// Pick the program + args that show `path` to the congregation.
+/// Best-effort "does the OS have an app for this file" (Linux only).
+/// Returns `Some(loud error)` when we KNOW there is no handler
+/// (`xdg-mime query default` prints nothing for the type); `None` when a
+/// handler exists or we cannot tell (unknown extension, `xdg-mime`
+/// missing/broken, non-Linux) — unknown never blocks the spawn, it keeps
+/// the old try-it behavior. Takes `Path` so tests stay filesystem-light.
+pub fn missing_handler_error(path: &std::path::Path) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let ext = path.extension()?.to_str()?;
+        let mime = mime_for_extension(ext)?;
+        let out = std::process::Command::new("xdg-mime")
+            .args(["query", "default", mime])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None; // xdg-mime broken -> don't block the spawn
+        }
+        let handler = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if handler.is_empty() {
+            return Some(format!(
+                "no app handles {mime} files — install VLC or mpv to play {}.",
+                path.display()
+            ));
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Poster-frame cache for videos: one still per source file so the
+/// preview/projector show the video's picture (like a photo) through the
+/// existing in-app `img` element instead of a black tile. Offline, local
+/// `ffmpeg` only; no ffmpeg, no readable file, or a failed grab yields
+/// `None` and callers keep the captioned tile. Pure pieces (command
+/// builder, freshness) are unit-tested; only `ensure_video_poster`
+/// touches processes.
 ///
-/// `os` is `std::env::consts::OS`; `have` reports installed program names
-/// (mocked in tests). Pure, so the choice is pinned headlessly:
-/// video prefers mpv (`--fullscreen`), then VLC (`--fullscreen`),
-/// because the congregation must see the video, not player chrome — the
-/// visible equal of the Electron port's projector `<video>`. Everything
-/// else (audio, bare systems) uses the OS default handler.
-pub fn player_command(
-    os: &str,
-    kind: MediaKind,
-    have: &dyn Fn(&str) -> bool,
-    path: &std::path::Path,
-) -> (String, Vec<String>) {
-    if kind == MediaKind::Video {
-        if have("mpv") {
-            return ("mpv".into(), vec!["--fullscreen".into(), path_string(path)]);
-        }
-        if have("vlc") {
-            return ("vlc".into(), vec!["--fullscreen".into(), path_string(path)]);
+/// Cache key: hash of the source path string. Freshness: the poster must
+/// exist and be newer than the source file (re-cut videos re-grab).
+pub fn poster_cache_dir() -> PathBuf {
+    std::env::temp_dir().join("videopsalm-posters")
+}
+
+/// Stable cache path for a source file (no IO performed). Pure.
+pub fn poster_cache_path(path: &std::path::Path) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut h);
+    let mut ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext.len() > 4 {
+        ext.truncate(4);
+    }
+    poster_cache_dir().join(format!("{:016x}{}.jpg", h.finish(), ext))
+}
+
+/// `ffmpeg` argv for grabbing one still (`seek_secs` after open-seek for
+/// speed). Pure so the invocation is pinned by tests.
+pub fn poster_ffmpeg_args(path: &std::path::Path, out: &std::path::Path, seek_secs: u32) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-v".into(),
+        "error".into(),
+        "-ss".into(),
+        seek_secs.to_string(),
+        "-i".into(),
+        path.to_string_lossy().into_owned(),
+        "-frames:v".into(),
+        "1".into(),
+        "-q:v".into(),
+        "5".into(),
+        out.to_string_lossy().into_owned(),
+    ]
+}
+
+/// True when `poster` exists and is at least as new as the source file.
+/// Missing files read as stale (never fresh). Filesystem-light: two stats.
+pub fn poster_is_fresh(path: &std::path::Path, poster: &std::path::Path) -> bool {
+    let (Ok(src), Ok(dst)) = (std::fs::metadata(path), std::fs::metadata(poster)) else {
+        return false;
+    };
+    if !src.is_file() || !dst.is_file() {
+        return false;
+    }
+    let (Ok(a), Ok(b)) = (src.modified(), dst.modified()) else {
+        return false;
+    };
+    b >= a
+}
+
+/// Best-effort still grab: fresh cache hit returns immediately, else run
+/// `ffmpeg` (1s seek, retried at 0s for sub-second clips) and return the
+/// poster path on success. `None` keeps the captioned tile.
+pub fn ensure_video_poster(path: &std::path::Path) -> Option<PathBuf> {
+    if !path.is_file() {
+        return None;
+    }
+    let out = poster_cache_path(path);
+    if poster_is_fresh(path, &out) {
+        return Some(out);
+    }
+    if let Some(parent) = out.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return None;
         }
     }
-    match os {
-        "macos" => ("open".into(), vec![path_string(path)]),
-        "windows" => (
-            "cmd".into(),
-            vec!["/C".into(), "start".into(), String::new(), path_string(path)],
-        ),
-        _ => ("xdg-open".into(), vec![path_string(path)]),
+    for seek in [1u32, 0u32] {
+        let args = poster_ffmpeg_args(path, &out, seek);
+        let ok = std::process::Command::new("ffmpeg")
+            .args(&args)
+            .output()
+            .map(|o| o.status.success() && out.is_file())
+            .unwrap_or(false);
+        if ok {
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// In-app video motion: `ffmpeg` decodes to an MJPEG pipe (`fps` filter,
+/// 960px wide, silent — the app owns all audio) and the tick reads one
+/// frame per beat, shown through an uncached custom image loader. The pipe
+/// applies backpressure by itself: `ffmpeg` blocks when the 64KB buffer
+/// is full, so decode self-throttles to the display rate — no disk growth,
+/// no burst CPU, no unbounded image cache (every repaint decodes only the
+/// current frame; old frames drop with their element). Pause/resume kills
+/// and restarts at the tracked offset (`-ss`) — universal, no IPC.
+///
+/// No ffmpeg / bad file / failed spawn yields `Err` and callers fall back
+/// (poster still + OS player). Pure pieces (argv builder, JPEG split) are
+/// unit-tested; only `start` and `stop` touch processes.
+pub const MOTION_FPS_DEFAULT: u32 = 8;
+
+/// Safety cap for one MJPEG frame (960px stills are ~30–80KB).
+const FRAME_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+pub struct MotionPump {
+    pub source: PathBuf,
+    pub loop_play: bool,
+    pub fps: u32,
+    child: Option<std::process::Child>,
+    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+    pending: Vec<u8>,
+    offset_secs: f64,
+    t0: Option<std::time::Instant>,
+}
+
+/// `ffmpeg` argv for the motion pipe. Pure so the invocation is pinned.
+pub fn motion_ffmpeg_args(
+    path: &std::path::Path,
+    fps: u32,
+    loop_play: bool,
+    start_secs: f64,
+) -> Vec<String> {
+    let mut args = vec!["-v".to_string(), "error".to_string()];
+    if loop_play {
+        args.push("-stream_loop".to_string());
+        args.push("-1".to_string());
+    }
+    if start_secs > 0.0 {
+        args.push("-ss".to_string());
+        args.push(format!("{:.1}", start_secs));
+    }
+    args.push("-i".to_string());
+    args.push(path.to_string_lossy().into_owned());
+    args.push("-map".to_string());
+    args.push("0:v".to_string());
+    args.push("-vf".to_string());
+    args.push(format!("scale=960:-2,fps={}", fps.max(1)));
+    args.push("-f".to_string());
+    args.push("mjpeg".to_string());
+    args.push("-q:v".to_string());
+    args.push("5".to_string());
+    args.push("pipe:1".to_string());
+    args
+}
+
+/// Split the first complete JPEG (`FFD8..FFD9`) off a byte stream.
+/// Returns the frame plus the remaining bytes. Scan data is byte-stuffed
+/// by the encoder, so the first `FFD9` past the header truly ends the
+/// frame. Pure so framing is unit-testable without processes.
+pub fn split_first_jpeg(buf: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let start = buf.windows(2).position(|w| w == [0xFF, 0xD8])?;
+    let end = buf[start + 2..]
+        .windows(2)
+        .position(|w| w == [0xFF, 0xD9])
+        .map(|p| start + 2 + p + 2)?;
+    Some((buf[start..end].to_vec(), buf[end..].to_vec()))
+}
+
+impl MotionPump {
+    fn ffmpeg_present() -> bool {
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Start pumping `path`: silent MJPEG frames on stdout. `start_secs`
+    /// resumes mid-file (pause/resume); 0 plays from the top.
+    pub fn start(path: &std::path::Path, fps: u32, loop_play: bool, start_secs: f64) -> Result<Self, String> {
+        if !path.is_file() {
+            return Err(format!("file not found: {}", path.display()));
+        }
+        if !Self::ffmpeg_present() {
+            return Err("ffmpeg not found — install ffmpeg for in-app video motion.".to_string());
+        }
+        let args = motion_ffmpeg_args(path, fps, loop_play, start_secs);
+        let mut child = std::process::Command::new("ffmpeg")
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("cannot start ffmpeg: {e}"))?;
+        let stdout = child.stdout.take().map(std::io::BufReader::new);
+        Ok(MotionPump {
+            source: path.to_path_buf(),
+            loop_play,
+            fps: fps.max(1),
+            child: Some(child),
+            stdout,
+            pending: Vec::new(),
+            offset_secs: start_secs.max(0.0),
+            t0: Some(std::time::Instant::now()),
+        })
+    }
+
+    /// Read one frame off the pipe (blocks only until bytes arrive;
+    /// `ffmpeg` stays ahead while playing, so this returns promptly).
+    /// `None` on EOF (standalone clip ended) or a dead pipe. Garbage past
+    /// the cap is dropped so a corrupt stream cannot grow memory.
+    pub fn read_frame(&mut self) -> Option<Vec<u8>> {
+        use std::io::Read;
+        // Complete frame already buffered: no IO at all.
+        if let Some((frame, rest)) = split_first_jpeg(&self.pending) {
+            self.pending = rest;
+            return Some(frame);
+        }
+        let out = self.stdout.as_mut()?;
+        let mut chunk = [0u8; 32768];
+        loop {
+            let n = out.read(&mut chunk).ok()?;
+            if n == 0 {
+                return None; // EOF: the clip ended (or ffmpeg died)
+            }
+            self.pending.extend_from_slice(&chunk[..n]);
+            if let Some((frame, rest)) = split_first_jpeg(&self.pending) {
+                self.pending = rest;
+                return Some(frame);
+            }
+            if self.pending.len() > FRAME_MAX_BYTES {
+                self.pending.clear();
+            }
+        }
+    }
+
+    /// True while the ffmpeg child still runs (a finished standalone clip
+    /// reads as ended: last frame stays as a still).
+    pub fn alive(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(c) => c.try_wait().map(|e| e.is_none()).unwrap_or(false),
+            None => false,
+        }
+    }
+
+    /// Approximate play position in seconds (wall clock from (re)start).
+    pub fn position(&self) -> f64 {
+        match self.t0 {
+            Some(t) => self.offset_secs + t.elapsed().as_secs_f64(),
+            None => self.offset_secs,
+        }
+    }
+
+    /// Freeze the clock for a pause (caller stops the child via `stop`).
+    pub fn mark_paused(&mut self) {
+        self.offset_secs = self.position();
+        self.t0 = None;
+    }
+
+    pub fn paused(&self) -> bool {
+        self.t0.is_none()
+    }
+
+    /// Kill ffmpeg and close the pipe. The last shown frame (held by the
+    /// app) stays on screen.
+    pub fn stop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.child = None;
+        self.stdout = None;
+        self.pending.clear();
+    }
+
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        MotionPump {
+            source: PathBuf::from("test.mp4"),
+            loop_play: false,
+            fps: 8,
+            child: None,
+            stdout: None,
+            pending: Vec::new(),
+            offset_secs: 0.0,
+            t0: Some(std::time::Instant::now()),
+        }
     }
 }
 
-fn path_string(path: &std::path::Path) -> String {
-    path.to_string_lossy().into_owned()
+impl Drop for MotionPump {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl MediaPlayer for ExternalPlayer {
@@ -239,7 +560,7 @@ use crate::cascade::{Cascade, Chain, Level, Provenance};
 /// (RESEARCH §1: "Three media families, each with its own gallery" — images,
 /// videos, webcam; the webcam is a *toggle*, not a gallery item, so it is
 /// deliberately absent here).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MediaFileKind {
     #[default]
     Image,
@@ -565,6 +886,151 @@ mod tests {
         assert_eq!(p.range(), (None, Some(9000)));
     }
 
+    #[test]
+    fn poster_cache_path_is_stable_and_scoped() {
+        let a = poster_cache_path(std::path::Path::new("/vids/Loop.mp4"));
+        let b = poster_cache_path(std::path::Path::new("/vids/Loop.mp4"));
+        let c = poster_cache_path(std::path::Path::new("/vids/Other.mp4"));
+        assert_eq!(a, b, "same source = same cache file");
+        assert_eq!(a.parent(), b.parent(), "same cache dir");
+        assert_ne!(a, c, "different source = different cache file");
+        assert_eq!(a.extension().and_then(|e| e.to_str()), Some("mp4.jpg").map(|s| s.rsplit('.').next().unwrap_or(s)), "jpg still");
+    }
+
+    #[test]
+    fn poster_ffmpeg_args_grab_one_quiet_frame() {
+        let args = poster_ffmpeg_args(
+            std::path::Path::new("/vids/Loop.mp4"),
+            std::path::Path::new("/tmp/x.jpg"),
+            1,
+        );
+        assert_eq!(args[0], "-y");
+        assert!(args.contains(&"-frames:v".to_string()));
+        assert!(args.contains(&"1".to_string()));
+        assert!(args.contains(&"/vids/Loop.mp4".to_string()));
+        assert!(args.contains(&"/tmp/x.jpg".to_string()));
+    }
+
+    #[test]
+    fn poster_freshness_follows_mtimes() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("vp-poster-src.bin");
+        let dst = dir.join("vp-poster-dst.jpg");
+        std::fs::write(&src, b"v1").unwrap();
+        assert!(!poster_is_fresh(&src, &dst), "missing poster is stale");
+        std::fs::write(&dst, b"old").unwrap();
+        // Same-second mtimes compare equal-or-newer: fresh after rewrite.
+        std::fs::write(&dst, b"new").unwrap();
+        assert!(poster_is_fresh(&src, &dst), "poster rewritten after source is fresh");
+        assert!(!poster_is_fresh(std::path::Path::new("/definitely/missing.bin"), &dst));
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+    }
+
+    #[test]
+    fn ensure_poster_refuses_ghosts_without_spawning() {
+        assert!(ensure_video_poster(std::path::Path::new("/definitely/not/here.mp4")).is_none());
+    }
+
+    #[test]
+    fn motion_args_are_silent_piped_stills_with_capped_rate() {
+        let args = motion_ffmpeg_args(std::path::Path::new("/vids/Loop.mp4"), 8, false, 0.0);
+        for need in ["-f", "mjpeg", "pipe:1", "-map", "0:v"] {
+            assert!(args.contains(&need.to_string()), "missing {need}: {args:?}");
+        }
+        assert!(args.iter().any(|a| a.contains("fps=8")), "rate capped: {args:?}");
+        assert!(args.iter().any(|a| a.contains("scale=960")), "width capped: {args:?}");
+        assert!(!args.iter().any(|a| a == "-stream_loop"), "standalone ends: {args:?}");
+        assert!(!args.iter().any(|a| a == "-ss"), "no offset at 0: {args:?}");
+        let looped = motion_ffmpeg_args(std::path::Path::new("/vids/Loop.mp4"), 8, true, 12.5);
+        assert!(looped.contains(&"-stream_loop".to_string()));
+        assert!(looped.contains(&"12.5".to_string()), "resume offset: {looped:?}");
+    }
+
+    #[test]
+    fn jpeg_split_frames_bytes_without_processes() {
+        // Two synthetic frames + leading garbage: split finds FFD8..FFD9
+        // pairs and leaves the remainder for the next read.
+        let f1 = vec![0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9];
+        let f2 = vec![0xFF, 0xD8, 0x03, 0xFF, 0x00, 0xD9, 0xFF, 0xD9];
+        let mut stream = vec![0x99, 0x88];
+        stream.extend_from_slice(&f1);
+        stream.extend_from_slice(&f2);
+        stream.push(0xFF);
+        let (first, rest) = split_first_jpeg(&stream).expect("first frame");
+        assert_eq!(first, f1, "leading garbage skipped, first frame exact");
+        let (second, tail) = split_first_jpeg(&rest).expect("second frame");
+        // Stuffed FF00 is scan data, not a marker: the frame runs to the
+        // real EOI.
+        assert_eq!(second, f2);
+        assert_eq!(tail, vec![0xFF], "trailing partial byte kept");
+        assert!(split_first_jpeg(&tail).is_none());
+        assert!(split_first_jpeg(&[]).is_none());
+    }
+
+    #[test]
+    fn motion_start_refuses_ghosts_and_tracks_pause() {
+        let err = match MotionPump::start(std::path::Path::new("/definitely/not/here.mp4"), 8, false, 0.0) {
+            Ok(_) => panic!("missing file must not spawn"),
+            Err(e) => e,
+        };
+        assert!(err.contains("not found"), "names itself: {err}");
+        let mut pump = MotionPump::for_test();
+        assert!(!pump.alive(), "process-less pump reads as ended");
+        assert!(pump.read_frame().is_none(), "no pipe, no frame");
+        assert!(!pump.paused());
+        pump.mark_paused();
+        assert!(pump.paused());
+        assert!(pump.position() < 1.0, "fresh clock near zero");
+    }
+
+    #[test]
+    fn mime_table_maps_gallery_formats_case_insensitively() {
+        assert_eq!(mime_for_extension("mp4"), Some("video/mp4"));
+        assert_eq!(mime_for_extension("MKV"), Some("video/x-matroska"));
+        assert_eq!(mime_for_extension(".mov"), Some("video/quicktime"));
+        assert_eq!(mime_for_extension("mp3"), Some("audio/mpeg"));
+        assert_eq!(mime_for_extension("wav"), Some("audio/wav"));
+        assert_eq!(mime_for_extension("xyz"), None);
+        assert_eq!(mime_for_extension(""), None);
+    }
+
+    #[test]
+    fn unknown_extension_never_blocks_the_spawn() {
+        // No mapping -> no opinion -> None on every OS, no subprocess.
+        assert!(missing_handler_error(std::path::Path::new("/tmp/clip.zzz9")).is_none());
+        // And end to end: an existing mystery file must never report the
+        // "no app handles" error (whatever xdg-open then does is its own
+        // loudSpawn result, not a handler verdict).
+        let dir = std::env::temp_dir();
+        let file = dir.join("vp-mystery-blob.zzz9");
+        std::fs::write(&file, b"not media").unwrap();
+        let mut p = ExternalPlayer::new(MediaKind::Video);
+        p.open(file.clone());
+        p.launch_external();
+        let err = p.last_error.clone().unwrap_or_default();
+        assert!(
+            !err.contains("no app handles"),
+            "unknown type must not claim a missing handler, got: {err}"
+        );
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn external_player_refuses_missing_file_before_spawn() {
+        // A vanished file must error immediately instead of spawning a
+        // handler that fails silently while the UI claims "playing".
+        let mut p = ExternalPlayer::new(MediaKind::Video);
+        p.open(PathBuf::from("/definitely/not/here/clip.mp4"));
+        p.launch_external();
+        assert_eq!(p.state(), PlaybackState::Stopped);
+        let err = p.last_error.clone().unwrap_or_default();
+        assert!(
+            err.contains("not found"),
+            "missing file must name itself, got: {err}"
+        );
+    }
+
     // --- B-32 galleries --------------------------------------------------
 
     #[test]
@@ -751,49 +1217,5 @@ mod tests {
         // Frozen with no item (cleared agenda row) is also black.
         let f = projector_frame(false, false, Some((None, 0)), Some(1), 0, 4, 3);
         assert!(f.black);
-    }
-}
-
-#[cfg(test)]
-mod player_command_tests {
-    use super::*;
-    use std::path::Path;
-
-    fn have<'a>(list: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
-        move |name| list.contains(&name)
-    }
-
-    #[test]
-    fn video_prefers_mpv_fullscreen_then_vlc_then_os_default() {
-        let p = Path::new("/srv/media/intro.mp4");
-        let (prog, args) = player_command("linux", MediaKind::Video, &have(&["mpv", "vlc"]), p);
-        assert_eq!(prog, "mpv");
-        assert_eq!(args, vec!["--fullscreen", "/srv/media/intro.mp4"]);
-        let (prog, args) = player_command("linux", MediaKind::Video, &have(&["vlc"]), p);
-        assert_eq!(prog, "vlc");
-        assert_eq!(args, vec!["--fullscreen", "/srv/media/intro.mp4"]);
-        let (prog, args) = player_command("linux", MediaKind::Video, &have(&[]), p);
-        assert_eq!(prog, "xdg-open");
-        assert_eq!(args, vec!["/srv/media/intro.mp4"]);
-    }
-
-    #[test]
-    fn audio_always_uses_the_os_default_even_with_players_installed() {
-        let p = Path::new("/srv/media/hymn.mp3");
-        let (prog, _) = player_command("linux", MediaKind::Audio, &have(&["mpv", "vlc"]), p);
-        assert_eq!(prog, "xdg-open");
-        let (prog, _) = player_command("macos", MediaKind::Audio, &have(&["mpv"]), p);
-        assert_eq!(prog, "open");
-        let (prog, args) = player_command("windows", MediaKind::Audio, &have(&[]), p);
-        assert_eq!(prog, "cmd");
-        assert_eq!(args[..3], vec!["/C", "start", ""]);
-    }
-
-    #[test]
-    fn windows_video_without_players_keeps_cmd_start_shape() {
-        let p = Path::new("C:\\media\\intro.mp4");
-        let (prog, args) = player_command("windows", MediaKind::Video, &have(&[]), p);
-        assert_eq!(prog, "cmd");
-        assert_eq!(args.len(), 4);
     }
 }

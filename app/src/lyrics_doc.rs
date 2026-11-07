@@ -308,7 +308,14 @@ pub fn verses_from_document(
             vp_core::schema::SongVerse {
                 id,
                 lines,
-                order: existing.get(i).map(|v| v.order).unwrap_or(0),
+                // Document position IS the order. Carrying the previous
+                // verse's `order` over by index left duplicates (and a 0 for
+                // every new block), so the default verse order read
+                // "V3, V4, V5, V1, V2" — a stable sort of equal keys keeps
+                // whatever the array happened to hold. The operator can still
+                // pick another order per agenda item; the default must always
+                // be 1, 2, 3, 4, 5.
+                order: i as i32 + 1,
                 ..Default::default()
             }
         })

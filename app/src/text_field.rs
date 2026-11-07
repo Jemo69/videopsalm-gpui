@@ -6,13 +6,15 @@
 //! plus [`TextField::text`] / [`set_text`] helpers.
 
 use std::ops::Range;
+use std::time::Duration;
 
+use super::ux::CARET_BLINK_MS;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
+    Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window, actions, div, fill, hsla,
-    point, prelude::*, px, relative, rgb, rgba, size, white,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window,
+    actions, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -516,7 +518,6 @@ struct TextElement {
 
 struct PrepaintState {
     line: Option<ShapedLine>,
-    cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
 
@@ -564,7 +565,6 @@ impl Element for TextElement {
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
         let style = window.text_style();
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), hsla(0., 0., 0., 0.35))
@@ -609,39 +609,29 @@ impl Element for TextElement {
         let line = window
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
-        let cursor_pos = line.x_for_index(cursor);
-        let (selection, cursor) = if selected_range.is_empty() {
-            (
-                None,
-                Some(fill(
-                    Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
+        // Ranged: the selection wash. Collapsed: nothing here — the caret
+        // is an animated overlay `Div` built in `render` (window-driven
+        // frames repaint it; task + notify loops never re-rendered the
+        // field). An empty quad would be a no-op anyway, but say it.
+        let selection = if !selected_range.is_empty() {
+            Some(fill(
+                Bounds::from_corners(
+                    point(
+                        bounds.left() + line.x_for_index(selected_range.start),
+                        bounds.top(),
                     ),
-                    gpui::blue(),
-                )),
-            )
+                    point(
+                        bounds.left() + line.x_for_index(selected_range.end),
+                        bounds.bottom(),
+                    ),
+                ),
+                rgba(0x3311ff30),
+            ))
         } else {
-            (
-                Some(fill(
-                    Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
-                    ),
-                    rgba(0x3311ff30),
-                )),
-                None,
-            )
+            None
         };
         PrepaintState {
             line: Some(line),
-            cursor,
             selection,
         }
     }
@@ -668,11 +658,6 @@ impl Element for TextElement {
         let line = prepaint.line.take().unwrap();
         line.paint(bounds.origin, window.line_height(), window, cx)
             .unwrap();
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
@@ -681,7 +666,51 @@ impl Element for TextElement {
 }
 
 impl Render for TextField {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Window-driven caret: an overlay I-beam with a stepping opacity
+        // animation (530ms each way). It lives INSIDE a relative wrapper
+        // around the text element, positioned at text-relative x from the
+        // previous frame's shaped line — window-space bounds would double
+        // the offset. Task + notify loops never re-rendered the field;
+        // element animation frames always repaint. The id tracks the
+        // cursor, so a move remounts the caret solid first. Empty fields
+        // get the caret at x = 0 (placeholder origin).
+        let focused = self.focus_handle.is_focused(window);
+        let caret_overlay: Option<AnyElement> = {
+            if focused && self.selected_range.is_empty() {
+                match self.last_layout.clone() {
+                    Some(line) => {
+                        let at = self.cursor_offset().min(line.len());
+                        let x = line.x_for_index(at);
+                        Some(
+                            div()
+                                .absolute()
+                                .left(x)
+                                .top(px(0.))
+                                .bottom(px(0.))
+                                .w(px(2.))
+                                .bg(gpui::blue())
+                                .with_animation(
+                                    ElementId::Name(
+                                        format!("field-caret-{at}").into(),
+                                    ),
+                                    Animation::new(Duration::from_millis(
+                                        (CARET_BLINK_MS * 2) as u64,
+                                    ))
+                                    .repeat(),
+                                    |el, delta| {
+                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                    },
+                                )
+                                .into_any_element(),
+                        )
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
         div()
             .flex()
             .key_context("TextField")
@@ -724,7 +753,12 @@ impl Render for TextField {
                     // ink must be hardcoded dark — inheriting the theme fg
                     // paints near-white text on this white field.
                     .text_color(rgb(0x18181B))
-                    .child(TextElement { input: cx.entity() }),
+                    .child(
+                        div()
+                            .relative()
+                            .child(TextElement { input: cx.entity() })
+                            .children(caret_overlay),
+                    ),
             )
     }
 }

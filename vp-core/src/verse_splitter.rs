@@ -17,6 +17,12 @@ pub struct SplitOptions {
     pub max_lines: usize,
     /// Maximum characters per line (>= 1; 0 is treated as 1).
     pub max_chars: usize,
+    /// Split Bible verses across slides. **Off by default**: a verse is the
+    /// unit the projector should show. Auto-splitting one verse into
+    /// "…him. /" + "3 When Herod…" breaks the verse mid-sentence, drops the
+    /// verse number on the continuation slide and reads as a bug to the
+    /// congregation. Only an explicit operator request turns this on.
+    pub split_bible_verses: bool,
 }
 
 impl Default for SplitOptions {
@@ -24,6 +30,7 @@ impl Default for SplitOptions {
         SplitOptions {
             max_lines: 4,
             max_chars: 40,
+            split_bible_verses: false,
         }
     }
 }
@@ -152,7 +159,7 @@ mod tests {
     #[test]
     fn single_line_pages_never_manufacture_empty_slide() {
         // VC-03: max_lines == 1 must not steal into an empty previous slide.
-        let opts = SplitOptions { max_lines: 1, max_chars: 40 };
+        let opts = SplitOptions { max_lines: 1, max_chars: 40, split_bible_verses: false };
         let slides = split_verse(
             &["a".to_string(), "b".to_string(), "c".to_string()],
             &opts,
@@ -170,7 +177,7 @@ mod tests {
     #[test]
     fn orphan_word_move_respects_max_chars() {
         // VC-04: the moved-down word must not overflow the char cap.
-        let opts = SplitOptions { max_lines: 4, max_chars: 8 };
+        let opts = SplitOptions { max_lines: 4, max_chars: 8, split_bible_verses: false };
         let slides = split_verse(&["aa bb ccccdddd".to_string()], &opts);
         for slide in &slides {
             for line in slide {
@@ -183,6 +190,7 @@ mod tests {
         SplitOptions {
             max_lines: lines,
             max_chars: chars,
+            split_bible_verses: false,
         }
     }
 

@@ -245,6 +245,8 @@ pub struct LevelValues {
     pub underline: Option<bool>,
     /// strikethrough
     pub strike: Option<bool>,
+    /// horizontal text alignment: `left | center | right`
+    pub align: Option<String>,
     /// vertical alignment within its frame
     pub v_align: Option<String>,
     /// background colour for the level's own surface
@@ -269,6 +271,7 @@ impl LevelValues {
             && self.italic.is_none()
             && self.underline.is_none()
             && self.strike.is_none()
+            && self.align.is_none()
             && self.v_align.is_none()
             && self.bg_color.is_none()
             && self.transition.is_none()
@@ -371,6 +374,7 @@ impl Cascade {
             italic: None,
             underline: None,
             strike: None,
+            align: Some("center".to_string()),
             v_align: Some("center".to_string()),
             bg_color: Some("#000000".to_string()),
             transition: Some("none".to_string()),
@@ -417,6 +421,7 @@ impl Cascade {
             italic: self.resolve_attr(chain, |v| v.italic, false),
             underline: self.resolve_attr(chain, |v| v.underline, false),
             strike: self.resolve_attr(chain, |v| v.strike, false),
+            align: self.resolve_attr(chain, |v| v.align.clone(), "center".into()),
             v_align: self.resolve_attr(chain, |v| v.v_align.clone(), "center".into()),
             bg_color: self.resolve_attr(chain, |v| v.bg_color.clone(), "#000000".into()),
             transition: self.resolve_attr(chain, |v| v.transition.clone(), "none".into()),
@@ -432,6 +437,8 @@ impl Cascade {
                 font: Some(flat.body.font.clone()),
                 size: Some(flat.body.size),
                 color: Some(flat.body.color.clone()),
+                align: Some(flat.body.align.literal().to_string()),
+                v_align: Some(flat.body.valign.literal().to_string()),
                 transition: Some(flat.transition.clone()),
                 ..LevelValues::empty()
             },
@@ -449,6 +456,7 @@ pub struct Resolved {
     pub italic: Provenance<bool>,
     pub underline: Provenance<bool>,
     pub strike: Provenance<bool>,
+    pub align: Provenance<String>,
     pub v_align: Provenance<String>,
     pub bg_color: Provenance<String>,
     pub transition: Provenance<String>,
@@ -473,6 +481,7 @@ impl Resolved {
                 self.underline.source,
             ),
             ("Strike", yes_no(self.strike.value), self.strike.source),
+            ("Align", self.align.value.clone(), self.align.source),
             (
                 "Vertical align",
                 self.v_align.value.clone(),
@@ -523,6 +532,7 @@ impl Resolved {
             Attribute::Italic => self.italic.source,
             Attribute::Underline => self.underline.source,
             Attribute::Strike => self.strike.source,
+            Attribute::Align => self.align.source,
             Attribute::VAlign => self.v_align.source,
             Attribute::BgColor => self.bg_color.source,
             Attribute::Transition => self.transition.source,
@@ -539,6 +549,7 @@ impl Resolved {
             Attribute::Italic => yes_no(self.italic.value),
             Attribute::Underline => yes_no(self.underline.value),
             Attribute::Strike => yes_no(self.strike.value),
+            Attribute::Align => self.align.value.clone(),
             Attribute::VAlign => self.v_align.value.clone(),
             Attribute::BgColor => self.bg_color.value.clone(),
             Attribute::Transition => self.transition.value.clone(),
@@ -560,6 +571,7 @@ pub enum Attribute {
     Italic,
     Underline,
     Strike,
+    Align,
     VAlign,
     BgColor,
     Transition,
@@ -568,7 +580,7 @@ pub enum Attribute {
 
 impl Attribute {
     /// Every attribute, in the order the original's explorer lists them.
-    pub const ALL: [Attribute; 11] = [
+    pub const ALL: [Attribute; 12] = [
         Attribute::Font,
         Attribute::Size,
         Attribute::Color,
@@ -576,6 +588,7 @@ impl Attribute {
         Attribute::Italic,
         Attribute::Underline,
         Attribute::Strike,
+        Attribute::Align,
         Attribute::VAlign,
         Attribute::BgColor,
         Attribute::Transition,
@@ -592,6 +605,7 @@ impl Attribute {
             Attribute::Italic => "Italic",
             Attribute::Underline => "Underline",
             Attribute::Strike => "Strike",
+            Attribute::Align => "Align",
             Attribute::VAlign => "Vertical align",
             Attribute::BgColor => "Background",
             Attribute::Transition => "Transition",
@@ -610,6 +624,7 @@ impl Attribute {
             Attribute::Italic => "italic",
             Attribute::Underline => "underline",
             Attribute::Strike => "strike",
+            Attribute::Align => "align",
             Attribute::VAlign => "vAlign",
             Attribute::BgColor => "bgColor",
             Attribute::Transition => "transition",
@@ -627,6 +642,7 @@ impl Attribute {
             Attribute::Italic => v.italic.is_some(),
             Attribute::Underline => v.underline.is_some(),
             Attribute::Strike => v.strike.is_some(),
+            Attribute::Align => v.align.is_some(),
             Attribute::VAlign => v.v_align.is_some(),
             Attribute::BgColor => v.bg_color.is_some(),
             Attribute::Transition => v.transition.is_some(),
@@ -863,6 +879,64 @@ mod tests {
     }
 
     #[test]
+    fn align_resolves_per_level_with_chain_inheritance() {
+        let mut casc = c();
+        // Nothing set anywhere: the built-in default.
+        let r = casc.resolve(Chain::Songs);
+        assert_eq!(r.align.value, "center");
+        assert_eq!(r.align.source, None);
+        // Verse-level alignment wins for songs; other chains unaffected.
+        casc.set(
+            Level::SongVerse,
+            LevelValues {
+                align: Some("right".into()),
+                ..LevelValues::empty()
+            },
+        );
+        let songs = casc.resolve(Chain::Songs);
+        assert_eq!(songs.align.value, "right");
+        assert_eq!(songs.align.source, Some(Level::SongVerse));
+        let bibles = casc.resolve(Chain::Bibles);
+        assert_eq!(bibles.align.value, "center", "song verse must not leak into bibles");
+        assert_eq!(bibles.align.source, None);
+        // A more general level fills in below; reset restores inheritance.
+        casc.set(
+            Level::Songbooks,
+            LevelValues {
+                align: Some("left".into()),
+                ..LevelValues::empty()
+            },
+        );
+        assert_eq!(casc.resolve(Chain::Songs).align.value, "right");
+        casc.reset(Level::SongVerse);
+        let r = casc.resolve(Chain::Songs);
+        assert_eq!(r.align.value, "left");
+        assert_eq!(r.align.source, Some(Level::Songbooks));
+        // attribute_set reports the leaf so the explorer marks it set.
+        assert!(casc.attribute_set(Level::Songbooks).contains(&Attribute::Align));
+        assert!(!casc.attribute_set(Level::Song).contains(&Attribute::Align));
+    }
+
+    #[test]
+    fn adopt_flat_carries_alignment_and_vertical_alignment() {
+        let mut casc = c();
+        casc.adopt_flat(
+            Level::Base,
+            &crate::schema::Style {
+                body: crate::schema::BodyStyle {
+                    align: crate::schema::Align::Right,
+                    valign: crate::schema::VAlign::Top,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let r = casc.resolve(Chain::Songs);
+        assert_eq!(r.align.value, "right");
+        assert_eq!(r.v_align.value, "top");
+    }
+
+    #[test]
     fn reset_removes_the_override_so_the_value_re_inherits() {
         let mut casc = c();
         casc.set(
@@ -964,6 +1038,6 @@ mod tests {
             assert!(!label.is_empty());
         }
         // Every attribute resolves, so the tree always has a value to show.
-        assert_eq!(r.rows().len(), 11);
+        assert_eq!(r.rows().len(), 12);
     }
 }

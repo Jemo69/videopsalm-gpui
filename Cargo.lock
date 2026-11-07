@@ -3860,6 +3860,7 @@ dependencies = [
  "unicode-segmentation",
  "ureq",
  "vp-core",
+ "vp-ndi",
  "winres",
 ]
 
@@ -6165,6 +6166,14 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha1_smol",
+]
+
+[[package]]
+name = "vp-ndi"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

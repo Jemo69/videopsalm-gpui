@@ -17,8 +17,9 @@
 //! * [`LayoutPrefs`] — file-backed panel-layout persistence.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use vp_core::bible_data::VerseHit;
-use vp_core::schema::ItemKind;
+use vp_core::schema::{AgendaItem, ItemKind, ItemRef};
 
 // ---------------------------------------------------------------------------
 // Ribbon tabs
@@ -167,9 +168,110 @@ pub fn style_dropdown_label(level: &str) -> String {
     format!("{level} ▾")
 }
 
-/// Verse numbers leading each Bible slide line (`"16 text..."`).
+/// Cascade levels a ribbon edit writes to, from the Styles dropdown value.
 ///
-/// Pure so per-slide Bible rows are unit-testable: the panel groups verses
+/// This is the write target only — reading always resolves the whole chain,
+/// so a value set at `Songbooks` flows down to every song and verse. `Media`
+/// writes both media rungs; `Alert`/`Clock` have no chain levels and stay
+/// agenda-global (flat style), as do unknown values. Pure and unit-tested.
+pub fn style_write_targets(level: &str) -> Vec<vp_core::cascade::Level> {
+    use vp_core::cascade::Level::*;
+    match level {
+        "Base" => vec![Base],
+        "Songbooks" => vec![Songbooks],
+        "Song" => vec![Song],
+        "Verse" => vec![SongVerse],
+        "Bible" => vec![Bible],
+        "Media" => vec![Images, Videos],
+        _ => Vec::new(),
+    }
+}
+
+/// Redirect cross-chain style writes onto the live item's own chain.
+///
+/// A Song-side target (`Songbooks`/`Song`/`Verse`) never reaches a Bible
+/// item (`Chain::Bibles`), and vice versa — so a font/size edit made while
+/// a Bible verse is live appears to do nothing. When none of `targets`
+/// participates in `chain`, song<->bible targets land on the matching rung
+/// (`Song` <-> `Bible`); anything else passes through untouched.
+/// Pure so the redirect contract is unit-testable without a window.
+pub fn redirect_style_targets(
+    chain: vp_core::cascade::Chain,
+    targets: Vec<vp_core::cascade::Level>,
+) -> Vec<vp_core::cascade::Level> {
+    use vp_core::cascade::Level::*;
+    if targets.is_empty() || targets.iter().any(|l| chain.contains(*l)) {
+        return targets;
+    }
+    let song_side = targets
+        .iter()
+        .any(|l| matches!(l, Songbooks | Songbook | Song | SongVerse));
+    let bible_side = targets.iter().any(|l| {
+        matches!(
+            l,
+            Bibles | Bible | Testament | Book | Chapter | Verse
+        )
+    });
+    match chain {
+        vp_core::cascade::Chain::Bibles if song_side => vec![Bible],
+        vp_core::cascade::Chain::Songs if bible_side => vec![Song],
+        _ => targets,
+    }
+}
+
+/// What the agenda target contributes to the slides-panel source decision.
+/// Only the song identity matters: Bible and other targets always keep
+/// the panel (a stale song selection must never cover them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgendaTarget {
+    Song { song_id: String },
+    Other,
+}
+
+/// Slides-panel source when the library selection disagrees with the agenda
+/// target: the editor already follows the browser song, so the panel must
+/// render that song too — otherwise editor and slides show two different
+/// songs (Stage 04: never desync). True = render the transient library
+/// preview instead of the agenda target. Pure so the contract is
+/// unit-testable without a window.
+pub fn library_preview_wins(sel_song_id: Option<&str>, target: Option<&AgendaTarget>) -> bool {
+    let Some(sel) = sel_song_id else {
+        return false;
+    };
+    match target {
+        None => true,
+        Some(AgendaTarget::Song { song_id }) => song_id != sel,
+        Some(AgendaTarget::Other) => false,
+    }
+}
+
+/// File a live video agenda item should hand to the OS player: `(item id,
+/// path)`. `None` for anything that is not a standalone `Video` + file
+/// reference. Pure so the auto-launch decision is unit-testable.
+pub fn video_item_file(item: &AgendaItem) -> Option<(String, PathBuf)> {
+    match (&item.kind, &item.reference) {
+        (ItemKind::Video, ItemRef::File { file }) => {
+            Some((item.id.clone(), PathBuf::from(file)))
+        }
+        _ => None,
+    }
+}
+/// One-line verse-order summary for the collapsed disclosure: the full
+/// list when it fits, `first 5 … (N verses)` for long medleys (pure so
+/// the collapse contract is unit-testable).
+pub fn verse_order_summary(current: &[String]) -> String {
+    if current.len() > 6 {
+        format!(
+            "{}, … ({} verses)",
+            current[..5].join(", "),
+            current.len()
+        )
+    } else {
+        current.join(", ")
+    }
+}
+
+/// Verse numbers leading each Bible slide line (`"16 text..."`). the panel groups verses
 /// into projected slides (like songs), and the badge/checkbox derive from the
 /// verses inside the slide rather than from a per-verse row.
 pub fn bible_slide_verses(lines: &[String]) -> Vec<u32> {
@@ -394,9 +496,6 @@ pub enum PresKey {
     /// Show / hide the in-app help. The original calls this contextual help
     /// and hangs it on `F1` (1.7).
     Help,
-    /// Manual update check (F9). Explicit operator consent, one HTTPS GET,
-    /// no download, no background polling — the offline-first contract.
-    CheckUpdates,
     /// Quit (Ctrl+Q).
     Quit,
 }
@@ -571,7 +670,6 @@ pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
         "ctrl-8" => Some(PresKey::AddResult(8)),
         "ctrl-9" => Some(PresKey::AddResult(9)),
         "f1" => Some(PresKey::Help),
-        "f9" => Some(PresKey::CheckUpdates),
         "ctrl-q" => Some(PresKey::Quit),
         "ctrl-*" => Some(PresKey::RangeExtendEnd),
         "ctrl-/" => Some(PresKey::RangeShrinkEnd),
@@ -646,7 +744,6 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+* / Ctrl+/", "extend / shrink verse range end"),
         ("Shift+* / Shift+/", "extend / shrink verse range start"),
         ("Ctrl+Q", "quit"),
-        ("F9", "check for updates (manual; needs network)"),
     ]
 }
 
@@ -728,15 +825,6 @@ pub enum BibleSearch {
 }
 
 impl BibleSearch {
-    /// The other mode — what the magnifier button switches to.
-    #[allow(dead_code)] // kept for magnifier-button rewire
-    pub fn toggled(self) -> BibleSearch {
-        match self {
-            BibleSearch::Reference => BibleSearch::Keyword,
-            BibleSearch::Keyword => BibleSearch::Reference,
-        }
-    }
-
     pub fn id(self) -> &'static str {
         match self {
             BibleSearch::Reference => "reference",
@@ -886,6 +974,27 @@ pub fn apply_verse_grid_click(
     }
 }
 
+/// Clamp a requested verse selection to the chapter that is actually
+/// installed (`1..=max`). Out-of-range numbers (typed `1-10` for a chapter
+/// the sample only carries 2 verses of, or `Ctrl+*` past the last verse)
+/// would otherwise resolve to `"10 […]"` placeholder slides the original
+/// never shows — the congregation must never see a placeholder verse.
+/// Empty after clamping means "nothing selectable" (the panel then shows
+/// `(no verses)`, never a fabricated placeholder row).
+pub fn clamp_verses_to_chapter(verses: &[u32], max: u32) -> Vec<u32> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<u32> = verses
+        .iter()
+        .copied()
+        .filter(|&v| v >= 1 && v <= max)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Verse id from a projector slide header. Song slides render as
 /// `"{title} — {verse}"` (optionally `"{title} — {verse} (i/n)"`); Bible
 /// and other headers carry no `—` marker and yield `None`.
@@ -951,6 +1060,11 @@ pub struct LayoutPrefs {
     /// the file still exists — never a ghost path (WI-024).
     #[serde(default)]
     pub bg_file: String,
+    /// Website background URL (`""` = none). Normalized on assign
+    /// (`example.com` → `https://example.com`); revalidated on load so a
+    /// hand-edited layout with a bad URL restores as unset, never stored.
+    #[serde(default)]
+    pub bg_website: String,
     /// Font ribbon state (new keys carry serde defaults so pre-existing
     /// layout files keep loading).
     #[serde(default = "d_font")]
@@ -1005,6 +1119,11 @@ pub struct LayoutPrefs {
     /// Target display index for projector (0 = primary, 1 = secondary/projector, etc.).
     #[serde(default)]
     pub projector_display: usize,
+    /// RandR output name for the projector target (`DP-1`, `HDMI-1`):
+    /// indexes shift when outputs come and go, names do not. Resolved
+    /// first at open; the index is the fallback.
+    #[serde(default)]
+    pub projector_monitor: Option<String>,
     /// Gallery library paths (persisted so backgrounds survive restart —
     /// lens 2/3: an in-memory-only library meant every background vanished
     /// on relaunch and USB-stick picks ghosted). Missing files are skipped
@@ -1016,16 +1135,41 @@ pub struct LayoutPrefs {
     /// Gallery chrome: expanded 2×5-compact → full grid (vendor §9:
     /// collapsed compact + arrow to expand). Persisted so a large library
     /// stays in the operator's chosen density across restarts.
-    #[serde(default)]
-    pub gallery_expanded: bool,
     /// "Keep the gallery opened" pin (RESEARCH §5). Persistence is GAP
     /// in the vendor docs; v1 persists it so the choice survives restart.
     #[serde(default)]
     pub gallery_keep_open: bool,
+    /// Opt-in live web view (Background > Website > Live). Default off:
+    /// old layout files load with the offline tiles, never a browser.
+    #[serde(default)]
+    pub live_web: bool,
+    /// Pinned agenda-list height in px (`None` = automatic content height).
+    /// Dragged row splits persist; pre-existing files load automatic.
+    #[serde(default)]
+    pub agenda_h: Option<f32>,
+    /// Pinned preview height in px (`None` = automatic). Same contract.
+    #[serde(default)]
+    pub preview_h: Option<f32>,
+    /// Adjustable section widths (VJSM parity): dragged dividers persist.
+    #[serde(default = "d_left_w")]
+    pub left_w: f32,
+    #[serde(default = "d_right_w")]
+    pub right_w: f32,
+    /// Ribbon auto-hide (VJSM parity): collapsed to a hover strip.
+    #[serde(default)]
+    pub ribbon_hidden: bool,
 }
 
 fn d_bible_search() -> String {
     "reference".into()
+}
+
+fn d_left_w() -> f32 {
+    360.0
+}
+
+fn d_right_w() -> f32 {
+    560.0
 }
 
 fn d_aspect_ratio() -> String {
@@ -1041,6 +1185,7 @@ impl Default for LayoutPrefs {
             accent_override: None,
             fg_override: None,
             bg_file: String::new(),
+            bg_website: String::new(),
             style_level: "Song".to_string(),
             max_lines: 4,
             max_chars: 40,
@@ -1073,10 +1218,16 @@ impl Default for LayoutPrefs {
             bible_search: d_bible_search(),
             aspect_ratio: d_aspect_ratio(),
             projector_display: 0,
+            projector_monitor: None,
             gallery_images: Vec::new(),
             gallery_videos: Vec::new(),
-            gallery_expanded: false,
             gallery_keep_open: false,
+            live_web: false,
+            agenda_h: None,
+            preview_h: None,
+            left_w: d_left_w(),
+            right_w: d_right_w(),
+            ribbon_hidden: false,
         }
     }
 }
@@ -1103,6 +1254,12 @@ impl LayoutPrefs {
         std::fs::write(path, self.to_json_pretty())
     }
 }
+
+/// Caret blink cadence shared by the single-line fields and the lyrics
+/// document: each caret is a `with_animation` step toggling opacity every
+/// `CARET_BLINK_MS`, id-keyed by cursor so a move remounts it solid. No
+/// tasks, no repaint scheduling — window animation frames repaint.
+pub const CARET_BLINK_MS: u128 = 530;
 
 #[cfg(test)]
 mod tests {
@@ -1184,6 +1341,25 @@ mod tests {
     }
 
     #[test]
+    fn layout_prefs_website_url_round_trips_and_defaults_empty() {
+        // Empty default: no website until the operator Sets one, and old
+        // files without the key still load.
+        assert_eq!(LayoutPrefs::default().bg_website, "");
+        let old = r#"{"theme_id":"dark","lang":"en","ribbon":"agenda",
+            "accent_override":null,"style_level":"Song","max_lines":4,"max_chars":40,
+            "bilingual":true,"whole_song_stage":false,"whole_ref_header":true,
+            "show_abbrev":true,"show_number":true,"show_chords_proj":false,
+            "clock_overlay":false,"bg_kind":"color"}"#;
+        assert_eq!(LayoutPrefs::from_json(old).unwrap().bg_website, "");
+        let mut p = LayoutPrefs::default();
+        p.bg_kind = "website".to_string();
+        p.bg_website = "https://example.com/live".to_string();
+        let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
+        assert_eq!(back.bg_kind, "website");
+        assert_eq!(back.bg_website, "https://example.com/live");
+    }
+
+    #[test]
     fn layout_prefs_json_round_trip() {
         let mut p = LayoutPrefs::default();
         p.theme_id = "blue".to_string();
@@ -1191,7 +1367,6 @@ mod tests {
         p.max_lines = 6;
         p.gallery_images = vec!["/tmp/a.png".to_string()];
         p.gallery_videos = vec!["/tmp/b.mp4".to_string()];
-        p.gallery_expanded = true;
         p.gallery_keep_open = true;
         let back = LayoutPrefs::from_json(&p.to_json_pretty()).unwrap();
         assert_eq!(back, p);
@@ -1228,6 +1403,156 @@ mod tests {
         dup.sort_unstable();
         dup.dedup();
         assert_eq!(dup.len(), levels.len());
+    }
+
+    #[test]
+    fn library_preview_wins_only_for_a_different_song() {
+        use AgendaTarget::*;
+        // No library selection -> agenda target always stands.
+        assert!(!library_preview_wins(None, None));
+        assert!(!library_preview_wins(
+            None,
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Nothing on the agenda -> library preview is the only content.
+        assert!(library_preview_wins(Some("a"), None));
+        // Same song -> agenda item stands (checkbox state, live cue live there).
+        assert!(!library_preview_wins(
+            Some("a"),
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Different song -> editor already shows it, panel must follow.
+        assert!(library_preview_wins(
+            Some("b"),
+            Some(&Song { song_id: "a".into() })
+        ));
+        // Bible/other targets always win over a stale song selection.
+        assert!(!library_preview_wins(Some("b"), Some(&Other)));
+    }
+
+    #[test]
+    fn style_write_targets_hit_real_chain_levels() {
+        use vp_core::cascade::Level::*;
+        // Every dropdown value that has chain levels maps to exactly those.
+        assert_eq!(style_write_targets("Base"), vec![Base]);
+        assert_eq!(style_write_targets("Songbooks"), vec![Songbooks]);
+        assert_eq!(style_write_targets("Song"), vec![Song]);
+        assert_eq!(style_write_targets("Verse"), vec![SongVerse]);
+        assert_eq!(style_write_targets("Bible"), vec![Bible]);
+        assert_eq!(style_write_targets("Media"), vec![Images, Videos]);
+        // Alert/Clock/unknown stay flat (agenda-global): no chain levels.
+        assert!(style_write_targets("Alert").is_empty());
+        assert!(style_write_targets("Clock").is_empty());
+        assert!(style_write_targets("").is_empty());
+        // The mapped levels really participate in their chains.
+        for (dropdown, chain) in [
+            ("Song", vp_core::cascade::Chain::Songs),
+            ("Verse", vp_core::cascade::Chain::Songs),
+            ("Bible", vp_core::cascade::Chain::Bibles),
+        ] {
+            for level in style_write_targets(dropdown) {
+                assert!(
+                    chain.contains(level),
+                    "{dropdown} maps outside its chain"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cross_chain_style_writes_redirect_to_live_chain() {
+        use vp_core::cascade::{Chain, Level::*};
+        // Bible verse live while the Styles dropdown sits on Song/Verse:
+        // the value must land on Bible, where Chain::Bibles resolves it.
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![Song]),
+            vec![Bible]
+        );
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![SongVerse]),
+            vec![Bible]
+        );
+        // ... and the mirror: a Bible target with a song live lands on Song.
+        assert_eq!(
+            redirect_style_targets(Chain::Songs, vec![Bible]),
+            vec![Song]
+        );
+        // On-chain and empty targets pass through untouched.
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![Bible]),
+            vec![Bible]
+        );
+        assert_eq!(
+            redirect_style_targets(Chain::Songs, vec![Song]),
+            vec![Song]
+        );
+        assert_eq!(
+            redirect_style_targets(Chain::Bibles, vec![Base]),
+            vec![Base]
+        );
+        assert!(redirect_style_targets(Chain::Bibles, vec![]).is_empty());
+        assert_eq!(
+            redirect_style_targets(Chain::Images, vec![Song]),
+            vec![Song]
+        );
+    }
+
+    #[test]
+    fn video_item_file_only_fires_for_standalone_video() {
+        use vp_core::schema::{FlowType, ItemKind, ItemOverrides, ItemRef};
+        let mk = |kind: ItemKind, reference: ItemRef| AgendaItem {
+            id: "item-1".to_string(),
+            kind,
+            title: "Clip".to_string(),
+            reference,
+            flow_type: FlowType::default(),
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        // Video + file: the OS player target.
+        let v = mk(
+            ItemKind::Video,
+            ItemRef::File {
+                file: "clip.mp4".to_string(),
+            },
+        );
+        assert_eq!(
+            video_item_file(&v),
+            Some(("item-1".to_string(), PathBuf::from("clip.mp4")))
+        );
+        // Anything else: no launch (image, song, URL video).
+        assert_eq!(
+            video_item_file(&mk(
+                ItemKind::Image,
+                ItemRef::File {
+                    file: "pic.jpg".to_string()
+                }
+            )),
+            None
+        );
+        assert_eq!(
+            video_item_file(&mk(
+                ItemKind::Video,
+                ItemRef::Url {
+                    url: "https://example.com/v".to_string()
+                }
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn verse_order_summary_collapses_long_medleys() {
+        let short: Vec<String> = ["V1", "V2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(verse_order_summary(&short), "V1, V2");
+        assert_eq!(verse_order_summary(&[]), "");
+        let six: Vec<String> = (1..=6).map(|n| format!("V{n}")).collect();
+        assert_eq!(verse_order_summary(&six), "V1, V2, V3, V4, V5, V6");
+        let long: Vec<String> = (1..=74).map(|n| format!("{n}")).collect();
+        assert_eq!(
+            verse_order_summary(&long),
+            "1, 2, 3, 4, 5, … (74 verses)"
+        );
     }
 
     #[test]
@@ -1379,12 +1704,6 @@ mod tests {
     #[test]
     fn bible_search_mode_toggles_and_labels() {
         assert_eq!(BibleSearch::default(), BibleSearch::Reference);
-        assert_eq!(BibleSearch::Reference.toggled(), BibleSearch::Keyword);
-        assert_eq!(BibleSearch::Keyword.toggled(), BibleSearch::Reference);
-        assert_eq!(
-            BibleSearch::Reference.toggled().toggled(),
-            BibleSearch::Reference
-        );
         assert_eq!(BibleSearch::Reference.id(), "reference");
         assert_eq!(BibleSearch::Keyword.id(), "keyword");
         // Placeholders tell the operator what the box expects, per language.
@@ -1514,9 +1833,6 @@ mod tests {
         // Message-tab transport button is the documented play/pause path.
         assert_eq!(route_pres_key("f5"), Some(PresKey::StartPres));
         assert_eq!(route_pres_key("f6"), Some(PresKey::FocusSlides));
-        // F9 is the manual update check: explicit consent, one HTTPS GET,
-        // no download, no background polling.
-        assert_eq!(route_pres_key("f9"), Some(PresKey::CheckUpdates));
         assert_eq!(route_pres_key("ctrl-*"), Some(PresKey::RangeExtendEnd));
         assert_eq!(route_pres_key("ctrl-/"), Some(PresKey::RangeShrinkEnd));
         assert_eq!(route_pres_key("shift-*"), Some(PresKey::RangeExtendStart));
@@ -1753,6 +2069,22 @@ mod tests {
         assert_eq!(default_verse_count(58, 11), 40); // Hebrews 11
         assert_eq!(default_verse_count(43, 3), 36); // John 3
         assert_eq!(default_verse_count(19, 23), 6); // Psalm 23
+    }
+
+    #[test]
+    fn clamp_verses_drops_placeholders_beyond_the_chapter() {
+        // Psalm 23:1-10 typed against a 6-verse chapter must not keep
+        // verses 7-10 — those would resolve to `"10 […]"` slides.
+        assert_eq!(clamp_verses_to_chapter(&[1, 2, 7, 10], 6), vec![1, 2]);
+        // Full containment passes through, sorted and deduped.
+        assert_eq!(
+            clamp_verses_to_chapter(&[18, 16, 17, 16], 36),
+            vec![16, 17, 18]
+        );
+        // Nothing selectable clamps to nothing (panel shows `(no verses)`).
+        assert!(clamp_verses_to_chapter(&[9, 10], 6).iter().all(|&v| v <= 6));
+        assert!(clamp_verses_to_chapter(&[10], 6).is_empty());
+        assert!(clamp_verses_to_chapter(&[1], 0).is_empty());
     }
 
     #[test]

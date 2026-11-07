@@ -36,7 +36,7 @@
 //! | `ItemKind`        | 17 literals, `Song` first (see [`ItemKind::ALL`])                         |
 //! | `Versification`   | `EN`, `RU`, `FR`                                                          |
 //! | `Align`           | `left`, `center`, `right`                                                 |
-//! | `BackgroundKind`  | `color`, `image`, `videoLoop`, `camera`                                   |
+//! | `BackgroundKind`  | `color`, `image`, `videoLoop`, `camera`, `website`                     |
 //! | `Style.transition`| `none`, `fade`, `slide`, `zoom`                                           |
 //! | `AspectRatio`     | `4x3.2`, `4x3`, `16x10`, `16x9`, `16x8` (`geometry::AspectRatio`)        |
 //!
@@ -233,15 +233,46 @@ pub struct Song {
 }
 
 impl Song {
+    /// The song's verses in display order.
+    ///
+    /// `order` is a tie-breaker only: when it is a real permutation
+    /// (distinct, dense) it drives the sequence. When it is missing,
+    /// duplicated or gappy — which is what a stale save leaves behind —
+    /// document order wins instead, so the default verse order is always
+    /// `V1, V2, V3, …` and never the scrambled `V3, V4, V5, V1, V2` a stable
+    /// sort over equal keys produced.
+    pub fn ordered_verses(&self) -> Vec<&SongVerse> {
+        let mut verses: Vec<&SongVerse> = self.verses.iter().collect();
+        if verses_have_usable_order(&verses) {
+            verses.sort_by_key(|v| v.order);
+        }
+        verses
+    }
+
     /// Collect every lyric line of every verse in verse order.
     pub fn all_lines(&self) -> Vec<&str> {
-        let mut verses: Vec<&SongVerse> = self.verses.iter().collect();
-        verses.sort_by_key(|v| v.order);
-        verses
+        self.ordered_verses()
             .iter()
             .flat_map(|v| v.lines.iter().map(|l| l.as_str()))
             .collect()
     }
+}
+
+/// `true` when `order` actually encodes a sequence: every verse distinct and
+/// forming a dense run. Anything else (stale duplicates, all zero, gaps) is
+/// treated as "no order recorded" and the array order is used verbatim.
+fn verses_have_usable_order(verses: &[&SongVerse]) -> bool {
+    if verses.len() < 2 {
+        return false;
+    }
+    let mut orders: Vec<i32> = verses.iter().map(|v| v.order).collect();
+    orders.sort_unstable();
+    orders.dedup();
+    if orders.len() != verses.len() {
+        return false;
+    }
+    // Dense: max - min + 1 == count is enough; an offset is harmless.
+    matches!((orders.first(), orders.last()), (Some(&lo), Some(&hi)) if (hi - lo + 1) as usize == orders.len())
 }
 
 /// A songbook containing songs.
@@ -549,6 +580,12 @@ pub struct AgendaItem {
 pub struct AgendaSettings {
     #[serde(default)]
     pub style: Option<Style>,
+    /// Per-style-level values (the cascade): Base / Songbooks / Song /
+    /// Verse / … — written by the style ribbon, resolved per item chain at
+    /// render. `None` = pre-cascade file; readers adopt the flat `style`
+    /// at `Base`. Same shape as Electron's `agenda.settings.cascade`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade: Option<crate::cascade::Cascade>,
     /// Bilingual verse display with empty-line suppression (SPEC 2.3).
     #[serde(default)]
     pub bilingual_suppress_empty: bool,
@@ -707,6 +744,14 @@ impl Align {
     pub fn literal(&self) -> &'static str {
         Align::LITERALS[Align::ALL.iter().position(|a| a == self).unwrap()]
     }
+    /// Parse a wire literal; unknown (or empty) means centered.
+    pub fn from_literal(s: &str) -> Align {
+        match s {
+            "left" => Align::Left,
+            "right" => Align::Right,
+            _ => Align::Center,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -731,6 +776,14 @@ impl VAlign {
     /// on write, so files written before WI-021 round-trip byte-identical.
     pub fn is_center(&self) -> bool {
         matches!(self, VAlign::Center)
+    }
+    /// Parse a wire literal; unknown (or empty) means centered.
+    pub fn from_literal(s: &str) -> VAlign {
+        match s {
+            "top" => VAlign::Top,
+            "bottom" => VAlign::Bottom,
+            _ => VAlign::Center,
+        }
     }
 }
 
@@ -765,6 +818,7 @@ impl BgFit {
         }
     }
 }
+
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Margins {
@@ -875,18 +929,24 @@ pub enum BackgroundKind {
     VideoLoop,
     #[serde(rename = "camera")]
     Camera,
+    /// Live web page behind the lyrics (operator-typed URL, offline-first:
+    /// stored as data only — the projector shows a titled tile + opens it
+    /// in the OS browser; gpui 0.2.2 has no web-view element to embed it).
+    #[serde(rename = "website")]
+    Website,
 }
 
 impl BackgroundKind {
     /// Canonical literals in declaration order.
-    pub const ALL: [BackgroundKind; 4] = [
+    pub const ALL: [BackgroundKind; 5] = [
         BackgroundKind::Color,
         BackgroundKind::Image,
         BackgroundKind::VideoLoop,
         BackgroundKind::Camera,
+        BackgroundKind::Website,
     ];
     /// [`BackgroundKind::ALL`] as wire literals, same indices.
-    pub const LITERALS: [&'static str; 4] = ["color", "image", "videoLoop", "camera"];
+    pub const LITERALS: [&'static str; 5] = ["color", "image", "videoLoop", "camera", "website"];
     /// Canonical literal for this background kind.
     pub fn literal(&self) -> &'static str {
         BackgroundKind::LITERALS[BackgroundKind::ALL.iter().position(|k| k == self).unwrap()]
@@ -904,6 +964,12 @@ pub struct Background {
     pub image: Option<String>,
     #[serde(default)]
     pub video_loop: Option<String>,
+    /// Website background URL (`BackgroundKind::Website`). `None` = unset;
+    /// normalized by [`normalize_website_url`] (bare `example.com` →
+    /// `https://example.com`). No fetch happens here — pure data so both
+    /// ports agree on the file shape without touching the network.
+    #[serde(default)]
+    pub website: Option<String>,
     /// Background frame, normalized (B-06). `None` means "fill the slide",
     /// i.e. [`Rect::FULL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -912,6 +978,50 @@ pub struct Background {
 
 fn default_bg() -> String {
     "#000000".into()
+}
+
+/// Normalize an operator-typed website URL into a stored background URL.
+///
+/// Pure (no network): trims whitespace, prepends `https://` when no scheme
+/// is present, lowercases the scheme, and rejects empties, strings with
+/// whitespace, and non-http(s) schemes (`file:`, `javascript:`, …). Used
+/// by both the style background (`Background.website`) and anywhere else
+/// an operator pastes a page address, so both ports store the same shape.
+/// Returns `None` for anything that should not be stored.
+pub fn normalize_website_url(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    // A colon without `://` claims a non-web scheme (`javascript:…`,
+    // `mailto:…`) or a bare host:port. Both are rejected: the operator
+    // adds `https://` explicitly for ports.
+    if t.contains(':') && !t.contains("://") {
+        return None;
+    }
+    let with_scheme = if t.contains("://") {
+        t.to_string()
+    } else {
+        format!("https://{t}")
+    };
+    let (scheme, rest) = with_scheme.split_once("://")?;
+    let scheme_lc = scheme.to_ascii_lowercase();
+    if scheme_lc != "http" && scheme_lc != "https" {
+        return None;
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    // WHATWG treats `\` as `/` for special schemes: a backslash can hide
+    // the real host (`http://evil.com\@localhost/` is evil.com). Reject —
+    // no legitimate http(s) URL needs one.
+    if rest.contains('\\') {
+        return None;
+    }
+    if rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
+        return None;
+    }
+    Some(format!("{scheme_lc}://{rest}"))
 }
 
 /// Hierarchical presentation style (SPEC 2.4: levels like Song > ...).
@@ -1022,6 +1132,33 @@ mod tests {
     }
 
     #[test]
+    fn agenda_settings_cascade_round_trips_under_the_cascade_key() {
+        // The per-style-level cascade persists inside the agenda file under
+        // "cascade" — the same key Electron reads (`agenda.settings.cascade`).
+        // Absent when unset, so pre-cascade files are byte-identical.
+        let mut plain = Agenda::new("T");
+        let v: serde_json::Value = serde_json::to_value(&plain).unwrap();
+        assert!(v["settings"].get("cascade").is_none());
+        let mut casc = crate::cascade::Cascade::default();
+        casc.set(
+            crate::cascade::Level::SongVerse,
+            crate::cascade::LevelValues {
+                align: Some("right".into()),
+                ..Default::default()
+            },
+        );
+        plain.settings.cascade = Some(casc);
+        let v: serde_json::Value = serde_json::to_value(&plain).unwrap();
+        assert_eq!(v["settings"]["cascade"]["values"]["songVerse"]["align"], "right");
+        let back: Agenda = serde_json::from_value(v).unwrap();
+        let got = back.settings.cascade.expect("cascade must round-trip");
+        assert_eq!(
+            got.resolve(crate::cascade::Chain::Songs).align.value,
+            "right"
+        );
+    }
+
+    #[test]
     fn agenda_ref_key_is_ref_not_reference() {
         let item = AgendaItem {
             id: "i1".into(),
@@ -1047,7 +1184,48 @@ mod tests {
         let s = Style::default();
         let v = serde_json::to_value(&s).unwrap();
         assert!(v["background"].get("videoLoop").is_some());
+        assert!(v["background"].get("website").is_some());
         assert!(v.get("footer").is_some() && v.get("header").is_some());
+    }
+
+    #[test]
+    fn style_background_website_round_trips_and_normalizes() {
+        // Old files without the key still parse (serde default).
+        let legacy = serde_json::json!({
+            "level": "Song", "body": {}, "header": {}, "footer": {},
+            "background": {"kind": "color"}
+        });
+        let back: Style = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.background.website, None);
+        // A website background keeps its URL.
+        let mut s = Style::default();
+        s.background.kind = BackgroundKind::Website;
+        s.background.website = normalize_website_url("example.com/live");
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["background"]["kind"], "website");
+        assert_eq!(v["background"]["website"], "https://example.com/live");
+        let back: Style = serde_json::from_value(v).unwrap();
+        assert_eq!(back.background.website.as_deref(), Some("https://example.com/live"));
+    }
+
+    #[test]
+    fn website_url_normalization_is_offline_and_strict() {
+        assert_eq!(normalize_website_url(""), None);
+        assert_eq!(normalize_website_url("   "), None);
+        assert_eq!(normalize_website_url("example.com"), Some("https://example.com".into()));
+        assert_eq!(normalize_website_url("  Example.COM/Go  "), Some("https://Example.COM/Go".into()), "trims edges");
+        assert_eq!(normalize_website_url("exam ple.com"), None, "inner spaces reject");
+        assert_eq!(normalize_website_url("HTTP://example.com/x"), Some("http://example.com/x".into()));
+        assert_eq!(normalize_website_url("https://example.com/a?b=c"), Some("https://example.com/a?b=c".into()));
+        assert_eq!(normalize_website_url("file:///etc/passwd"), None);
+        assert_eq!(normalize_website_url("javascript:alert(1)"), None);
+        assert_eq!(normalize_website_url("example.com:8080/live"), None, "bare host:port needs a scheme");
+        assert_eq!(normalize_website_url("https://example.com:8080/live"), Some("https://example.com:8080/live".into()));
+        assert_eq!(normalize_website_url("https://"), None);
+        assert_eq!(normalize_website_url("//example.com"), None);
+        // Backslash hides the real host from naive parsers (WHATWG: it is
+        // a slash). Reject everywhere, not just in the embed path.
+        assert_eq!(normalize_website_url(r"http://evil.com\@localhost/"), None);
     }
 
     #[test]
@@ -1378,7 +1556,7 @@ mod tests {
     fn fixture_styles_round_trip_with_transition() {
         let f = fixture();
         let styles: Vec<Style> = serde_json::from_value(f["styles"].clone()).unwrap();
-        assert_eq!(styles.len(), 4);
+        assert_eq!(styles.len(), 5);
         // Every align and every background kind appears at least once.
         let aligns: Vec<&str> = styles.iter().map(|s| s.body.align.literal()).collect();
         for a in Align::LITERALS {

@@ -38,19 +38,17 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{Animation, AnimationExt, AnyElement, ElementId};
 use gpui::{
-    App, AsyncApp, Bounds, Context, DefiniteLength, Div, Entity, ImageSource, JustifyContent,
-    ObjectFit, Render, RenderImage, Rgba, StyledImage, Subscription, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, img, px, rgb, size,
+    App, Bounds, Context, DefiniteLength, Div, Entity, ImageSource, JustifyContent,
+    ObjectFit, Render, RenderImage, Rgba, StyledImage, Subscription, TitlebarOptions, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, img, point, px, rgb, size,
 };
-use image::RgbaImage;
-use smallvec::smallvec;
+use std::sync::Arc;
 use vp_core::geometry::{AspectRatio, PercentRect, letterbox_into};
 use vp_core::media::ProjectorFrame;
 use vp_core::schema::{Align, BackgroundKind, BgFit, ItemKind, ItemRef, VAlign};
 
 use crate::presentation::PresentationState;
 use crate::rich_view;
-use crate::loop_video::{self, BgFrame, LoopPlayer};
 
 /// Owned render input for one projector frame. Built by
 /// `Root::projector_snapshot` (which alone can see the private control
@@ -59,6 +57,10 @@ use crate::loop_video::{self, BgFrame, LoopPlayer};
 pub struct ProjectorSnapshot {
     pub bg_kind: BackgroundKind,
     pub bg_file: Option<PathBuf>,
+    /// Website background URL (`BackgroundKind::Website`). `None` = unset;
+    /// shown as a titled tile behind the lyrics — gpui 0.2.2 has no
+    /// web-view element, so the live page opens in the OS browser.
+    pub bg_website: Option<String>,
     /// Background image fit (WI-025): cover crops, contain letterboxes.
     pub bg_fit: BgFit,
     pub bg_color: Rgba,
@@ -101,20 +103,22 @@ pub struct ProjectorSnapshot {
     /// is an Image/Video file. `None` for songs, verses, audio, everything
     /// else — those render the lyric slide over the assigned background.
     pub standalone: Option<StandaloneMedia>,
-    /// Current decoded video frame for a playing background loop or
-    /// standalone video (`loop_video::BgFrame`). `None` = render the tile:
-    /// the frame is produced per-repaint by the window owning the
-    /// `LoopPlayer`, so `render_snapshot` itself stays pure and its tests
-    /// keep passing with `None`.
-    pub bg_frame: Option<BgFrame>,
+    /// Grabbed still for the visible video (standalone item, else the
+    /// video-loop background): rendered through the in-app `img` element
+    /// so the room sees the video's picture. `None` keeps the captioned
+    /// tile (no grab yet, no ffmpeg, stale cache).
+    pub video_poster: Option<PathBuf>,
+    /// Live motion frame (JPEG bytes) while the pump runs: rendered
+    /// through an uncached custom loader ahead of `video_poster`. `None`
+    /// when no motion is playing.
+    pub video_frame: Option<std::sync::Arc<Vec<u8>>>
 }
 
 /// Standalone agenda media on the projector (RESEARCH §12.1): a slideshow
 /// image or a standalone video *replaces* the slide — no header/body/footer,
 /// no chords. Images render contain (RESEARCH §1.1: the whole image shows);
-/// video plays through the in-house loop decoder (`loop_video::LoopPlayer`)
-/// when the file probes as H.264-in-MP4, and falls back to a captioned tile
-/// otherwise.
+/// video plays its motion in-app when ffmpeg exists (poster still, else the
+/// captioned tile, as fallback).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StandaloneMedia {
     Image(PathBuf),
@@ -205,40 +209,25 @@ pub(crate) fn body_layout(valign: VAlign) -> BodyLayout {
 ///   decoder is not a poster frame. It renders a dark tile with the file's
 ///   caption; the no-decoder note lives in the control window (`background_note`),
 ///   never on the sacred screen.
-/// One decoded video frame as a fullscreen GPUI image. A fresh
-/// `RenderImage` id per repaint forces re-upload — that is the 30 fps
-/// cost of video, and the decoder drops (never queues) so the upload
-/// never lags behind the wall clock.
-fn bg_frame_element(frame: &BgFrame, fit: BgFit) -> Div {
-    let object_fit = match fit {
-        BgFit::Cover => ObjectFit::Cover,
-        BgFit::Contain => ObjectFit::Contain,
-    };
-    let pixels = frame.bgra.as_ref().clone();
-    match RgbaImage::from_raw(frame.width, frame.height, pixels) {
-        Some(raw) => {
-            let render = RenderImage::new(smallvec![image::Frame::new(raw)]);
-            div().size_full().bg(rgb(0x000000)).child(
-                img(ImageSource::Render(std::sync::Arc::new(render)))
-                    .object_fit(object_fit)
-                    .size_full(),
-            )
-        }
-        None => div().size_full().bg(rgb(0x000000)),
-    }
-}
-
 pub(crate) fn background_layer(
     bg: Rgba,
     kind: BackgroundKind,
     file: Option<&PathBuf>,
     fit: BgFit,
-    frame: Option<&BgFrame>,
+    poster: Option<&PathBuf>,
+    frame: Option<&Arc<Vec<u8>>>,
+    website: Option<&str>,
 ) -> Div {
     let object_fit = match fit {
         BgFit::Cover => ObjectFit::Cover,
         BgFit::Contain => ObjectFit::Contain,
     };
+    // Live motion jumps the queue ahead of stills/tiles.
+    if matches!(kind, BackgroundKind::VideoLoop) {
+        if let Some(f) = frame {
+            return motion_img(f, object_fit);
+        }
+    }
     match (kind, file) {
         (BackgroundKind::Color, _) => div().size_full().bg(bg),
         (BackgroundKind::Image, Some(path)) if path.exists() => div()
@@ -253,19 +242,43 @@ pub(crate) fn background_layer(
         }
         // No file assigned: plain color (screen-off default), no note.
         (BackgroundKind::Image, None) => div().size_full().bg(bg),
-        // A playing loop replaces the tile with live frames; a file the
-        // decoder cannot probe keeps the honest captioned tile.
-        (BackgroundKind::VideoLoop, Some(path)) => match frame {
-            Some(f) => bg_frame_element(f, fit),
-            None => div().size_full().bg(rgb(0x000000)).child(missing_note(&format!(
-                "▶ {}",
-                vp_core::media::file_caption(path)
-            ))),
-        },
+        // Video loop: the grabbed still when available (like a photo),
+        // else the captioned tile. Motion stays in the OS player — gpui
+        // 0.2.2 has no video element.
+        (BackgroundKind::VideoLoop, Some(_))
+            if poster.is_some_and(|q| q.exists()) =>
+        {
+            div().size_full().bg(bg).child(
+                img(poster.cloned().unwrap_or_default())
+                    .object_fit(object_fit)
+                    .size_full(),
+            )
+        }
+        (BackgroundKind::VideoLoop, Some(path)) => {
+            div()
+                .size_full()
+                .bg(rgb(0x000000))
+                .child(missing_note(&format!(
+                    "▶ {}",
+                    vp_core::media::file_caption(path)
+                )))
+        }
         (BackgroundKind::VideoLoop, None) => div().size_full().bg(rgb(0x000000)),
         // No capture-device support in v1 (RESEARCH §12.6): plain color on
         // the slide; the control window says so.
         (BackgroundKind::Camera, _) => div().size_full().bg(bg),
+        // Website background: no web-view in gpui 0.2.2, so the URL shows
+        // as a titled tile *behind* the lyrics (the sacred screen never
+        // carries browser chrome or error text). The live page opens via
+        // the control window's Open button / OS handler.
+        (BackgroundKind::Website, _) => match website {
+            Some(url) if !url.trim().is_empty() => div().size_full().bg(bg).child(
+                missing_note(&format!("\u{1F310} {}", url.trim())),
+            ),
+            _ => div().size_full().bg(bg).child(missing_note(
+                "(website background: paste a URL in Background > Website)",
+            )),
+        },
     }
 }
 
@@ -279,9 +292,37 @@ fn missing_note(text: &str) -> Div {
 
 /// Render standalone agenda media: the file replaces the slide (§12.1).
 /// Images contain (whole image shows, §1.1); missing files are named aloud.
-/// Video plays through the loop decoder when a frame is being produced,
-/// captioned tile otherwise.
-fn standalone_layer(m: &StandaloneMedia, frame: Option<&BgFrame>) -> Div {
+/// Live motion frame through an UNCACHED custom loader: each repaint
+/// decodes only the current bytes, so a long play cannot accumulate
+/// images in any cache (one identity per frame would). A corrupt frame
+/// shows nothing for exactly one beat; the next tick brings a new one.
+pub(crate) fn motion_img(frame: &Arc<Vec<u8>>, fit: ObjectFit) -> Div {
+    let owned = frame.clone();
+    let source = ImageSource::Custom(Arc::new(move |_, _| {
+        let decoded =
+            image::load_from_memory_with_format(&owned, image::ImageFormat::Jpeg)
+                .ok()?
+                .into_rgba8();
+        Some(Ok(Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
+            image::Frame::new(decoded),
+            1,
+        )))))
+    }));
+    div()
+        .size_full()
+        .bg(rgb(0x000000))
+        .child(img(source).object_fit(fit).size_full())
+}
+
+fn standalone_layer(
+    m: &StandaloneMedia,
+    poster: Option<&PathBuf>,
+    frame: Option<&Arc<Vec<u8>>>,
+) -> Div {
+    // Live motion jumps the queue: current frame bytes beat stills/tiles.
+    if let (StandaloneMedia::Video(_), Some(f)) = (m, frame) {
+        return motion_img(f, ObjectFit::Contain);
+    }
     match m {
         StandaloneMedia::Image(p) if p.exists() => div()
             .size_full()
@@ -296,13 +337,25 @@ fn standalone_layer(m: &StandaloneMedia, frame: Option<&BgFrame>) -> Div {
                     vp_core::media::file_caption(p)
                 )))
         }
-        StandaloneMedia::Video(p) => match frame {
-            Some(f) => bg_frame_element(f, BgFit::Contain),
-            None => div().size_full().bg(rgb(0x000000)).child(missing_note(&format!(
-                "▶ {}",
-                vp_core::media::file_caption(p)
-            ))),
-        },
+        // The video's picture when grabbed (like a photo); motion plays in
+        // the OS player. No grab yet (or no ffmpeg) keeps the tile.
+        StandaloneMedia::Video(p) if poster.is_some_and(|q| q.exists()) => div()
+            .size_full()
+            .bg(rgb(0x000000))
+            .child(
+                img(poster.cloned().unwrap_or_default())
+                    .object_fit(ObjectFit::Contain)
+                    .size_full(),
+            ),
+        StandaloneMedia::Video(p) => {
+            div()
+                .size_full()
+                .bg(rgb(0x000000))
+                .child(missing_note(&format!(
+                    "▶ {}",
+                    vp_core::media::file_caption(p)
+                )))
+        }
     }
 }
 
@@ -383,12 +436,20 @@ pub(crate) fn render_snapshot(
     let scale = (bh / 1080.0).clamp(0.2, 3.0);
     let bg = apply_luminosity_color(snap.bg_color, snap.luminosity);
     let inner = if let Some(m) = &snap.standalone {
-        standalone_layer(m, snap.bg_frame.as_ref())
+        standalone_layer(m, snap.video_poster.as_ref(), snap.video_frame.as_ref())
     } else if snap.frame.black {
         div().size_full().bg(rgb(0x000000))
     } else if !snap.frame.text {
         // Ctrl+T: text gone, background keeps playing (RESEARCH §12.7).
-        background_layer(bg, snap.bg_kind, snap.bg_file.as_ref(), snap.bg_fit, snap.bg_frame.as_ref())
+        background_layer(
+            bg,
+            snap.bg_kind,
+            snap.bg_file.as_ref(),
+            snap.bg_fit,
+            snap.video_poster.as_ref(),
+            snap.video_frame.as_ref(),
+            snap.bg_website.as_deref(),
+        )
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
         let fit =
@@ -457,7 +518,9 @@ pub(crate) fn render_snapshot(
             snap.bg_kind,
             snap.bg_file.as_ref(),
             snap.bg_fit,
-            snap.bg_frame.as_ref(),
+            snap.video_poster.as_ref(),
+            snap.video_frame.as_ref(),
+            snap.bg_website.as_deref(),
         ));
         // Luminosity over media pixels: gpui::img exposes no brightness
         // filter, so grade honestly by compositing — a translucent overlay
@@ -573,77 +636,17 @@ pub(crate) fn render_snapshot(
 /// Live projector view: holds the shared [`PresentationState`] and repaints
 /// whenever the control window publishes a new one. It never touches
 /// `Entity<Root>` — that was the re-entrant crash (WI-033).
-///
-/// Owns the background loop player: when the live background is a playable
-/// video file, frames are decoded on a worker thread and the freshest one
-/// is attached to each snapshot. A 33 ms pump keeps repaints (and the
-/// loop) moving while video is live; tile mode costs no timer.
 pub(crate) struct ProjectorWindow {
     presentation: Entity<PresentationState>,
     _observe: Option<Subscription>,
-    loop_player: Option<LoopPlayer>,
-    loop_path: Option<PathBuf>,
-    loop_started: Option<std::time::Instant>,
-    loop_pump: bool,
 }
 
 impl Render for ProjectorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let (mut snap, aspect) = {
+        let (snap, aspect) = {
             let p = self.presentation.read(cx);
             (p.snapshot.clone(), p.aspect)
         };
-        // Live loop: (re)start the decoder when the background file changes,
-        // attach the freshest frame, keep the pump running. Anything else
-        // (tile mode) drops the player and the timer with it.
-        let want: Option<PathBuf> = match (&snap.standalone, snap.bg_kind) {
-            (Some(StandaloneMedia::Video(p)), _) => Some(p.clone()),
-            (None, BackgroundKind::VideoLoop) => snap.bg_file.clone(),
-            _ => None,
-        };
-        if want.as_ref() != self.loop_path.as_ref() {
-            self.loop_path = want.clone();
-            self.loop_player = want.as_deref().and_then(LoopPlayer::start);
-            self.loop_started = self.loop_player.as_ref().map(|_| std::time::Instant::now());
-        }
-        if let (Some(player), Some(started)) = (&self.loop_player, self.loop_started) {
-            let elapsed = started.elapsed().as_millis() as u64;
-            if let Some(rgb) = player.frame_now(elapsed) {
-                snap.bg_frame = Some(loop_video::to_bg_frame(&rgb));
-            }
-            if !self.loop_pump {
-                self.loop_pump = true;
-                cx.spawn(|weak: WeakEntity<ProjectorWindow>, async_cx: &mut AsyncApp| {
-                    let mut async_cx = async_cx.clone();
-                    async move {
-                        loop {
-                            async_cx
-                                .background_executor()
-                                .timer(std::time::Duration::from_millis(33))
-                                .await;
-                            let alive = weak
-                                .update(&mut async_cx, |this: &mut ProjectorWindow, cx| {
-                                    let playing = this.loop_player.is_some();
-                                    if playing {
-                                        cx.notify();
-                                    } else {
-                                        this.loop_pump = false;
-                                    }
-                                    playing
-                                })
-                                .unwrap_or(false);
-                            if !alive {
-                                break;
-                            }
-                        }
-                    }
-                })
-                .detach();
-            }
-        } else {
-            self.loop_player = None;
-            self.loop_started = None;
-        }
         let size = window.bounds().size;
         let (target_w, target_h): (f32, f32) = (size.width.into(), size.height.into());
         div().size_full().bg(rgb(0x000000)).child(render_snapshot(
@@ -656,9 +659,16 @@ impl Render for ProjectorWindow {
     }
 }
 
-/// Open the second window. `fullscreen` requests a real fullscreen open on
-/// the main display; `WindowHandle::update` + `Window::toggle_fullscreen`
-/// flips it later from the control window.
+/// Open the second window. `fullscreen` requests a real fullscreen open;
+/// `WindowHandle::update` + `Window::toggle_fullscreen` flips it later
+/// from the control window.
+///
+/// `monitor` is the operator's chosen RandR output rectangle (Display
+/// 1/2/3). GPUI's X11 backend enumerates X *screens* — one for a whole
+/// merged dual-monitor desktop — so display ids can never address the
+/// second monitor; an explicit borderless window inside the output rect
+/// is the only placement that actually lands there. `None` keeps the old
+/// display-id path (primary fallback).
 ///
 /// Returns the handle, or a message string: the app crate does not depend on
 /// `anyhow` directly, so gpui's `anyhow::Error` is mapped to text here.
@@ -667,31 +677,49 @@ pub(crate) fn open_projector_window(
     presentation: Entity<PresentationState>,
     fullscreen: bool,
     display: Option<gpui::DisplayId>,
+    monitor: Option<crate::monitors::Monitor>,
 ) -> Result<WindowHandle<ProjectorWindow>, String> {
     // Honor the operator's display choice (WI-033 follow-up): the old code
     // always centered on the primary display, so the monitor buttons were
     // decoration. `None` (or a vanished display) falls back to primary.
     let restore = Bounds::centered(display, size(px(1920.), px(1080.)), cx);
-    let (window_bounds, titlebar) = if fullscreen {
-        // True borderless fullscreen for the congregation: no title bar,
-        // no minimize/maximize/close (WI-033 — the operator asked for
-        // exactly this; the control window keeps the only chrome).
-        // `appears_transparent` hides the system titlebar on Windows.
-        (
-            WindowBounds::Fullscreen(restore),
-            Some(TitlebarOptions {
-                title: None,
-                appears_transparent: true,
-                traffic_light_position: None,
-            }),
-        )
-    } else {
+    let transparent_chrome = Some(TitlebarOptions {
+        title: None,
+        appears_transparent: true,
+        traffic_light_position: None,
+    });
+    let (window_bounds, titlebar) = match (fullscreen, monitor) {
+        // True borderless fullscreen for the congregation, placed by
+        // geometry (not by the WM, which would ignore the output): no
+        // title bar, no minimize/maximize/close (WI-033 — the operator
+        // asked for exactly this; the control window keeps the only
+        // chrome). `appears_transparent` hides the system titlebar.
+        (true, Some(m)) => (
+            WindowBounds::Windowed(Bounds::new(
+                point(px(m.x as f32), px(m.y as f32)),
+                size(px(m.w as f32), px(m.h as f32)),
+            )),
+            transparent_chrome,
+        ),
+        (true, None) => (WindowBounds::Fullscreen(restore), transparent_chrome),
         // Windowed opens deliberately modest (1280×720): a 1920×1080 first
         // window is off-screen on smaller laptop displays (WI-028 — opening
         // it crashed there), and the user maximizes or flips fullscreen
-        // once it is up. Fullscreen keeps the native 1080p request.
-        (
-            WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(720.)), cx)),
+        // once it is up. It centers inside the chosen output when known.
+        (false, Some(m)) => {
+            let (w, h) = (1280f32, 720f32);
+            let ox = m.x as f32 + ((m.w as f32 - w) / 2.).max(0.);
+            let oy = m.y as f32 + ((m.h as f32 - h) / 2.).max(0.);
+            (
+                WindowBounds::Windowed(Bounds::new(
+                    point(px(ox), px(oy)),
+                    size(px(w), px(h)),
+                )),
+                None,
+            )
+        }
+        (false, None) => (
+            WindowBounds::Windowed(Bounds::centered(display, size(px(1280.), px(720.)), cx)),
             None,
         )
     };
@@ -707,10 +735,6 @@ pub(crate) fn open_projector_window(
             let mut w = ProjectorWindow {
                 presentation: presentation.clone(),
                 _observe: None,
-                loop_player: None,
-                loop_path: None,
-                loop_started: None,
-                loop_pump: false,
             };
             let sub = cx.observe(&presentation, |_, _, cx: &mut Context<ProjectorWindow>| {
                 cx.notify();
@@ -879,6 +903,7 @@ mod tests {
         assert!(grades_luminosity_overlay(BackgroundKind::VideoLoop));
         assert!(!grades_luminosity_overlay(BackgroundKind::Color));
         assert!(!grades_luminosity_overlay(BackgroundKind::Camera));
+        assert!(!grades_luminosity_overlay(BackgroundKind::Website));
     }
 
     #[test]

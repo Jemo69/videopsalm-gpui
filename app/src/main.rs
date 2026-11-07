@@ -39,9 +39,11 @@ mod crash_log;
 mod doc_field;
 mod file_picker;
 mod icons;
-mod loop_video;
 mod lyrics_doc;
+mod live_web;
 mod media_gallery;
+mod monitors;
+mod ndi_out;
 mod presentation;
 mod preview_resize;
 mod projector_window;
@@ -49,10 +51,10 @@ mod rich_view;
 mod smoke;
 mod style_explorer;
 mod text_field;
-mod updater;
 mod ux;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -67,12 +69,12 @@ use vp_core::bible_ref::{
     BOOKS, compact_verses, extend_end, extend_start, format_header, match_book, parse_reference,
     shrink_end, shrink_start,
 };
-use vp_core::cascade::{Cascade, Chain};
+use vp_core::cascade::{Cascade, Chain, LevelValues, Resolved};
 use vp_core::chord_transpose::{extract_overlays, transpose_chordpro};
 use vp_core::geometry::{AspectRatio, FitMode, Viewport, resolve_percent};
 use vp_core::i18n::Locale;
 use vp_core::library::{self, SearchScope};
-use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, projector_frame};
+use vp_core::media::{CutScope, ExternalPlayer, MediaFileKind, MediaKind, MediaPlayer, MotionPump, projector_frame};
 use vp_core::schema::{
     Agenda, AgendaItem, BackgroundKind, ChordNotation, FlowType, ItemKind, ItemOverrides, ItemRef, Song,
 };
@@ -89,7 +91,8 @@ use text_field::{Changed, TextField, bind_field_keys};
 use ux::{
     BibleSearch, LayoutPrefs, PresKey, RibbonTab, SaveTarget, TOOL_STRIP_PENCIL_INDEX,
     agenda_rail_buttons, apply_verse_grid_click, bible_hit_rows, bible_slide_badge,
-    bible_slide_verses, chapter_count, default_verse_count, digit_slide_index, filmstrip_label,
+    bible_slide_verses, chapter_count, clamp_verses_to_chapter, default_verse_count,
+    digit_slide_index, filmstrip_label,
     font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
     presentation_start_index, rail_menu_items, route_pres_key, save_target, section_name,
     shortcut_help, slide_verse_id, style_dropdown_label, style_levels, style_override_dot,
@@ -204,6 +207,10 @@ const ENGAGED: Rgba = Rgba {
     a: 1.0,
 };
 
+/// In-app video motion rate: silent piped stills/sec at 960px wide. The tick
+/// polls at the same cadence; higher reads smoother but republishes more.
+const MOTION_FPS: u32 = 8;
+
 /// Blue, for the row that is currently projecting (UX-RESEARCH §10.3:
 /// "highlighted in blue" — since 1.2, and on every skin).
 const SELECTION_BLUE: Rgba = Rgba {
@@ -260,11 +267,22 @@ impl UI {
             .and_then(themes::parse_hex)
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
+        // VideoPsalm chrome: panels are white on a light-blue window with
+        // thin steel-blue borders (#7F9DB9, the Office 2007 edge). Painting
+        // every border with the accent (#2E74B5) made the whole control
+        // window read as a grid of bright-blue boxes next to the original's
+        // soft gray-blue chrome (viewer-mode.png). The border is its own
+        // token on light; other skins keep the accent edge.
+        let border = if t.id == "light" {
+            rgb(0x7F9DB9)
+        } else {
+            hex(t.accent)
+        };
         UI {
             bg: hex(t.bg),
             fg: hex(t.fg),
             panel: hex(t.muted),
-            border: hex(t.accent),
+            border,
             accent,
             accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
@@ -335,12 +353,23 @@ pub(crate) struct Root {
     /// Ctrl+P — the projector *window* is opened/closed, independently of
     /// which view has focus. (The in-window Projector tab always works.)
     projector_on: bool,
+    /// Fullscreen *intent* for the room window (Go-live opens fullscreen,
+    /// Ctrl+P windowed, flip toggles). The WM `is_fullscreen` flag cannot
+    /// serve this: a monitor-placed window is borderless-inside-the-output
+    /// (never WM-fullscreen), so reopening from WM state would shrink a
+    /// wall-filling projector to a 1280×720 window.
+    projector_fullscreen: bool,
 
     clock_mode: ClockMode,
     clock_total_secs: u64,
     clock_running: bool,
     clock_started: Option<Instant>,
     clock_banked: Duration,
+    /// Last clock text published to the room (`None` = never). The 250ms
+    /// tick re-publishes only when the text moves — not 4×/second.
+    last_published_clock: Option<String>,
+    /// A clock tick loop is already spawned. Session-only, never persisted.
+    clock_ticking: bool,
     whole_song_stage: bool,
     whole_ref_header: bool,
 
@@ -356,6 +385,11 @@ pub(crate) struct Root {
     /// eight always-visible buttons.
     style_menu_open: bool,
     pub(crate) bg_kind: BackgroundKind,
+    /// Website background URL (`BackgroundKind::Website`). Normalized on
+    /// assign via `vp_core::schema::normalize_website_url`; `None` = unset.
+    /// Stored as data only — never fetched (offline-first); the projector
+    /// shows a titled tile and the live page opens in the OS browser.
+    pub(crate) bg_website: Option<String>,
     /// Background image fit (WI-025): cover crops to fill, contain shows
     /// the whole image. Global like alignment; the vendor offers no such
     /// knob (its backgrounds always cover), so cover is the default.
@@ -401,6 +435,11 @@ pub(crate) struct Root {
     /// Show the verses surrounding the current selection, so a speaker can
     /// read the passage around the verse on screen.
     bible_context: bool,
+    /// Message-tab Settings dialog (Stage view + alert/clock/countdown
+    /// options + workspace/theme/language). Session-only: rarely-changed
+    /// knobs live here, not in the ribbon — matching 1.29 where Display
+    /// buttons are on the ribbon and the rest sits behind Settings.
+    show_message_settings: bool,
     /// Style explorer visibility (attribute tree with source levels).
     show_style_explorer: bool,
     explorer: style_explorer::ExplorerUi,
@@ -408,8 +447,8 @@ pub(crate) struct Root {
     /// panel is for slide rows.
     show_shortcuts: bool,
     /// Ribbon collapsed via `Ctrl+F1` (show-or-hide-the-toolbar, §8.4).
-    /// Session-only: the original's collapse is a window state, not a saved
-    /// layout, and the sibling feel lane owns ribbon presentation.
+    /// Persisted under the `ribbon_hidden` layout key: the operator's
+    /// workspace choice survives restart (hover or Expand re-opens).
     ribbon_collapsed: bool,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
@@ -443,6 +482,24 @@ pub(crate) struct Root {
     /// B-07: the invisible drag ghost. Starting a platform drag needs a view
     /// to carry, and a resize must not show a floating chip.
     drag_ghost: gpui::Entity<DragGhost>,
+    /// VJSM parity: adjustable section widths. The three control columns
+    /// (library | editor | slides+preview) resize by dragging the dividers
+    /// between them, like the original's cursor-resizable squares.
+    /// Persisted in layout (`left_w`/`right_w`), clamped 220..720 px.
+    left_w: f32,
+    right_w: f32,
+    /// In-progress column-divider drag: (col, start_w, press_x_px).
+    col_drag: Option<(u8, f32, f32)>,
+    /// Adjustable section heights. The agenda/browser split (left column)
+    /// and the slides/preview split (right column) resize by dragging the
+    /// dividers between them. `None` = automatic (status-quo layout);
+    /// `Some(h)` = fixed pixels. Persisted in layout, clamped per split.
+    agenda_h: Option<f32>,
+    preview_h: Option<f32>,
+    /// In-progress row-divider drag: (which, start_h, press_y_px).
+    row_drag: Option<(u8, f32, f32)>,
+    /// When the ribbon was last collapsed (hover-reveal guard).
+    collapsed_at: Option<std::time::Instant>,
     /// The current song has unsaved lyrics.
     song_dirty: bool,
     /// Lyrics-editor sub-tab: `0` = Lyrics, `1` = Files, `2` = Chords.
@@ -459,8 +516,44 @@ pub(crate) struct Root {
 
     max_lines: usize,
     max_chars: usize,
+    /// Bible verses split across slides. Off by default: one verse = one
+    /// slide, so a verse is never cut mid-sentence unless asked for.
+    split_bible_verses: bool,
 
     pub(crate) media: ExternalPlayer,
+    /// Item id of the video already handed to the OS player: projecting
+    /// re-pushes on every navigation, so without this the player would
+    /// relaunch on each slide step. Reset when live leaves video.
+    media_launched_for: Option<String>,
+    /// Opt-in live web view (Background > Website > Live): a real browser
+    /// window for website slides. Default off — when off this whole path is
+    /// dead code at runtime and the projector keeps the offline tiles.
+    live_web_on: bool,
+    /// Remote URLs allowed for live view this session (operator-confirmed).
+    /// Loopback never needs confirmation; nothing persists to disk.
+    live_web_confirmed: Vec<String>,
+    /// Remote URL currently awaiting Allow/Block. `None` = nothing pending.
+    live_web_pending: Option<String>,
+    /// The running live-view browser window, if any.
+    live_view: live_web::LiveView,
+    /// URL currently handed to the live browser window (`None` = tile mode).
+    /// Drives the preview's LIVE chip; set alongside every show/hide.
+    live_view_url: Option<String>,
+    /// Poster stills per video file path (`videopsalm-posters` cache): the
+    /// preview/projector show the video's picture through the in-app `img`
+    /// element instead of a black tile. Filled at assign/play/push time
+    /// (never during render), read by `projector_snapshot`.
+    video_posters: HashMap<String, PathBuf>,
+    /// Live frame pump for in-app video motion (silent ffmpeg pipe): `Some`
+    /// while a video moves in preview/projector. One pump at a time — a
+    /// standalone clip takes over the background loop.
+    motion: Option<MotionPump>,
+    /// Latest decoded-live frame (JPEG bytes) for the motion render.
+    /// Replaced per tick; the custom loader decodes only this one, so no
+    /// image cache can accumulate across a long play.
+    motion_frame: Option<Arc<Vec<u8>>>,
+    /// Motion tick-loop guard (mirrors `clock_ticking`).
+    motion_ticking: bool,
     pptx_info: String,
 
     // B-32/B-12 media state (galleries, cascade, assigned background file,
@@ -480,6 +573,12 @@ pub(crate) struct Root {
     presentation: Entity<crate::presentation::PresentationState>,
     pub(crate) aspect_ratio: String,
     pub(crate) projector_display: usize,
+    /// Persisted RandR output name for the projector target.
+    pub(crate) projector_monitor: Option<String>,
+    /// NDI output engine. Started by Go-live (`go_live`), fed a still on
+    /// every `push_projection`/`republish`. Stays up once started until
+    /// the app exits (closing the projector window does not stop NDI).
+    pub(crate) ndi: ndi_out::NdiOutput,
 
     // Scroll handles. GPUI 0.2.2 *does* provide ScrollHandle + overflow
     // scrolling (the README previously claimed it did not, which is why the
@@ -488,14 +587,22 @@ pub(crate) struct Root {
     scroll_agenda: ScrollHandle,
     scroll_songs: ScrollHandle,
     scroll_books: ScrollHandle,
-    /// Songbook group list (WI-033): capped in its own scroller so a long
-    /// book list can never squeeze the songs list to zero height.
-    scroll_songbooks: ScrollHandle,
     scroll_slides: ScrollHandle,
     scroll_shortcuts: ScrollHandle,
     /// Bible keyword-hit list (R-6): every hit renders inside a bounded
     /// scroller with this handle — never `.take(30)` again.
     scroll_bible_hits: ScrollHandle,
+    /// Whole Bibles-browser scroller: translations + import + picker stack
+    /// taller than the panel, so the pane itself scrolls (browse the Bible
+    /// to pick, same as the songs list).
+    scroll_bible_browser: ScrollHandle,
+    /// Collapsible Bibles-browser sections (translations / import / picker).
+    /// Session-only disclosure state, like `agenda_file_open`.
+    verse_order_open: bool,
+    scroll_verse_order: ScrollHandle,
+    bible_sec_trans: bool,
+    bible_sec_import: bool,
+    bible_sec_pick: bool,
 
     search_field: gpui::Entity<TextField>,
     path_field: gpui::Entity<TextField>,
@@ -514,6 +621,10 @@ pub(crate) struct Root {
     composer_field: gpui::Entity<TextField>,
     media_path_field: gpui::Entity<TextField>,
     media_range_field: gpui::Entity<TextField>,
+    /// Website background URL input (Background ribbon > Website group):
+    /// paste `example.com/live`, Set normalizes + assigns, Open launches
+    /// the OS browser. Session-only; the assigned URL persists via prefs.
+    website_field: gpui::Entity<TextField>,
     // B-32 gallery fields: import path + per-gallery search boxes.
     pub(crate) gallery_import_field: gpui::Entity<TextField>,
     pub(crate) gallery_image_filter: gpui::Entity<TextField>,
@@ -548,13 +659,316 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Pure helper for "Add web site / YouTube": normalize + classify a raw
+/// URL into `(kind, title, url)`. YouTube hosts → `YouTube`, the rest →
+/// `WebSite`; `None` = nothing to add (empty/rejected URL). Test-pinned
+/// below so both kinds stay honest without a GPUI context.
+fn website_agenda_item(raw: &str) -> Option<(ItemKind, String, String)> {
+    let url = vp_core::schema::normalize_website_url(raw)?;
+    let lower = url.to_ascii_lowercase();
+    let host = lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&lower);
+    let kind = if host.starts_with("youtube.com")
+        || host.starts_with("www.youtube.com")
+        || host.starts_with("m.youtube.com")
+        || host.starts_with("youtu.be")
+        || host.starts_with("youtube-nocookie.com")
+        || host.starts_with("www.youtube-nocookie.com")
+    {
+        ItemKind::YouTube
+    } else {
+        ItemKind::WebSite
+    };
+    let title = url
+        .split_once("://")
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_else(|| url.clone());
+    Some((kind, title, url))
+}
+
+/// Row key for header-less website embed cards: content-stable (`web:{url}`)
+/// so hiding, clicking and highlighting survive reordering. Verse rows keep
+/// their `slide_verse_id` keys; see `song_blocks` / `library_song_panel`.
+fn web_row_key(url: &str) -> String {
+    format!("web:{url}")
+}
+
+/// Display row → projected slide index, matched by content. Hidden rows
+/// shift the live list, so raw indices misroute clicks; match by `Slide`
+/// equality and fall back to a clamped index only when the row has no live
+/// counterpart.
+fn projected_index_for_row(display: &[Slide], projected: &[Slide], row: usize) -> usize {
+    match display.get(row) {
+        Some(s) => projected
+            .iter()
+            .position(|p| p == s)
+            .unwrap_or(row.min(projected.len().saturating_sub(1))),
+        None => row.min(projected.len().saturating_sub(1)),
+    }
+}
+
 /// Merge native songs into the in-memory library by id (same by-id rule as
 /// the headless smoke pass — one implementation, in `smoke`).
 fn merge_native_songs(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize, usize) {
     smoke::merge_into_library(songs, incoming)
 }
 
+/// VJSM parity: which column divider is being dragged (0 = left/library,
+/// 1 = right/slides+preview). Carried as the drag payload so moves track
+/// even when the cursor leaves the divider — same pattern as B-07 frames.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ColSplit(u8);
+
+/// VJSM parity: adjustable section widths, clamped so neither column can
+/// vanish or eat the centre editor. Pure so the drag math is unit-tested
+/// without a window (fidelity loop: untested layout arithmetic drifted).
+pub(crate) fn clamp_col_width(w: f32) -> f32 {
+    w.clamp(220.0, 720.0)
+}
+
+/// Row-divider payload: 0 = agenda/browser split, 1 = slides/preview split.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RowSplit(u8);
+
+/// Adjustable section heights, clamped so neither pane can vanish nor push
+/// its sibling off the window. 0 splits agenda/browser (100..520 px),
+/// 1 splits slides/preview (160..560 px). Pure so the drag math is
+/// unit-tested without a window.
+pub(crate) fn clamp_row_height(which: u8, h: f32) -> f32 {
+    if which == 0 {
+        h.clamp(100.0, 520.0)
+    } else {
+        h.clamp(160.0, 560.0)
+    }
+}
+
 impl Root {
+    /// Single choke point for every ribbon collapse/expand path (Hide
+    /// button, tab double-click, Ctrl+F1, hover strip). All three old
+    /// triggers disagreed on side effects — now collapse always dismisses
+    /// popups, stamps the guard clock, and persists; expand only persists.
+    /// The guard clock fixes the Hide-click loop: clicking Hide mounts the
+    /// strip directly under the cursor, whose hover(true) would otherwise
+    /// re-expand instantly. Hover expands only 800 ms after a collapse.
+    fn set_ribbon_collapsed(&mut self, cx: &mut Context<Self>, collapsed: bool) {
+        if collapsed {
+            self.dismiss_popups(cx);
+            self.collapsed_at = Some(std::time::Instant::now());
+            let msg = self.t("ribbon_hidden_msg");
+            self.set_status(cx, msg);
+        } else {
+            let msg = self.t("ribbon_shown_msg");
+            self.set_status(cx, msg);
+        }
+        self.ribbon_collapsed = collapsed;
+        self.persist_layout_quiet();
+        cx.notify();
+    }
+
+    /// True when a hover-reveal may expand the ribbon. Two gates, both
+    /// load-bearing: the 800 ms grace ignores the Hide click itself
+    /// (the strip mounts under the cursor), and a RESTARTED-collapsed
+    /// ribbon (`collapsed_at == None`) is armed — otherwise anyone who
+    /// quits collapsed gets a dead hover strip for the whole session.
+    /// GPUI only delivers hover on false→true transitions, so reveal is
+    /// inherently exit-then-reenter: the grace vetoes the first entry,
+    /// a later re-entry reveals. Pure so the rule is unit-tested.
+    fn hover_reveal_armed(collapsed: bool, at: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+        const GRACE_MS: u128 = 800;
+        collapsed && at.map(|t| now.duration_since(t).as_millis() > GRACE_MS).unwrap_or(true)
+    }
+
+    /// Press on a column divider: record col + starting width + cursor x.
+    fn col_press(&mut self, cx: &mut Context<Self>, col: u8, press_x: f32) {
+        let start_w = if col == 0 { self.left_w } else { self.right_w };
+        self.col_drag = Some((col, start_w, press_x));
+        let msg = self.t(if col == 0 {
+            "resizing_left_msg"
+        } else {
+            "resizing_right_msg"
+        });
+        self.set_status(cx, msg);
+        cx.notify();
+    }
+
+    /// Feed one divider move: width follows the cursor, clamped 220..720.
+    fn col_move(&mut self, cx: &mut Context<Self>, cur_x: f32) {
+        if let Some((col, start_w, press_x)) = self.col_drag {
+            let w = clamp_col_width(start_w + cur_x - press_x);
+            if col == 0 {
+                self.left_w = w;
+            } else {
+                self.right_w = w;
+            }
+            cx.notify();
+        }
+    }
+
+    /// Release a divider: persist — widths survive restart.
+    fn col_end(&mut self, cx: &mut Context<Self>) {
+        if self.col_drag.is_some() {
+            self.col_drag = None;
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// VJSM parity: the grab strip between control columns.
+    /// Cursor-resizable like the original's squares (B-07 drag pattern).
+    /// 14 px wide with a high-contrast double grip: a 10 px rail proved
+    /// unhittable at 1280 px (fidelity loop: clicks missed by 1–2 px).
+    /// While held the strip lights accent (grabbed state) so a stuck or
+    /// missed press is visible instead of silent. Double-click resets.
+    fn divider(&mut self, ui: &UI, cx: &mut Context<Self>, col: u8) -> impl gpui::IntoElement {
+        let ghost = self.drag_ghost.clone();
+        let default_w = if col == 0 { 360.0 } else { 560.0 };
+        let grabbed = self.col_drag.is_some_and(|(c, _, _)| c == col);
+        let strip = div()
+            .w(px(14.))
+            .h_full()
+            .min_h(px(40.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(gpui::CursorStyle::ResizeColumn)
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border);
+        let strip = if grabbed {
+            strip.bg(ui.accent)
+        } else {
+            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+        };
+        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        strip
+            .id(if col == 0 { "vp-col-split-l" } else { "vp-col-split-r" })
+            .child(div().text_size(px(12.)).text_color(grip_color).child("⋮⋮".to_string()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
+                    if ev.click_count == 2 {
+                        if col == 0 {
+                            this.left_w = default_w;
+                        } else {
+                            this.right_w = default_w;
+                        }
+                        this.col_drag = None;
+                        this.persist_layout_quiet();
+                        let msg = this.t("panel_reset_msg");
+                        this.set_status(cx, msg);
+                        cx.notify();
+                    } else {
+                        this.col_press(cx, col, f32::from(ev.position.x));
+                    }
+                }),
+            )
+            .on_drag(
+                ColSplit(col),
+                move |_v, _off, _win: &mut Window, _cx: &mut App| ghost.clone(),
+            )
+    }
+
+    /// Press on a row divider: record which split + starting height +
+    /// cursor y. Mirrors [`Self::col_press`]; status names the split.
+    fn row_press(&mut self, cx: &mut Context<Self>, which: u8, press_y: f32) {
+        let start_h = match which {
+            0 => self.agenda_h.unwrap_or(300.0),
+            _ => self.preview_h.unwrap_or(300.0),
+        };
+        self.row_drag = Some((which, start_h, press_y));
+        let msg = self.t(if which == 0 {
+            "resizing_agenda_msg"
+        } else {
+            "resizing_preview_msg"
+        });
+        self.set_status(cx, msg);
+        cx.notify();
+    }
+
+    /// Feed one divider move: height follows the cursor, clamped per split.
+    /// Persists continuously (not only on release): a lost mouse-up — or
+    /// a crash mid-drag — must never lose the operator's layout.
+    fn row_move(&mut self, cx: &mut Context<Self>, cur_y: f32) {
+        if let Some((which, start_h, press_y)) = self.row_drag {
+            // Dragging down grows the top pane: the agenda grows, while
+            // the preview (bottom pane) shrinks.
+            let raw = if which == 0 {
+                start_h + (cur_y - press_y)
+            } else {
+                start_h - (cur_y - press_y)
+            };
+            let h = clamp_row_height(which, raw);
+            if which == 0 {
+                self.agenda_h = Some(h);
+            } else {
+                self.preview_h = Some(h);
+            }
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// Release a divider: persist — heights survive restart.
+    fn row_end(&mut self, cx: &mut Context<Self>) {
+        if self.row_drag.is_some() {
+            self.row_drag = None;
+            self.persist_layout_quiet();
+            cx.notify();
+        }
+    }
+
+    /// The grab strip between stacked sections (agenda/browser,
+    /// slides/preview). Row-resize cursor, hover accent, double-click
+    /// resets to automatic. Same contract as [`Self::divider`], rotated.
+    fn hdivider(&mut self, ui: &UI, cx: &mut Context<Self>, which: u8) -> impl gpui::IntoElement {
+        let ghost = self.drag_ghost.clone();
+        let grabbed = self.row_drag.is_some_and(|(w, _, _)| w == which);
+        let strip = div()
+            .w_full()
+            .h(px(14.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(gpui::CursorStyle::ResizeRow)
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border);
+        let strip = if grabbed {
+            strip.bg(ui.accent)
+        } else {
+            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+        };
+        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        strip
+            .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
+            .child(div().text_size(px(12.)).text_color(grip_color).child("⋯".to_string()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
+                    if ev.click_count == 2 {
+                        if which == 0 {
+                            this.agenda_h = None;
+                        } else {
+                            this.preview_h = None;
+                        }
+                        this.row_drag = None;
+                        this.persist_layout_quiet();
+                        let msg = this.t("panel_height_reset_msg");
+                        this.set_status(cx, msg);
+                        cx.notify();
+                    } else {
+                        this.row_press(cx, which, f32::from(ev.position.y));
+                    }
+                }),
+            )
+            .on_drag(
+                RowSplit(which),
+                move |_v, _off, _win: &mut Window, _cx: &mut App| ghost.clone(),
+            )
+    }
+
     fn build(cx: &mut Context<Self>) -> Self {
         let mut locales = HashMap::new();
         locales.insert("en".to_string(), Locale::load("en", LOCALE_EN).unwrap());
@@ -679,6 +1093,7 @@ impl Root {
         let font_filter_field = cx.new(|cx| TextField::new("Search fonts...", cx));
         let media_path_field = cx.new(|cx| TextField::new("media file path...", cx));
         let media_range_field = cx.new(|cx| TextField::new("in-out ms, e.g. 1000-5000", cx));
+        let website_field = cx.new(|cx| TextField::new("https://example.com/live …", cx));
         let gallery_import_field = cx.new(|cx| TextField::new("/path/to/file.jpg …", cx));
         let gallery_image_filter = cx.new(|cx| TextField::new("filter images…", cx));
         let gallery_video_filter = cx.new(|cx| TextField::new("filter videos…", cx));
@@ -734,6 +1149,8 @@ impl Root {
             clock_running: false,
             clock_started: None,
             clock_banked: Duration::ZERO,
+            last_published_clock: None,
+            clock_ticking: false,
             whole_song_stage: false,
             whole_ref_header: true,
             ribbon: RibbonTab::Text,
@@ -742,6 +1159,7 @@ impl Root {
             style_level: "Song".into(),
             style_menu_open: false,
             bg_kind: BackgroundKind::Color,
+            bg_website: None,
             bg_fit: BgFit::Cover,
             show_abbrev: true,
             show_number: true,
@@ -767,6 +1185,7 @@ impl Root {
             bible_hits: Vec::new(),
             bible_context: false,
             show_style_explorer: false,
+            show_message_settings: false,
             explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
             ribbon_collapsed: false,
@@ -779,6 +1198,13 @@ impl Root {
             frame_sel: FrameId::Body,
             frame_drag: None,
             drag_ghost: drag_ghost.clone(),
+            left_w: 360.0,
+            right_w: 560.0,
+            col_drag: None,
+            agenda_h: None,
+            preview_h: None,
+            row_drag: None,
+            collapsed_at: None,
             song_dirty: false,
             song_tab: 0,
             song_misc: false,
@@ -787,11 +1213,23 @@ impl Root {
             shield: false,
             viewer_mode: false,
             projector_on: true,
+            projector_fullscreen: false,
             sel_block: None,
             hidden: HashSet::new(),
             max_lines: 4,
             max_chars: 40,
+            split_bible_verses: false,
             media: ExternalPlayer::new(MediaKind::Video),
+            media_launched_for: None,
+            live_web_on: false,
+            live_web_confirmed: Vec::new(),
+            live_web_pending: None,
+            live_view: live_web::LiveView::new(),
+            live_view_url: None,
+            video_posters: HashMap::new(),
+            motion: None,
+            motion_frame: None,
+            motion_ticking: false,
             pptx_info: String::new(),
             galleries: GalleryState::default(),
             cascade: Cascade::default(),
@@ -802,13 +1240,20 @@ impl Root {
             presentation: cx.new(|_| crate::presentation::PresentationState::empty()),
             aspect_ratio: "current".to_string(),
             projector_display: 0,
+            projector_monitor: None,
+            ndi: ndi_out::NdiOutput::new("PEREZ (Projector)"),
             scroll_agenda: ScrollHandle::new(),
             scroll_songs: ScrollHandle::new(),
             scroll_books: ScrollHandle::new(),
-            scroll_songbooks: ScrollHandle::new(),
             scroll_slides: ScrollHandle::new(),
             scroll_shortcuts: ScrollHandle::new(),
             scroll_bible_hits: ScrollHandle::new(),
+            scroll_bible_browser: ScrollHandle::new(),
+            verse_order_open: false,
+            scroll_verse_order: ScrollHandle::new(),
+            bible_sec_trans: true,
+            bible_sec_import: false,
+            bible_sec_pick: true,
             search_field: search_field.clone(),
             path_field: path_field.clone(),
             alert_field: alert_field.clone(),
@@ -827,6 +1272,7 @@ impl Root {
             system_fonts: None,
             media_path_field: media_path_field.clone(),
             media_range_field: media_range_field.clone(),
+            website_field: website_field.clone(),
             gallery_import_field: gallery_import_field.clone(),
             gallery_image_filter: gallery_image_filter.clone(),
             gallery_video_filter: gallery_video_filter.clone(),
@@ -962,11 +1408,20 @@ impl Root {
                 if emitter == this.clock_field {
                     if let Ok(secs) = ev.text.trim().parse::<u64>() {
                         this.clock_total_secs = secs;
+                        // New total while the room shows it: publish now.
+                        this.resync_clock(cx);
                         cx.notify();
                     }
                 }
             },
         );
+        this._subs.push(sub);
+        let alert_sub = alert_field.clone();
+        let sub = cx.subscribe(&alert_sub, |this: &mut Root, emitter, _ev: &Changed, cx| {
+            if emitter == this.alert_field && this.alert_visible {
+                this.republish(cx);
+            }
+        });
         this._subs.push(sub);
         let sub = cx.subscribe(
             &media_range_field,
@@ -1089,7 +1544,7 @@ impl Root {
                 this.refresh_search(&q, cx);
             }
         }
-        this.seed_cascade_from_style(); // DoD #6 hook: seed the session cascade.
+        this.adopt_agenda_styles(); // Styles travel with the agenda file.
         if !boot_import_errors.is_empty() {
             this.status = format!(
                 "bibles/: {boot_imports} installed, {} failed \u{2014} {}",
@@ -1167,12 +1622,15 @@ impl Root {
             bible_search: self.bible_search.id().to_string(),
             aspect_ratio: self.aspect_ratio.clone(),
             projector_display: self.projector_display,
+            projector_monitor: self.projector_monitor.clone(),
             bg_kind: match self.bg_kind {
                 BackgroundKind::Color => "color".to_string(),
                 BackgroundKind::Image => "image".to_string(),
                 BackgroundKind::VideoLoop => "videoLoop".to_string(),
                 BackgroundKind::Camera => "camera".to_string(),
+                BackgroundKind::Website => "website".to_string(),
             },
+            bg_website: self.bg_website.clone().unwrap_or_default(),
             bg_fit: self.bg_fit.literal().to_string(),
             gallery_images: self
                 .galleries
@@ -1186,8 +1644,13 @@ impl Root {
                 .videos()
                 .map(|e| e.path.to_string_lossy().into_owned())
                 .collect(),
-            gallery_expanded: self.galleries.expanded,
             gallery_keep_open: self.galleries.keep_open,
+            live_web: self.live_web_on,
+            agenda_h: self.agenda_h,
+            preview_h: self.preview_h,
+            left_w: self.left_w,
+            right_w: self.right_w,
+            ribbon_hidden: self.ribbon_collapsed,
         }
     }
 
@@ -1231,8 +1694,16 @@ impl Root {
             "image" => BackgroundKind::Image,
             "videoLoop" => BackgroundKind::VideoLoop,
             "camera" => BackgroundKind::Camera,
+            "website" => BackgroundKind::Website,
             _ => BackgroundKind::Color,
         };
+        // Website URL: normalized data only, never fetched. A bad URL in a
+        // hand-edited layout restores as unset so the projector never
+        // points at one.
+        self.bg_website = vp_core::schema::normalize_website_url(p.bg_website.trim());
+        if self.bg_kind == BackgroundKind::Website && self.bg_website.is_none() {
+            self.bg_kind = BackgroundKind::Color;
+        }
         self.bg_fit = BgFit::from_literal(p.bg_fit.as_str()).unwrap_or_default();
         // Restore the gallery library (lens 2/3): only files that still
         // exist; ghosts are dropped so the projector never points at one.
@@ -1284,8 +1755,21 @@ impl Root {
             self.aspect_ratio = p.aspect_ratio.clone();
         }
         self.projector_display = p.projector_display;
-        self.galleries.expanded = p.gallery_expanded;
+        self.projector_monitor = p.projector_monitor.clone();
         self.galleries.keep_open = p.gallery_keep_open;
+        // Live web view restores off for old files (serde default); an
+        // operator who turned it on gets it back, everyone else untouched.
+        self.live_web_on = p.live_web;
+        // Pinned section heights: validated on load so a hand-edited file
+        // can never collapse a pane; `None` stays automatic.
+        self.agenda_h = p.agenda_h.map(|h| clamp_row_height(0, h));
+        self.preview_h = p.preview_h.map(|h| clamp_row_height(1, h));
+        // VJSM parity: adjustable section widths survive restart.
+        self.left_w = p.left_w.clamp(220.0, 720.0);
+        self.right_w = p.right_w.clamp(220.0, 720.0);
+        // The collapse state persists under the same key (one mechanism,
+        // not two: the old `ribbon_collapsed` was session-only).
+        self.ribbon_collapsed = p.ribbon_hidden;
     }
 
     /// True while the shield is armed: browsing songs must not repopulate the
@@ -1435,6 +1919,7 @@ impl Root {
         SplitOptions {
             max_lines: self.max_lines,
             max_chars: self.max_chars,
+            split_bible_verses: self.split_bible_verses,
         }
     }
 
@@ -1481,7 +1966,7 @@ impl Root {
             .as_ref()
             .map(|s| s.footer.template.as_str())
             .filter(|t| !t.is_empty());
-        compute_item_slides_templated(
+        let mut slides = compute_item_slides_templated(
             &projected,
             &songs,
             &self.bibles,
@@ -1490,6 +1975,31 @@ impl Root {
             self.whole_ref_header,
             header_tpl,
             footer_tpl,
+        );
+        // Unchecked embed cards project nothing: drop WebSite slides whose
+        // row key (`web:{url}`, content-stable) is hidden.
+        let hide = self.hidden_for(&item.id);
+        if hide.iter().any(|h| h.starts_with("web:")) {
+            slides.retain(|s| {
+                !(s.footer == "WebSite"
+                    && s
+                        .lines
+                        .first()
+                        .map(|u| hide.contains(&web_row_key(u)))
+                        .unwrap_or(false))
+            });
+        }
+        slides
+    }
+
+    /// Display row `i` → projected slide index, matched by content so hidden
+    /// verses/cards (which shift the live list) never misroute a click.
+    /// Falls back to a clamped index when the row has no live counterpart.
+    fn display_row_to_projected(&self, item_idx: usize, row: usize) -> usize {
+        projected_index_for_row(
+            &self.display_item_slides(item_idx),
+            &self.item_slides(item_idx),
+            row,
         )
     }
 
@@ -1598,7 +2108,7 @@ impl Root {
                 let Some(song) = self.songs.iter().find(|s| &s.id == song_id) else {
                     return Vec::new();
                 };
-                let mut verses: Vec<&vp_core::schema::SongVerse> = song.verses.iter().collect();
+                let mut verses: Vec<&vp_core::schema::SongVerse> = song.ordered_verses();
                 if let Some(order) = &item.overrides.verse_order {
                     let pos: HashMap<&str, usize> = order
                         .iter()
@@ -1611,8 +2121,6 @@ impl Root {
                             v.order,
                         )
                     });
-                } else {
-                    verses.sort_by_key(|v| v.order);
                 }
                 verses
                     .into_iter()
@@ -1638,14 +2146,16 @@ impl Root {
                     .map(|t| t.resolve(bible_ref))
                     .unwrap_or_default();
                 if lines.is_empty() {
-                    return bible_ref
-                        .verses
-                        .iter()
-                        .map(|v| (v.to_string(), vec!["[…]".to_string()]))
-                        .collect();
+                    // No resolved text (all requested verses are OSIS gaps
+                    // the sample does not carry): honest empty, never a
+                    // fabricated `"10 […]"` row the original never shows.
+                    return Vec::new();
                 }
                 lines
                     .into_iter()
+                    .filter(|line| {
+                        !vp_core::bible_data::Translation::is_placeholder_line(line)
+                    })
                     .map(|line| {
                         let num = line.split_whitespace().next().unwrap_or("?").to_string();
                         (num, vec![line])
@@ -1729,6 +2239,52 @@ impl Root {
         self.sel_block = Some(verse_no.to_string());
     }
 
+    /// Load the agenda item's song/Bible into the centre editor so the
+    /// editor never shows a different item than the slides panel and the
+    /// preview (the "editor out of sync" class: projection paths that
+    /// move `sel_item` without coming through `select_agenda` left the old
+    /// song in the editor). Idempotent: a repeated call for the already
+    /// loaded song is a no-op, so slide advances within the same item can
+    /// call it freely without clobbering in-progress edits.
+    fn sync_editor_to_item(&mut self, cx: &mut Context<Self>, idx: usize) {
+        let Some(item) = self.agenda.items.get(idx).cloned() else {
+            return;
+        };
+        match &item.reference {
+            ItemRef::Song { song_id } => {
+                if let Some(si) = self.songs.iter().position(|s| &s.id == song_id) {
+                    if self.sel_song != Some(si) {
+                        self.sel_song = Some(si);
+                        let doc = lyrics_doc::document_from_verses(&self.songs[si].verses);
+                        self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
+                        self.sync_song_meta_fields(cx);
+                    }
+                }
+            }
+            ItemRef::Bible { bible_ref } => {
+                // Idempotent like the Song arm: a repeated sync for the
+                // already-loaded reference is a no-op, so slide advances
+                // never revert in-progress verse/book browsing.
+                if self.biref.as_ref() != Some(bible_ref) {
+                    self.biref = Some(bible_ref.clone());
+                    self.book_query = bible_ref.book.clone();
+                    self.chapter = bible_ref.chapter;
+                    if let Some(b) = match_book(&bible_ref.book) {
+                        self.sel_book = b.number;
+                        self.testament = if b.number <= 39 {
+                            Testament::OT
+                        } else {
+                            Testament::NT
+                        };
+                    }
+                    let spec = compact_verses(&bible_ref.verses);
+                    self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Selecting an agenda item drives the CENTER slides panel AND keeps the
     /// centre editor in sync with the selected song/Bible item: preload
     /// the title edit field, clear the block highlight, and load the song's
@@ -1763,35 +2319,8 @@ impl Root {
         if let Some(item) = self.agenda.items.get(idx).cloned() {
             let title = item.title.clone();
             self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
-            match &item.reference {
-                ItemRef::Song { song_id } => {
-                    if let Some(si) = self.songs.iter().position(|s| &s.id == song_id) {
-                        if self.sel_song != Some(si) {
-                            self.sel_song = Some(si);
-                            let doc = lyrics_doc::document_from_verses(&self.songs[si].verses);
-                            self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
-                            self.sync_song_meta_fields(cx);
-                        }
-                    }
-                }
-                ItemRef::Bible { bible_ref } => {
-                    self.biref = Some(bible_ref.clone());
-                    self.book_query = bible_ref.book.clone();
-                    self.chapter = bible_ref.chapter;
-                    if let Some(b) = match_book(&bible_ref.book) {
-                        self.sel_book = b.number;
-                        self.testament = if b.number <= 39 {
-                            Testament::OT
-                        } else {
-                            Testament::NT
-                        };
-                    }
-                    let spec = compact_verses(&bible_ref.verses);
-                    self.verse_field.update(cx, |f, cx| f.set_text(&spec, cx));
-                }
-                _ => {}
-            }
         }
+        self.sync_editor_to_item(cx, idx);
         if punch_through {
             self.goto_item_slide(cx, idx, 0);
         } else {
@@ -1892,10 +2421,7 @@ impl Root {
                 cx,
                 "Add document… is not wired yet — drop the Word/Excel/PDF onto the agenda.",
             ),
-            "add-web" => self.set_status(
-                cx,
-                "Add web site / YouTube… is not wired yet — paste the link as an item title.",
-            ),
+            "add-web" => self.add_website_to_agenda(cx),
             "save" => self.save_agenda(cx),
             "save-as" => {
                 self.agenda_file_open = true;
@@ -2142,7 +2668,11 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
         match parse_reference(text, &tid, Versification::En) {
-            Ok(r) => {
+            Ok(mut r) => {
+                // Clamp typed/pasted ranges to the installed chapter so
+                // `"10 […]"` placeholders can never enter the selection.
+                let max = self.bible_verse_max(&r.book, r.chapter);
+                r.verses = clamp_verses_to_chapter(&r.verses, max);
                 self.book_query = r.book.clone();
                 self.chapter = r.chapter;
                 if let Some(b) = match_book(&r.book) {
@@ -2292,8 +2822,109 @@ impl Root {
         if style.level.trim().is_empty() {
             style.level = self.style_level.clone();
         }
+        let owned = t.to_string();
+        self.write_style_attr(cx, &format!("Transition: {owned}"), move |v| {
+            v.transition = Some(owned.clone());
+        });
+    }
+
+    /// The cascade chain an agenda item's visuals resolve over, from its
+    /// kind. `None` for kinds with no chain levels (alert/clock overlays and
+    /// document kinds) — those keep the flat agenda-global style.
+    fn chain_for_kind(kind: &ItemKind) -> Option<Chain> {
+        match kind {
+            ItemKind::Song | ItemKind::SongPowerPoint => Some(Chain::Songs),
+            ItemKind::Bible | ItemKind::BibleVerses => Some(Chain::Bibles),
+            ItemKind::Image => Some(Chain::Images),
+            ItemKind::Video => Some(Chain::Videos),
+            ItemKind::PowerPoint | ItemKind::PowerPointSlide => Some(Chain::PowerPoint),
+            _ => None,
+        }
+    }
+
+    /// Effective text style for an agenda item: the session cascade resolved
+    /// over the item's chain. Levels are global (Base/Songbooks/Song/…) —
+    /// never per item — so the Styles dropdown only picks the WRITE target;
+    /// reading always resolves the whole chain. `None` when the kind has no
+    /// chain (flat agenda-global style applies instead).
+    fn resolved_for_item(&self, idx: Option<usize>) -> Option<Resolved> {
+        let kind = self.agenda.items.get(idx?)?.kind;
+        Self::chain_for_kind(&kind).map(|c| self.cascade.resolve(c))
+    }
+
+    /// Write one style attribute at the Styles dropdown's level(s): the
+    /// selected level owns the value, everything below it inherits. Marks
+    /// the agenda dirty so the cascade travels with the agenda file, and
+    /// reports WHERE the value went — that is the whole fix for "my verse
+    /// edit changed the default": nothing is ever silently global, except
+    /// Alert/Clock, which have no chain levels and stay agenda-global.
+    fn write_style_attr(&mut self, cx: &mut Context<Self>, what: &str, apply: impl Fn(&mut LevelValues)) {
+        let mut targets = ux::style_write_targets(&self.style_level);
+        // Chain-aware redirect: a Song-side write target never reaches a Bible
+        // item (Chain::Bibles) and vice versa, which is why font/size edits
+        // made while a Bible verse was live appeared to do nothing. Follow
+        // the live (else selected) item's chain; the status line reports
+        // where the value actually went.
+        let live_kind = self
+            .live_item
+            .or(self.sel_item)
+            .and_then(|i| self.agenda.items.get(i).map(|it| it.kind));
+        if let Some(kind) = live_kind {
+            if let Some(chain) = Self::chain_for_kind(&kind) {
+                targets = ux::redirect_style_targets(chain, targets);
+            }
+        }
+        if targets.is_empty() {
+            self.agenda_dirty = true;
+            self.persist_layout_quiet();
+            self.set_status(cx, format!("{what} (agenda default — no chain level)."));
+            // The edited self.* fallback may already be live in the
+            // preview: publish so the room meets it (harmless otherwise —
+            // same slides, same position).
+            self.republish(cx);
+            cx.notify();
+            return;
+        }
+        for level in &targets {
+            let mut v = self.cascade.get(*level).cloned().unwrap_or_default();
+            apply(&mut v);
+            self.cascade.set(*level, v);
+        }
+        self.sync_cascade_to_agenda();
+        self.agenda_dirty = true;
         self.persist_layout_quiet();
-        self.set_status(cx, format!("Transition: {t} (stored in style)."));
+        let where_ = targets
+            .iter()
+            .map(|l| l.selector_caption())
+            .collect::<Vec<_>>()
+            .join(" + ");
+        self.set_status(cx, format!("{what} (stored at {where_})."));
+        // Style edits are wall content with the SAME slides: republish so
+        // the room follows the preview at once. This never moves slide
+        // position and holds under freeze by construction (unlike push).
+        self.republish(cx);
+        cx.notify();
+    }
+
+    /// Push the session cascade into the agenda settings so it saves with
+    /// the agenda file and round-trips back on open.
+    fn sync_cascade_to_agenda(&mut self) {
+        if self.cascade.values.is_empty() && self.cascade.rects.is_empty() {
+            self.agenda.settings.cascade = None;
+        } else {
+            self.agenda.settings.cascade = Some(self.cascade.clone());
+        }
+    }
+
+    /// Adopt an opened agenda's styles: its stored cascade when it has one,
+    /// else its flat style at `Base` (pre-cascade files keep working).
+    fn adopt_agenda_styles(&mut self) {
+        if let Some(c) = self.agenda.settings.cascade.clone() {
+            self.cascade = c;
+        } else {
+            self.cascade = Cascade::default();
+            self.seed_cascade_from_style();
+        }
     }
 
     /// Mirror the Font ribbon's family/alignment into the agenda style
@@ -2330,12 +2961,231 @@ impl Root {
     /// the wall must obey them even under a freeze hold.
     fn republish(&mut self, cx: &mut Context<Self>) {
         crate::presentation::publish(self, cx);
+        let snap = self.projector_snapshot(cx);
+        self.push_ndi_still(&snap);
     }
+
+    /// Feed the NDI engine one still rasterized from the live snapshot
+    /// with the projector's style (colors, alignment, body geometry).
+    /// No-op unless Go-live started the engine.
+    fn push_ndi_still(&self, snap: &ProjectorSnapshot) {
+        self.ndi.push_snapshot(snap);
+    }
+    /// Grab (or reuse) the poster still for a video file so preview and
+    /// projector show its picture. Runs `ffmpeg` at most once per file
+    /// version (mtime-checked cache); call at assign/play/push time, never
+    /// during render. Silent when grabs fail — the captioned tile stands.
+    pub(crate) fn ensure_video_poster(&mut self, path: &std::path::Path) {
+        let key = path.to_string_lossy().into_owned();
+        if self
+            .video_posters
+            .get(&key)
+            .is_some_and(|p| vp_core::media::poster_is_fresh(path, p))
+        {
+            return;
+        }
+        if let Some(poster) = vp_core::media::ensure_video_poster(path) {
+            self.video_posters.insert(key, poster);
+        }
+    }
+
+    /// Stop in-app motion, if any (navigation left video, bg changed).
+    /// Returns true when a pump was running. The last frame stays as the
+    /// poster still — the room never flashes to black.
+    pub(crate) fn stop_motion(&mut self) -> bool {
+        if let Some(mut pump) = self.motion.take() {
+            pump.stop();
+            self.motion_frame = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Play `path` in-app when ffmpeg exists, else report why not. True =
+    /// motion pump running (caller marks launched); false = caller falls
+    /// back (poster still + OS player for standalone, still for loops).
+    /// Idempotent: the same live source re-arms the tick only.
+    pub(crate) fn ensure_motion_for(
+        &mut self,
+        cx: &mut Context<Self>,
+        path: &std::path::Path,
+        loop_play: bool,
+    ) -> bool {
+        let same = self.motion.as_mut().is_some_and(|m| {
+            m.source.as_path() == path && m.loop_play == loop_play && m.alive()
+        });
+        if same {
+            self.ensure_motion_tick(cx);
+            return true;
+        }
+        self.stop_motion();
+        match MotionPump::start(path, MOTION_FPS, loop_play, 0.0) {
+            Ok(pump) => {
+                self.motion = Some(pump);
+                self.ensure_motion_tick(cx);
+                self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                true
+            }
+            Err(e) => {
+                self.set_status(cx, format!("In-app motion off ({e})"));
+                false
+            }
+        }
+    }
+
+    /// Pause/resume in-app motion (transport button). True when a pump
+    /// owned the press. Pause kills the pump and freezes the clock; resume
+    /// restarts at the tracked offset — universal, no IPC.
+    pub(crate) fn motion_toggle_pause(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(pump) = self.motion.as_mut() else {
+            return false;
+        };
+        if pump.paused() {
+            let (source, loop_play, pos) =
+                (pump.source.clone(), pump.loop_play, pump.position());
+            self.stop_motion();
+            match MotionPump::start(&source, MOTION_FPS, loop_play, pos) {
+                Ok(next) => {
+                    self.motion = Some(next);
+                    self.ensure_motion_tick(cx);
+                    self.set_status(cx, "Playing in-app.");
+                }
+                Err(e) => self.set_status(cx, format!("Resume failed ({e}).")),
+            }
+        } else {
+            pump.mark_paused();
+            self.stop_motion();
+            self.set_status(cx, "Paused — still frame held.");
+        }
+        cx.notify();
+        true
+    }
+
+    /// 1000/fps tick loop while a pump runs (mirrors `ensure_clock_tick`).
+    /// Each piped frame replaces the live bytes + republishes, so preview
+    /// and projector move together; an ended standalone clip stops the
+    /// pump and keeps its last frame as a still.
+    fn ensure_motion_tick(&mut self, cx: &mut Context<Self>) {
+        if self.motion_ticking || self.motion.is_none() {
+            return;
+        }
+        self.motion_ticking = true;
+        cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
+            let mut async_cx = async_cx.clone();
+            async move {
+                loop {
+                    async_cx
+                        .background_executor()
+                        .timer(Duration::from_millis(1000 / MOTION_FPS as u64))
+                        .await;
+                    let stop = weak
+                        .update(&mut async_cx, |this: &mut Root, cx| {
+                            // Poll first (borrows only the pump), then act:
+                            // method calls below need `this` free.
+                            let mut ended = this.motion.is_none();
+                            let mut fresh: Option<Arc<Vec<u8>>> = None;
+                            if let Some(pump) = this.motion.as_mut() {
+                                if let Some(frame) = pump.read_frame() {
+                                    fresh = Some(Arc::new(frame));
+                                }
+                                if !pump.alive() {
+                                    ended = true;
+                                }
+                            }
+                            if let Some(bytes) = fresh {
+                                this.motion_frame = Some(bytes);
+                                this.republish(cx);
+                            }
+                            if ended {
+                                this.stop_motion();
+                                this.set_status(cx, "Video ended — last frame held.");
+                                this.republish(cx);
+                            }
+                            let done = ended || this.motion.is_none();
+                            if done {
+                                this.motion_ticking = false;
+                            }
+                            cx.notify();
+                            done
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
     fn push_projection(&mut self, cx: &mut Context<Self>) {
         if self.frozen_slide.is_some() {
             return;
         }
         self.projected_item = self.live_item;
+        // Standalone video motion comes from the frame pump (silent
+        // ffmpeg stills through an uncached loader), with the OS player as
+        // fallback when mpv is missing. Once per item, not per push:
+        // navigation re-pushes constantly.
+        let video = self
+            .live_item
+            .and_then(|i| self.agenda.items.get(i))
+            .and_then(ux::video_item_file);
+        let standalone_live = video.is_some();
+        match video {
+            Some((id, path)) if self.media_launched_for.as_deref() != Some(id.as_str()) => {
+                self.media.open(path.clone());
+                // Poster first: the room sees the video's picture even
+                // while the pump spins up (or when nothing can play it).
+                self.ensure_video_poster(&path);
+                if self.ensure_motion_for(cx, &path, false) {
+                    self.media_launched_for = Some(id);
+                } else {
+                    self.media.launch_external();
+                    if let Some(e) = self.media.last_error.clone() {
+                        // Leave the guard unset: a failed launch must retry
+                        // on the next push, not latch silent forever.
+                        self.set_status(cx, format!("Video not playing: {e}"));
+                    } else {
+                        self.media_launched_for = Some(id);
+                        self.set_status(
+                            cx,
+                            format!(
+                                "Video playing externally — {}.",
+                                path.display()
+                            ),
+                        );
+                    }
+                }
+            }
+            None => {
+                self.media_launched_for = None;
+            }
+            _ => {}
+        }
+        // Background loop moves behind the lyrics when assigned and no
+        // standalone clip owns the pump; otherwise motion stops and the
+        // poster still stands.
+        if standalone_live {
+            if self.motion.as_ref().is_some_and(|m| m.loop_play) {
+                self.stop_motion();
+            }
+        } else if self.bg_kind == BackgroundKind::VideoLoop {
+            match self.bg_file.clone() {
+                Some(f) if f.exists() => {
+                    self.ensure_video_poster(&f);
+                    if !self.ensure_motion_for(cx, &f, true) {
+                        self.stop_motion();
+                    }
+                }
+                _ => {
+                    self.stop_motion();
+                }
+            }
+        } else {
+            self.stop_motion();
+        }
         let live = self.live_slides();
         self.projected_slide = if live.is_empty() {
             0
@@ -2345,6 +3195,11 @@ impl Root {
         self.projected_slides = live;
         self.projected_chord = self.proj_chord_line();
         crate::presentation::publish(self, cx);
+        let snap = self.projector_snapshot(cx);
+        self.push_ndi_still(&snap);
+        // Live web view follows the pushed slide (spawn on website slides,
+        // die the moment they leave). No-op while the toggle is off.
+        self.sync_live_web(cx);
     }
 
     /// The **projector's** slides: always the pushed snapshot, frozen or
@@ -2403,11 +3258,33 @@ impl Root {
                 let p = vp_core::media::resolve_luminosity(&self.cascade, chain);
                 (p.value, p.source.map(|l| l.literal().to_string()))
             }
-            // A color background carries no media luminosity; the camera has
-            // no cascade chain (no capture support in v1).
+            // A color background carries no media luminosity; the camera and
+            // the website tile carry none either (no capture support in v1,
+            // no web-view in gpui 0.2.2).
             _ => (0.0, None),
         };
         let style = self.agenda.settings.style.clone().unwrap_or_default();
+        // Per-style-level text: resolve the session cascade over the live
+        // item's chain. A verse-level alignment (for example) now shapes
+        // only items in chains containing that level — navigating to another
+        // song no longer shows the previous edit as the new default. Kinds
+        // without a chain keep the flat agenda-global fields.
+        let resolved = self.resolved_for_item(frame.item);
+        let font_family = resolved.as_ref().map(|r| r.font.value.clone()).unwrap_or_else(|| self.font_family.clone());
+        let font_size = resolved.as_ref().map(|r| r.size.value).unwrap_or(self.font_size);
+        let bold = resolved.as_ref().map(|r| r.bold.value).unwrap_or(self.bold);
+        let italic = resolved.as_ref().map(|r| r.italic.value).unwrap_or(self.italic);
+        let underline = resolved.as_ref().map(|r| r.underline.value).unwrap_or(self.underline);
+        let align = resolved.as_ref().map(|r| Align::from_literal(&r.align.value)).unwrap_or(self.align);
+        let valign = resolved.as_ref().map(|r| VAlign::from_literal(&r.v_align.value)).unwrap_or(self.valign);
+        let fg_color = match resolved.as_ref() {
+            Some(r) => hex(&r.color.value),
+            None => self
+                .fg_override
+                .as_deref()
+                .map(hex)
+                .unwrap_or_else(|| hex(theme.projection_fg)),
+        };
         // Standalone agenda media (B-32): a live Image/Video file item
         // replaces the slide instead of compositing text over a background.
         let standalone = frame.item.and_then(|it| {
@@ -2416,16 +3293,27 @@ impl Root {
                 .get(it)
                 .and_then(|a| projector_window::standalone_for(&a.kind, &a.reference))
         });
+        // The video picture, when grabbed: standalone video first, else the
+        // video-loop background. Map lookup only (grabs happen at
+        // assign/play/push time) — render never spawns `ffmpeg`.
+        let poster_source: Option<PathBuf> = match &standalone {
+            Some(projector_window::StandaloneMedia::Video(p)) => Some(p.clone()),
+            _ => match self.bg_kind {
+                BackgroundKind::VideoLoop => self.bg_file.clone(),
+                _ => None,
+            },
+        };
+        let video_poster = poster_source.as_ref().and_then(|p| {
+            let key = p.to_string_lossy().into_owned();
+            self.video_posters.get(&key).cloned()
+        });
         ProjectorSnapshot {
             bg_kind: self.bg_kind,
             bg_file: self.bg_file.clone(),
+            bg_website: self.bg_website.clone(),
             bg_fit: self.bg_fit,
             bg_color: hex(theme.projection_bg),
-            fg_color: self
-                .fg_override
-                .as_deref()
-                .map(hex)
-                .unwrap_or_else(|| hex(theme.projection_fg)),
+            fg_color,
             luminosity,
             lum_source,
             transition: self.transition.clone(),
@@ -2435,10 +3323,8 @@ impl Root {
             lines,
             footer,
             standalone,
-            // Live video frames are attached per-repaint by the window
-            // owning the LoopPlayer (projector); the control preview and
-            // snapshots start with the tile.
-            bg_frame: None,
+            video_poster,
+            video_frame: self.motion_frame.clone(),
             alert_visible: self.alert_visible,
             alert_text: self.alert_field.read(cx).text(),
             clock_overlay: self.clock_overlay,
@@ -2448,30 +3334,49 @@ impl Root {
                 Viewport::from_pixels(1920, 1080),
                 FitMode::Fill,
             ),
-            font_family: self.font_family.clone(),
-            font_size: self.font_size,
-            bold: self.bold,
-            italic: self.italic,
-            underline: self.underline,
-            align: self.align,
-            valign: self.valign,
+            font_family,
+            font_size,
+            bold,
+            italic,
+            underline,
+            align,
+            valign,
             chord: self.projected_chord.clone(),
             accent: self.ui().accent,
             danger: self.ui().danger,
         }
     }
 
+/// A window counts as fullscreen when it exactly covers a RandR output:
+/// monitor-placed projectors are borderless windows, never WM-fullscreen,
+/// so Go-live must not WM-toggle them onto the primary.
+fn window_covers_monitor(window: &gpui::Window) -> bool {
+    let b = window.bounds();
+    monitors::list().iter().any(|m| {
+        b.origin.x == px(m.x as f32)
+            && b.origin.y == px(m.y as f32)
+            && b.size.width == px(m.w as f32)
+            && b.size.height == px(m.h as f32)
+    })
+}
     /// Open the real second window (B-12). `fullscreen` opens it fullscreen
     /// on the main display; the handle is kept so the Message tab can flip
     /// it later and so a second press focuses instead of duplicating.
     fn open_projector(&mut self, cx: &mut Context<Self>, fullscreen: bool) {
+        // Record intent first: the WM flag cannot serve (a monitor-placed
+        // window is never WM-fullscreen), and reopen paths read this.
+        self.projector_fullscreen = fullscreen;
         // Drop dead handles: closing the projector window via OS chrome
         // leaves Some(handle) behind, and every later Go Live would
         // "focus" a dead window (looks invisible) instead of reopening.
         if let Some(handle) = self.projector_window {
             match handle.update(cx, |_, window, _| {
                 window.activate_window();
-                if fullscreen && !window.is_fullscreen() {
+                // A monitor-placed window already fills its output: only
+                // WM-toggle when it is neither real-fullscreen nor
+                // monitor-covering, or Go Live would convert the RandR
+                // rect into a primary-monitor fullscreen.
+                if fullscreen && !window.is_fullscreen() && !Self::window_covers_monitor(window) {
                     window.toggle_fullscreen();
                 }
             }) {
@@ -2498,15 +3403,49 @@ impl Root {
         // update here, and any entity read of Root would re-enter the map.
         let presentation = self.presentation.clone();
         // The operator's chosen display (Settings → projector monitor),
-        // resolved now while we can still read our own fields.
+        // resolved now while we can still read our own fields. GPUI's
+        // `cx.displays()` enumerates X *screens* — one for a whole merged
+        // dual-monitor desktop — so the real geometry comes from RandR
+        // (`monitors::list`, primary first). A choice past the last
+        // connected output falls back to primary AND says so, instead of
+        // silently opening on the wrong screen.
         let display = cx.displays().get(self.projector_display).map(|d| d.id());
+        let monitors = monitors::list();
+        let monitor = monitors::resolve_target(
+            &monitors,
+            self.projector_monitor.as_deref(),
+            self.projector_display,
+        );
+        // Carried into the deferred open: the synchronous "Opening…"
+        // message below never paints (one notify per update), so the
+        // fallback warning must ride the final message instead.
+        let fallback_note: Option<String> = if monitor.is_none() {
+            let found = monitors.len();
+            if self.projector_display > 0 || found > 1 {
+                Some(if found == 0 {
+                    format!(
+                        "Display {}: no RandR outputs detected",
+                        self.projector_display + 1,
+                    )
+                } else {
+                    format!(
+                        "Display {} not connected (found {found})",
+                        self.projector_display + 1,
+                    )
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         // Deferred past the current update: opening a window builds and
         // first-paints its view synchronously, and that paint must never
         // touch Root (WI-033: the projector reads only the published
         // snapshot). Deferral is belt-and-braces on top of the split.
         crash_log::log_line("projector open requested (deferred past update)");
         cx.defer(move |cx: &mut App| {
-            match projector_window::open_projector_window(cx, presentation, fullscreen, display) {
+            match projector_window::open_projector_window(cx, presentation, fullscreen, display, monitor) {
                 Ok(handle) => {
                     let _ = root.update(cx, |this, cx| {
                         this.projector_window = Some(handle);
@@ -2520,10 +3459,14 @@ impl Root {
                         });
                         this.set_status(
                             cx,
-                            if fullscreen {
-                                "Projector window opened fullscreen (second display: drag it over)."
+                            if let Some(note) = fallback_note.clone() {
+                                format!("{note} — opened on primary instead.")
+                            } else if fullscreen {
+                                "Projector window opened fullscreen on the chosen display."
+                                    .to_string()
                             } else {
-                                "Projector window opened — drag it to the second display; fullscreen flips it."
+                                "Projector window opened on the chosen display; fullscreen flips it."
+                                    .to_string()
                             },
                         );
                     });
@@ -2538,16 +3481,47 @@ impl Root {
                 }
             }
         });
-        self.set_status(cx, "Opening projector window…");
     }
 
-    /// Flip the open projector window in/out of fullscreen (B-12). The
-    /// single-click monitor switcher from 1.27b is honestly unmet: GPUI picks
-    /// the display at open time, so moving displays is a drag, stated here.
+    /// Pick the projector monitor. When the room window is already open it
+    /// moves with the choice: GPUI has no move-window call, so the window
+    /// closes and reopens on the new display with the stored fullscreen
+    /// intent (WM state cannot serve: a monitor-placed window is never
+    /// WM-fullscreen). Without this the buttons silently applied to the
+    /// NEXT open only ("still on the first screen").
+    fn set_projector_display(&mut self, cx: &mut Context<Self>, idx: usize) {
+        self.projector_display = idx;
+        self.projector_monitor = monitors::list().get(idx).map(|m| m.name.clone());
+        self.persist_layout_quiet();
+        if self.projector_window.is_some() {
+            let fullscreen = self.projector_fullscreen;
+            self.close_projector(cx);
+            self.projector_on = true;
+            self.open_projector(cx, fullscreen);
+        }
+        cx.notify();
+    }
+
+    /// NDI output on/off (Display > NDI). Turning it on starts the engine
+    /// and immediately pushes the live snapshot so the feed is never a
+    /// stale frame; turning it off stops the server. Go-live never flips
+    /// this — the operator chooses.
+    fn toggle_ndi(&mut self, cx: &mut Context<Self>) {
+        let msg = self.ndi.set_enabled(!self.ndi.enabled);
+        if self.ndi.enabled {
+            let snap = self.projector_snapshot(cx);
+            self.push_ndi_still(&snap);
+        }
+        self.set_status(cx, msg);
+    }
+
+    /// Flip the open projector window in/out of fullscreen (B-12). Also
+    /// flips the stored intent so monitor switches reopen the same way.
     fn toggle_projector_fullscreen(&mut self, cx: &mut Context<Self>) {
         match self.projector_window {
             Some(handle) => {
                 let _ = handle.update(cx, |_, window, _| window.toggle_fullscreen());
+                self.projector_fullscreen = !self.projector_fullscreen;
                 self.set_status(cx, "Projector fullscreen toggled.");
             }
             None => self.set_status(cx, "No projector window — open it first."),
@@ -2574,40 +3548,6 @@ impl Root {
     pub(crate) fn set_status(&mut self, cx: &mut Context<Self>, msg: impl Into<String>) {
         self.status = msg.into();
         cx.notify();
-    }
-
-    /// Manual update check (F9): one HTTPS GET on a worker thread, result
-    /// back on the UI thread as status text. No download, no polling, no
-    /// startup traffic — the offline-first contract (`updater::check_now`).
-    fn check_updates(&mut self, cx: &mut Context<Self>) {
-        self.set_status(cx, "Checking for updates… (manual check only; nothing is downloaded)");
-        let running = env!("CARGO_PKG_VERSION").to_string();
-        cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
-            let mut async_cx = async_cx.clone();
-            async move {
-                let state = async_cx
-                    .background_executor()
-                    .spawn(async move { updater::check_now(&running) })
-                    .await;
-                let _ = weak.update(&mut async_cx, |this: &mut Root, cx| {
-                    let msg = match state {
-                        updater::UpdateState::Current { latest } => format!(
-                            "Perez RS {} is current (latest {}).",
-                            env!("CARGO_PKG_VERSION"),
-                            latest
-                        ),
-                        updater::UpdateState::Available { latest, url } => format!(
-                            "Perez RS {latest} is available — open {url} in a browser (nothing was downloaded)."
-                        ),
-                        updater::UpdateState::Unavailable { reason } => {
-                            format!("Update check unavailable: {reason}")
-                        }
-                    };
-                    this.set_status(cx, msg);
-                });
-            }
-        })
-        .detach();
     }
 
     // ------------------------------------------------------------- search
@@ -2723,6 +3663,66 @@ impl Root {
             }
         }
         cx.notify();
+    }
+
+    /// Double-click a browser song: play it NOW with no agenda detour.
+    /// A single click only selects (the editor follows); this path ensures
+    /// agenda membership (adds the song when absent, like `+Agenda`) and
+    /// then projects slide 0 through the punch-through path, so the
+    /// projector follows too. Punches through the shield exactly like an
+    /// agenda double-click (`select_agenda`).
+    fn play_browser_song(&mut self, cx: &mut Context<Self>, idx: usize) {
+        if self.songs.get(idx).is_none() {
+            return;
+        }
+        if self.shield {
+            self.set_status(cx, "Shield punched through by double-click.");
+        }
+        if self.ensure_browser_song_in_agenda(idx).is_some() {
+            self.select_song_ex(cx, idx, true);
+        }
+    }
+
+    /// Project one slide row of a browser song (the transient library
+    /// preview has no agenda index of its own): same membership step as
+    /// [`Self::play_browser_song`], then straight to that slide.
+    fn play_browser_song_slide(&mut self, cx: &mut Context<Self>, idx: usize, row: usize) {
+        if self.songs.get(idx).is_none() {
+            return;
+        }
+        if self.shield {
+            self.set_status(cx, "Shield punched through by double-click.");
+        }
+        if let Some(ag_idx) = self.ensure_browser_song_in_agenda(idx) {
+            self.sync_editor_to_item(cx, ag_idx);
+            // Content match, not row index: hidden verses/cards shift the
+            // projected list, so the display row and the live list disagree.
+            let target = self.browser_song_slides(idx);
+            let projected = self.item_slides(ag_idx);
+            let pos = projected_index_for_row(&target, &projected, row);
+            self.goto_item_slide(cx, ag_idx, pos);
+        }
+    }
+
+    /// Agenda membership for a library song, shared by direct-play paths:
+    /// returns the agenda index (added when absent). Never projects.
+    fn ensure_browser_song_in_agenda(&mut self, idx: usize) -> Option<usize> {
+        let song = self.songs.get(idx).cloned()?;
+        if let Some(ag_idx) = self.agenda.items.iter().position(
+            |it| matches!(&it.reference, ItemRef::Song { song_id } if song_id == &song.id),
+        ) {
+            return Some(ag_idx);
+        }
+        self.agenda_dirty = true;
+        let id = agenda_ops::add_item(
+            &mut self.agenda,
+            ItemKind::Song,
+            song.title.clone(),
+            ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+        );
+        self.agenda.items.iter().position(|i| i.id == id)
     }
 
     /// Transpose the current song by `steps` semitones, or set the display
@@ -2920,9 +3920,25 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
         match parse_reference(&input, &tid, Versification::En) {
-            Ok(r) => {
+            Ok(mut r) => {
+                // Typed ranges (`1-10`) clamp to the installed chapter:
+                // beyond-chapter verses would resolve to `"N […]"`
+                // placeholder slides the original never shows.
+                let max = self.bible_verse_max(&r.book, r.chapter);
+                let clamped = clamp_verses_to_chapter(&r.verses, max);
+                if clamped.len() != r.verses.len() {
+                    self.set_status(
+                        cx,
+                        format!(
+                            "Bible ref clamped to {} verse(s) in this chapter.",
+                            clamped.len()
+                        ),
+                    );
+                } else {
+                    self.status = "Ready.".into();
+                }
+                r.verses = clamped;
                 self.biref = Some(r);
-                self.status = "Ready.".into();
             }
             Err(e) => {
                 self.biref = None;
@@ -2932,12 +3948,33 @@ impl Root {
         cx.notify();
     }
 
+    /// Verse ceiling for the current Bible selection: the installed
+    /// chapter length when known, else the canonical fallback. `Ctrl+*`
+    /// used to extend to a hardcoded 176 (Psalm 119), so a short chapter
+    /// grew `"10 […]"` placeholder slides the original never shows.
+    fn bible_verse_max(&self, book: &str, chapter: u32) -> u32 {
+        if let Some(n) = self.bibles.chapter_verse_count(book, chapter) {
+            return n;
+        }
+        let num = vp_core::bible_ref::match_book(book)
+            .map(|b| b.number)
+            .unwrap_or(self.sel_book);
+        default_verse_count(num, chapter)
+    }
+
     fn adjust_range(&mut self, cx: &mut Context<Self>, which: u8) {
         // 0: extend end (Ctrl+*), 1: shrink end (Ctrl+/),
         // 2: extend start (Shift+*), 3: shrink start (Shift+/).
+        // Extend clamps to the chapter length: beyond-chapter verses
+        // resolve to `"N […]"` placeholders, which must never be selected.
+        let max = self
+            .biref
+            .as_ref()
+            .map(|r| self.bible_verse_max(&r.book.clone(), r.chapter))
+            .unwrap_or(176);
         if let Some(r) = self.biref.as_mut() {
             match which {
-                0 => extend_end(r, 176),
+                0 => extend_end(r, max),
                 1 => shrink_end(r),
                 2 => extend_start(r),
                 _ => shrink_start(r),
@@ -3132,9 +4169,51 @@ impl Root {
                     },
                 );
                 self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+                // The panel now points at the new item: keep the editor on
+                // the same song or editor and slides desync again.
+                if let Some(pos) = self.sel_item {
+                    self.sync_editor_to_item(cx, pos);
+                }
                 self.set_status(cx, format!("Added {}", song.title));
             }
         }
+    }
+
+    /// Add the selected gallery video to the agenda as a standalone Video
+    /// item: projecting it auto-plays the OS player (`push_projection`
+    /// launch). Without a producer the autoplay branch could only fire for
+    /// imported plans — the gallery had no path onto the agenda at all.
+    pub(crate) fn add_video_to_agenda(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .galleries
+            .selection(MediaFileKind::Video)
+            .and_then(|id| self.galleries.assign_path(MediaFileKind::Video, id))
+            .or_else(|| {
+                (self.bg_kind == BackgroundKind::VideoLoop)
+                    .then(|| self.bg_file.clone())
+                    .flatten()
+            });
+        let Some(path) = path else {
+            self.set_status(cx, "Select a video tile first.");
+            return;
+        };
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Video".to_string());
+        self.agenda_dirty = true;
+        let id = agenda_ops::add_item(
+            &mut self.agenda,
+            ItemKind::Video,
+            title.clone(),
+            ItemRef::File {
+                file: path.to_string_lossy().into_owned(),
+            },
+        );
+        self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+        self.sync_editor_to_item(cx, self.sel_item.unwrap_or(usize::MAX));
+        self.set_status(cx, format!("Added {title} — project it to play."));
+        cx.notify();
     }
 
     /// `Ctrl+N` — add the **Nth** current search result to the agenda.
@@ -3220,12 +4299,21 @@ impl Root {
                 Ok(a) => match a.validate() {
                     Ok(_) => {
                         self.agenda = a;
+                        // Styles travel with the agenda file: adopt its stored
+                        // cascade (or its flat style at Base for old files).
+                        self.adopt_agenda_styles();
                         // A freshly opened agenda has no unsaved changes. The
                         // 1.12 fix "Agenda opening set songbooks to a dirty
                         // state (no more)" — do not reintroduce that.
                         self.agenda_dirty = false;
                         self.sel_item = None;
                         self.live_item = None;
+                        // A new agenda is a new show: remote live-view
+                        // approvals do not carry over, and any live browser
+                        // window dies with the old show.
+                        self.live_web_confirmed.clear();
+                        self.live_web_pending = None;
+                        self.live_view.hide();
                         let _ = library::push_recent(&self.db, &path, now_secs());
                         // Fresh agenda, nothing live: clear the room too.
                         self.push_projection(cx);
@@ -3292,6 +4380,10 @@ impl Root {
                 if idx + 1 < self.agenda.items.len() {
                     self.live_item = Some(idx + 1);
                     self.sel_item = Some(idx + 1);
+                    self.sync_editor_to_item(cx, idx + 1);
+                    if let Some(t) = self.agenda.items.get(idx + 1).map(|it| it.title.clone()) {
+                        self.title_field.update(cx, |f, cx| f.set_text(&t, cx));
+                    }
                     self.live_slide = 0;
                 }
             }
@@ -3301,6 +4393,10 @@ impl Root {
             if idx > 0 {
                 self.live_item = Some(idx - 1);
                 self.sel_item = Some(idx - 1);
+                self.sync_editor_to_item(cx, idx - 1);
+                if let Some(t) = self.agenda.items.get(idx - 1).map(|it| it.title.clone()) {
+                    self.title_field.update(cx, |f, cx| f.set_text(&t, cx));
+                }
                 let prev = self.item_slides(idx - 1).len();
                 self.live_slide = prev.saturating_sub(1);
             }
@@ -3351,6 +4447,7 @@ impl Root {
             } else if let Some(idx) = self.sel_item.or(self.live_item) {
                 if idx + 1 < self.agenda.items.len() {
                     self.sel_item = Some(idx + 1);
+                    self.sync_editor_to_item(cx, idx + 1);
                     let title = self.agenda.items[idx + 1].title.clone();
                     self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
                     let next_verses = self.ordered_item_verses(idx + 1);
@@ -3364,6 +4461,7 @@ impl Root {
         } else if let Some(idx) = self.sel_item.or(self.live_item) {
             if idx > 0 {
                 self.sel_item = Some(idx - 1);
+                self.sync_editor_to_item(cx, idx - 1);
                 let title = self.agenda.items[idx - 1].title.clone();
                 self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
                 let prev_verses = self.ordered_item_verses(idx - 1);
@@ -3394,6 +4492,7 @@ impl Root {
         }
         let idx = next as usize;
         self.sel_item = Some(idx);
+        self.sync_editor_to_item(cx, idx);
         let title = self.agenda.items[idx].title.clone();
         self.title_field.update(cx, |f, cx| f.set_text(&title, cx));
         self.set_status(cx, "Next agenda item (not displayed).");
@@ -3588,6 +4687,13 @@ impl Root {
         if item_idx >= self.agenda.items.len() {
             return;
         }
+        // Projection moves the selection too, so the editor follows the
+        // item like every other selection path (see `sync_editor_to_item`):
+        // verse shortcuts and slide clicks land here directly, and without
+        // this the editor kept showing the previous song while slides and
+        // preview moved on. The sync is idempotent, so advancing slides
+        // within the same item never touches in-progress edits.
+        self.sync_editor_to_item(cx, item_idx);
         self.live_item = Some(item_idx);
         self.sel_item = Some(item_idx);
         if let Some(item) = self.agenda.items.get(item_idx) {
@@ -3885,33 +4991,81 @@ impl Root {
         }
     }
 
+    /// Start the countdown/stopwatch. Publishes immediately when the room
+    /// shows it (a start from pause at the same displayed second would
+    /// otherwise lag the wall by up to a second); the tick loop owns every
+    /// publish after that.
     fn clock_start(&mut self, cx: &mut Context<Self>) {
         if !self.clock_running {
             self.clock_running = true;
             self.clock_started = Some(Instant::now());
-            cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
-                let mut async_cx = async_cx.clone();
-                async move {
-                    loop {
-                        async_cx
-                            .background_executor()
-                            .timer(Duration::from_millis(250))
-                            .await;
-                        let stop = weak
-                            .update(&mut async_cx, |this: &mut Root, cx| {
-                                cx.notify();
-                                !this.clock_running
-                            })
-                            .unwrap_or(true);
-                        if stop {
-                            break;
-                        }
-                    }
-                }
-            })
-            .detach();
+            self.resync_clock(cx);
             cx.notify();
         }
+    }
+
+    /// Clock wall-content changed (overlay flip, mode, duration, stop,
+    /// reset): if the room shows a clock, publish the new text now. The
+    /// tick loop is always re-armed (it self-gates on running-or-overlay,
+    /// so this is a no-op when nothing needs it).
+    fn resync_clock(&mut self, cx: &mut Context<Self>) {
+        if self.clock_overlay {
+            let now = self.clock_display();
+            self.republish(cx);
+            self.last_published_clock = Some(now);
+        }
+        self.ensure_clock_tick(cx);
+    }
+
+    /// Spawn the 250ms tick loop unless one already runs. Each tick repaints
+    /// control AND re-publishes the room snapshot while the clock overlay
+    /// is on and its text moved: without this the room's clock freezes at
+    /// the last publish while control ticks — the out-of-sync class. The
+    /// loop stops itself when nothing needs it (a static overlay publishes
+    /// once, then sleeps; any later change re-arms here).
+    fn ensure_clock_tick(&mut self, cx: &mut Context<Self>) {
+        if self.clock_ticking || !clock_tick_active(self.clock_running, self.clock_overlay) {
+            return;
+        }
+        self.clock_ticking = true;
+        cx.spawn(|weak: WeakEntity<Root>, async_cx: &mut AsyncApp| {
+            let mut async_cx = async_cx.clone();
+            async move {
+                loop {
+                    async_cx
+                        .background_executor()
+                        .timer(Duration::from_millis(250))
+                        .await;
+                    let stop = weak
+                        .update(&mut async_cx, |this: &mut Root, cx| {
+                            cx.notify();
+                            let now = this.clock_display();
+                            if clock_text_moved(
+                                this.clock_overlay,
+                                this.last_published_clock.as_deref(),
+                                &now,
+                            ) {
+                                this.last_published_clock = Some(now.clone());
+                                this.republish(cx);
+                            }
+                            let settled = this.clock_overlay
+                                && !this.clock_running
+                                && this.last_published_clock.as_deref() == Some(now.as_str());
+                            if !clock_tick_active(this.clock_running, this.clock_overlay) || settled {
+                                this.clock_ticking = false;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     fn clock_stop(&mut self, cx: &mut Context<Self>) {
@@ -3919,6 +5073,8 @@ impl Root {
             self.clock_banked = self.elapsed();
             self.clock_running = false;
             self.clock_started = None;
+            // The frozen banked text is new: publish it now if shown.
+            self.resync_clock(cx);
             cx.notify();
         }
     }
@@ -3927,23 +5083,25 @@ impl Root {
         self.clock_running = false;
         self.clock_started = None;
         self.clock_banked = Duration::ZERO;
+        // Back to 00:00 is a new text: publish it now if shown.
+        self.resync_clock(cx);
         cx.notify();
     }
 
     // ------------------------------------------------------------- export
 
+    #[allow(dead_code)] // export actions, kept for menu rewire
     fn print_booklet(&mut self, cx: &mut Context<Self>) {
-        let align = match self.align {
-            Align::Left => "left",
-            Align::Center => "center",
-            Align::Right => "right",
-        };
+        // The booklet prints songs: resolve the songs chain, same as the
+        // projector does for song items.
+        let resolved = self.cascade.resolve(Chain::Songs);
+        let align = resolved.align.value.clone();
         let mut html = String::from(
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Song booklet</title></head><body>",
         );
         html.push_str(&format!(
             "<div style=\"font-family:{};text-align:{align}\">",
-            self.font_family
+            resolved.font.value
         ));
         html.push_str(&format!("<h1>{}</h1>", self.agenda.title));
         for s in &self.songs {
@@ -3959,13 +5117,13 @@ impl Root {
                     } else {
                         vp_core::chord_transpose::strip_chords(line)
                     };
-                    if self.bold {
+                    if resolved.bold.value {
                         l = format!("<b>{l}</b>");
                     }
-                    if self.italic {
+                    if resolved.italic.value {
                         l = format!("<i>{l}</i>");
                     }
-                    if self.underline {
+                    if resolved.underline.value {
                         l = format!("<u>{l}</u>");
                     }
                     html.push_str(&format!("{l}<br/>"));
@@ -3992,6 +5150,7 @@ impl Root {
         }
     }
 
+    #[allow(dead_code)] // kept for menu rewire
     fn import_pptx(&mut self, cx: &mut Context<Self>) {
         let path = self.pptx_field.read(cx).text();
         match std::fs::read(path.trim()) {
@@ -4248,6 +5407,12 @@ impl Root {
                 self.agenda_dirty = true;
                 self.sel_item = None;
                 self.live_item = None;
+                // A new agenda is a new show: remote live-view approvals
+                // do not carry over, and any live browser window dies with
+                // the old show.
+                self.live_web_confirmed.clear();
+                self.live_web_pending = None;
+                self.live_view.hide();
                 // New agenda, nothing live: clear the room too.
                 self.push_projection(cx);
                 let _ = vp_core::library::push_recent(&self.db, &path, now_secs());
@@ -4279,9 +5444,10 @@ impl Root {
             &[("VideoPsalm plan", &["vpagd"])],
             &suggested,
         );
-        let path = crate::file_picker::resolve_vpagd_path(&typed, picked, &self.agenda.title)
-            .to_string_lossy()
-            .to_string();
+        let path =
+            crate::file_picker::resolve_vpagd_path(&typed, picked, &self.agenda.title)
+                .to_string_lossy()
+                .to_string();
         let songs = self.song_map();
         match vp_core::native_agenda::write_plan_file(&path, &self.agenda, &songs, &self.bibles) {
             Ok(built) => {
@@ -4348,6 +5514,13 @@ impl Root {
         }
         // An open popup menu yields Escape to dismiss. Also before the
         // typing gate, so a stranded menu never traps the operator.
+        // The settings modal behaves the same way (it is not part of
+        // `dismiss_popups`: a press inside the modal must not close it).
+        if keystroke == "escape" && self.show_message_settings {
+            self.show_message_settings = false;
+            cx.notify();
+            return;
+        }
         if keystroke == "escape" && self.dismiss_popups(cx) {
             return;
         }
@@ -4393,8 +5566,8 @@ impl Root {
             PresKey::ToggleMode => self.toggle_viewer_mode(cx),
             PresKey::StartPres => self.start_presentation(cx),
             PresKey::ToggleRibbon => {
-                self.ribbon_collapsed = !self.ribbon_collapsed;
-                cx.notify();
+                let to = !self.ribbon_collapsed;
+                self.set_ribbon_collapsed(cx, to);
             }
             PresKey::KeyTips => {
                 self.show_keytips = !self.show_keytips;
@@ -4431,7 +5604,6 @@ impl Root {
                 self.persist_layout_quiet();
                 cx.notify();
             }
-            PresKey::CheckUpdates => self.check_updates(cx),
             PresKey::Quit => cx.quit(),
         }
         self.focus_root(window);
@@ -4489,6 +5661,26 @@ pub(crate) fn btn(
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
+/// [`btn`] that keeps a floating overlay menu open while it is used: the
+/// root dismisses every popup on mousedown (outside-click closes, like a
+/// real dropdown), so a toggle or menu container must stop that press from
+/// bubbling — otherwise the root closes the menu on press and the toggle's
+/// own mouse-up reopens it (or a filter-field click kills the menu). Menu
+/// item clicks themselves bubble to the root AFTER their mouse-up applies
+/// the choice, so only press-propagation needs stopping here.
+fn btn_stop(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    label: &str,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    btn(ui, cx, label, active, f).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+    )
+}
+
 /// One-line floating help: dark chip, light text, small.
 pub(crate) struct TooltipLabel(pub String);
 
@@ -4542,6 +5734,12 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 }
 
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
+    // VideoPsalm panel chrome (agenda-panel.png / slides-panel.png): a light-
+    // blue header bar with dark-blue bold text sits on a white panel with a
+    // thin steel border. The old plain 13px label on a transparent panel with
+    // a bright-blue edge read as a wireframe next to the original.
+    let header_bg = rgb(0xC9DDF3);
+    let header_ink = rgb(0x1E3A5F);
     let mut col = div()
         .flex()
         .flex_col()
@@ -4555,14 +5753,33 @@ pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(div().text_size(px(13.)).child(title.to_string()));
+        .bg(ui.panel)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded_sm()
+                .bg(header_bg)
+                .text_color(header_ink)
+                .text_size(px(13.))
+                .font_weight(FontWeight::BOLD)
+                .child(title.to_string()),
+        );
     for k in kids {
         col = col.child(k);
     }
     col
 }
 
-/// Compact ribbon group box: small caps caption + wrapped controls.
+/// Compact ribbon group box: wrapped controls + small caption BELOW.
+///
+/// 1.29 lays group names UNDER their controls (SCREENSHOT-1.29-LAYOUT.md
+/// §Ribbon: `caption` labels BELOW the controls). The old caption-on-top
+/// with accent color read as a second tab row next to the original's soft
+/// gray captions under light-blue groups.
 fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
     div()
         .flex()
@@ -4573,12 +5790,7 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(ui.accent)
-                .child(caption.to_string()),
-        )
+        .bg(ui.panel)
         .child(
             div()
                 .flex()
@@ -4587,6 +5799,14 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
                 .gap_1()
                 .items_center()
                 .children(kids),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_center()
+                .text_size(px(11.))
+                .text_color(rgb(0x5B6B82))
+                .child(caption.to_string()),
         )
 }
 
@@ -4648,7 +5868,7 @@ fn mini(
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .bg(if active { ui.selection } else { ui.bg })
+        .bg(if active { ui.selection } else { ui.panel })
         .text_color(if active { ui.selection_ink } else { ui.fg })
         .text_size(px(11.))
         .cursor_pointer()
@@ -4747,7 +5967,21 @@ fn section_scrolled_with_rail(
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
-        .child(div().text_size(px(13.)).child(title.to_string()));
+        .bg(ui.panel)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded_sm()
+                .bg(rgb(0xC9DDF3))
+                .text_color(rgb(0x1E3A5F))
+                .text_size(px(13.))
+                .font_weight(FontWeight::BOLD)
+                .child(title.to_string()),
+        );
     for k in top {
         col = col.child(k);
     }
@@ -4832,6 +6066,19 @@ fn prefer_second_translation(
     ids.into_iter().find(|id| id != current)
 }
 
+/// Whether the 250ms clock loop has work (pure, tested): a running
+/// countdown, or a visible overlay — even a static wall clock needs one
+/// publish so the room stops showing a stale time.
+fn clock_tick_active(running: bool, overlay: bool) -> bool {
+    running || overlay
+}
+
+/// Whether this tick must re-publish the room (pure, tested): the overlay
+/// is up and the displayed text moved since the last publish.
+fn clock_text_moved(overlay: bool, last: Option<&str>, now: &str) -> bool {
+    overlay && last != Some(now)
+}
+
 /// `true` when two Bible references address the same passage (pure:
 /// the Project-no-duplicates rule). Versification rides along — EN vs RU
 /// numbering can genuinely differ, so they are not the same passage.
@@ -4861,6 +6108,16 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 }
 
 /// Like [`row`], but children flow onto the next line instead of clipping
+/// past a fixed-width panel (the 360px agenda column plus Browse buttons
+/// overflowed and clipped button labels — WI-024).
+///
+/// The lyrics document must yield vertical space before the footer does:
+/// the footer (References/Author/…) always stays visible while the
+/// document scrolls internally. Without `min_h_0` a tall wrapped footer
+/// pushes the Save row beneath the panel fold with no way to reach it.
+fn document_wrap(doc: gpui::Entity<DocField>) -> Div {
+    div().flex_1().min_h_0().overflow_hidden().child(doc)
+}
 /// past a fixed-width panel (the 360px agenda column plus Browse buttons
 /// overflowed and clipped button labels — WI-024).
 pub(crate) fn row_wrap(kids: Vec<Div>) -> Div {
@@ -4894,6 +6151,16 @@ impl Render for Root {
         let mut root = div()
             .key_context("App")
             .track_focus(&self.focus_handle(cx))
+            // Outside-click dismisses every popup (ribbon dropdowns, rail
+            // `▾` menus): real dropdown behavior. Toggle buttons and menu
+            // panels stop the press from bubbling, so using a menu never
+            // dismisses it mid-click.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    this.dismiss_popups(cx);
+                }),
+            )
             // One raw key-down feeds the whole presentation keymap.
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let name = ev.keystroke.unparse();
@@ -4930,6 +6197,11 @@ impl Render for Root {
                 .border_color(ui.border)
                 .child(format!("{} {}", self.t("status"), self.status)),
         )
+        // Settings modal paints last: topmost, over ribbon, panels and
+        // the status line.
+        .when(self.show_message_settings, |d| {
+            d.child(self.message_settings(&ui, cx))
+        })
     }
 }
 
@@ -4994,6 +6266,24 @@ impl Root {
             })
             .child(div().flex_1())
             .child(label(ui, &self.t("theme"), 13.))
+            .child(btn_tip(
+                ui,
+                cx,
+                if self.theme_id == "dark" { "◐ Dark: on" } else { "◐ Dark: off" },
+                "Toggle dark mode (switches between dark and light themes)",
+                self.theme_id == "dark",
+                |this, _, _, cx| {
+                    this.theme_id = if this.theme_id == "dark" {
+                        "light".into()
+                    } else {
+                        "dark".into()
+                    };
+                    this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
+                    cx.notify();
+                },
+            ))
             .child(btn(
                 ui,
                 cx,
@@ -5002,6 +6292,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "light".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5013,6 +6305,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "dark".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5024,6 +6318,7 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "gray".into();
                     this.persist_layout_quiet();
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5035,6 +6330,7 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "blue".into();
                     this.persist_layout_quiet();
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5090,27 +6386,57 @@ impl Root {
     /// Viewer mode removes the **whole** ribbon, tab row included: only the
     /// ribbon *bodies* used to be gated on `viewer_mode`, so a live tab row
     /// stayed on screen and gave away that this was a hide-toggle.
-    fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn ribbon_bar(&mut self, ui: &UI, cx: &mut Context<Root>) -> gpui::AnyElement {
         if self.viewer_mode {
-            return div().w(px(0.)).h(px(0.));
+            return div().w(px(0.)).h(px(0.)).into_any_element();
         }
         // `Ctrl+F1` collapse (show-or-hide-the-toolbar, RESEARCH-weebly §8.4).
         // A slim re-expand row stands in for the article's white arrow; the
         // tab row itself is untouched.
         if self.ribbon_collapsed {
+            // VJSM parity: raising the cursor to the top reveals the
+            // ribbon — hover anywhere on the slim strip re-expands, no
+            // click needed. The `Expand` button stays as the touch/click
+            // path (hover never fires for it).
             return div()
+                .id("ribbon-collapsed-strip")
                 .flex()
                 .flex_row()
                 .gap_1()
                 .px(px(6.))
+                .py(px(2.))
                 .items_center()
-                .children(vec![
-                    label(ui, "ribbon collapsed", 12.),
-                    btn(ui, cx, "expand (Ctrl+F1)", false, |this, _, _, cx| {
-                        this.ribbon_collapsed = false;
-                        cx.notify();
+                .bg(rgb(0x1E6CC8))
+                .cursor_pointer()
+                // The whole strip is the affordance, not just the button:
+                // a hand cursor that only works on 120 px is a lie.
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, false);
                     }),
-                ]);
+                )
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered
+                        && Root::hover_reveal_armed(
+                            this.ribbon_collapsed,
+                            this.collapsed_at,
+                            std::time::Instant::now(),
+                        )
+                    {
+                        this.set_ribbon_collapsed(cx, false);
+                    }
+                }))
+                .children(vec![
+                    label(ui, &self.t("ribbon_collapsed_hint"), 12.),
+                    btn(ui, cx, &self.t("ribbon_expand"), false, |this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, false);
+                        // The strip itself also expands on mouse-up: stop
+                        // here or one click persists + notifies twice.
+                        cx.stop_propagation();
+                    }),
+                ])
+                .into_any_element();
         }
         let tabs: Vec<Div> = RibbonTab::all()
             .into_iter()
@@ -5118,31 +6444,35 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                // The active tab is ORANGE in the original (UX-RESEARCH §4.1),
-                // not an accent outline: an outlined tab reads as a button,
-                // not as the selected ribbon page.
-                let (tab_bg, tab_ink) = if active {
-                    (self.ui().engaged, ink_on(self.ui().engaged))
+                // 1.29 Background tab (Screenshot 2026-10-30 111820): solid
+                // VideoPsalm-blue ribbon with the active tab WHITE and
+                // inactive tabs blue with white text. The old white ribbon
+                // with an orange active tab read as a different app next
+                // to the original's blue chrome.
+                let ribbon_blue = rgb(0x1E6CC8);
+                let (tab_bg, tab_ink, tab_border) = if active {
+                    (rgb(0xFFFFFF), rgb(0x1E3A5F), rgb(0xFFFFFF))
                 } else {
-                    (self.ui().panel, self.ui().fg)
+                    (ribbon_blue, rgb(0xFFFFFF), rgb(0x5AA0E8))
                 };
                 div()
                     .px_2()
                     .py(px(2.))
                     .rounded_sm()
                     .border_1()
-                    .border_color(self.ui().border)
+                    .border_color(tab_border)
                     .bg(tab_bg)
                     .text_color(tab_ink)
                     .cursor_pointer()
+                    .when(active, |d| d.font_weight(FontWeight::BOLD))
                     .child(title.to_string())
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
                             if ev.click_count >= 2 {
                                 // Double-click tab header toggles ribbon collapse (B-14).
-                                this.ribbon_collapsed = !this.ribbon_collapsed;
-                                cx.notify();
+                                let to = !this.ribbon_collapsed;
+                                this.set_ribbon_collapsed(cx, to);
                             } else {
                                 this.ribbon = RibbonTab::from_id(id).unwrap_or(RibbonTab::Text);
                                 this.persist_layout_quiet();
@@ -5157,39 +6487,372 @@ impl Root {
             .flex_col()
             .gap(px(2.))
             .px(px(6.))
+            .py(px(4.))
+            .bg(rgb(0x1E6CC8))
+            .border_b_1()
+            .border_color(rgb(0x155AAD))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .gap_1()
                     .items_center()
-                    .children(tabs),
+                    .children(tabs)
+                    // VJSM parity: an explicit Hide button. Double-click
+                    // and Ctrl+F1 already collapsed, but neither is
+                    // discoverable — the original has a visible Hide affordance.
+                    .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
+                        this.set_ribbon_collapsed(cx, true);
+                    })),
             )
             .child(self.format_ribbon(ui, cx))
-            // The `Message` tab carries the alert overlay, the clock and the
-            // media transport. In 1.29 those controls live on the ribbon, not
-            // in a floating panel under the preview — which is why the control
-            // window is a clean three columns.
+            // The `Message` tab mirrors 1.29: Alert message | Clock |
+            // Countdown | Stage view | Display ribbon groups with captions
+            // below. Rarely-changed knobs (alert styling, clock designs,
+            // stage toggles, monitor/aspect/cut-scope, workspace/theme)
+            // sit behind the Settings dialog, not in the ribbon.
             .when(self.ribbon == RibbonTab::Message, |d| {
-                d.child(self.utility_ribbon(ui, cx))
-                    .child(self.live_panel(ui, cx))
+                d.child(self.message_ribbon(ui, cx))
             })
-            // The `Background` tab carries the image + video galleries
-            // (B-32): click-to-assign at the Images/Videos style level with
-            // the Luminosité steppers beside each grid.
-            .when(self.ribbon == RibbonTab::Background, |d| {
-                d.child(media_gallery::background_tab(self, ui, cx))
-            })
+            // Background groups already render inline in the ribbon
+            // (`background_ribbon`): no second panel below — the old stacked
+            // Images/Videos dropdown section is what made the tab read as
+            // empty next to 1.29's thumbnail strips.
             // The style explorer opens from the Styles-group launcher above
             // (§5.3), over whichever tab is active — it is not a tab itself.
             .when(self.show_style_explorer, |d| {
                 d.child(self.style_explorer(ui, cx))
             })
+            .into_any_element()
     }
 
     /// Utility actions formerly rendered in a custom top row. VideoPsalm keeps
     /// the window title in the OS title bar; its task-specific controls belong
     /// to a ribbon workspace, not a second title bar.
+    /// 1.29 `Message` tab (RESEARCH-weebly §§7.7–7.8, RESEARCH-org §5.3):
+    /// `Alert message | Clock | Countdown | Stage view | Display` ribbon
+    /// groups. Each group holds only the operator's live controls — text +
+    /// Display/Clear, clock Display + start/stop, countdown To + start,
+    /// stage Display + Settings, projector open/fullscreen. Everything the
+    /// operator sets once (fonts, colors, transparency, clock designs,
+    /// stage visibility toggles, monitor, aspect, workspace/theme) lives
+    /// behind the `Settings…` button (`message_settings`).
+    fn message_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let alert_on = self.alert_visible;
+        let alert_btn = if alert_on {
+            "Hide"
+        } else {
+            "Display"
+        };
+        let alert_group = group(
+            ui,
+            "Alert message",
+            vec![
+                div().w(px(220.)).child(self.alert_field.clone()),
+                btn(ui, cx, alert_btn, alert_on, |this, _, _, cx| {
+                    this.alert_visible = !this.alert_visible;
+                    // An alert on/off change is wall content: re-publish so
+                    // the room follows instead of going stale.
+                    this.republish(cx);
+                    cx.notify();
+                }),
+                btn(ui, cx, "Clear", false, |this, _, _, cx| {
+                    this.alert_visible = false;
+                    this.republish(cx);
+                    cx.notify();
+                }),
+            ],
+        );
+        let clock_group = group(
+            ui,
+            "Clock",
+            vec![
+                label(ui, &self.clock_display(), 13.),
+                btn(
+                    ui,
+                    cx,
+                    "Display",
+                    self.clock_overlay,
+                    |this, _, _, cx| {
+                        this.clock_overlay = !this.clock_overlay;
+                        if this.clock_overlay {
+                            // New clock on the wall: publish now, loop after.
+                            this.resync_clock(cx);
+                        } else {
+                            // Removing the clock is wall content too: the
+                            // tick loop's overlay-off gate is correctly
+                            // false, so without this publish the room would
+                            // keep the last clock forever.
+                            this.last_published_clock = None;
+                            this.republish(cx);
+                        }
+                        cx.notify();
+                    },
+                ),
+                btn(ui, cx, "Start", self.clock_running, |this, _, _, cx| {
+                    this.clock_start(cx);
+                }),
+                btn(ui, cx, "Stop", false, |this, _, _, cx| {
+                    this.clock_stop(cx);
+                }),
+            ],
+        );
+        let countdown_group = group(
+            ui,
+            "Countdown",
+            vec![
+                label(ui, "To", 12.),
+                div().w(px(60.)).child(self.clock_field.clone()),
+                btn(
+                    ui,
+                    cx,
+                    if self.clock_mode == ClockMode::Countdown {
+                        "Countdown: on"
+                    } else {
+                        "Countdown"
+                    },
+                    self.clock_mode == ClockMode::Countdown,
+                    |this, _, _, cx| {
+                        this.clock_mode = ClockMode::Countdown;
+                        this.resync_clock(cx);
+                        cx.notify();
+                    },
+                ),
+                btn(ui, cx, "Reset", false, |this, _, _, cx| {
+                    this.clock_reset(cx);
+                }),
+            ],
+        );
+        let stage_group = group(
+            ui,
+            "Stage view",
+            vec![
+                btn(ui, cx, "Display", self.mode == Mode::Stage, |this, _, _, cx| {
+                    this.ui_go(Mode::Stage, cx);
+                }),
+                btn(ui, cx, "Settings…", self.show_message_settings, |this, _, _, cx| {
+                    this.show_message_settings = !this.show_message_settings;
+                    cx.notify();
+                }),
+            ],
+        );
+        let display_group = group(
+            ui,
+            "Display",
+            vec![
+                btn(
+                    ui,
+                    cx,
+                    "Open projector",
+                    self.projector_window.is_some(),
+                    |this, _, _, cx| {
+                        this.open_projector(cx, false);
+                    },
+                ),
+                btn(ui, cx, "Fullscreen", false, |this, _, _, cx| {
+                    this.toggle_projector_fullscreen(cx);
+                }),
+                btn(
+                    ui,
+                    cx,
+                    if self.blank { "Unblank" } else { "Blank" },
+                    self.blank,
+                    |this, _, _, cx| {
+                        this.toggle_base(cx);
+                    },
+                ),
+                btn(
+                    ui,
+                    cx,
+                    if self.ndi.enabled { "NDI on" } else { "NDI" },
+                    self.ndi.enabled,
+                    |this, _, _, cx| {
+                        this.toggle_ndi(cx);
+                    },
+                ),
+            ],
+        );
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .items_start()
+            .min_w_0()
+            .overflow_hidden()
+            .child(alert_group)
+            .child(clock_group)
+            .child(countdown_group)
+            .child(stage_group)
+            .child(display_group)
+    }
+
+    /// Settings as a modal popup (not an inline ribbon strip): rarely-changed
+    /// knobs — alert styling, clock mode/design, stage view toggles,
+    /// projector monitor, workspace/theme/language, Edit-mode switch.
+    /// Operators set these once; the modal keeps them out of the way.
+    /// Backdrop click, `✕` and `Esc` close; clicks inside the card never
+    /// bubble out (stop propagation like the ribbon dropdowns).
+    fn message_settings(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let card = div()
+            .w(px(700.))
+            .max_w_full()
+            .bg(ui.panel)
+            .text_color(ui.fg)
+            .rounded_md()
+            .border_2()
+            .border_color(ui.accent)
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Settings".to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(btn(ui, cx, "✕ Close", false, |this, _, _, cx| {
+                        this.show_message_settings = false;
+                        cx.notify();
+                    })),
+            )
+            .child(label(ui, "Stage view · clock · alert options", 12.))
+            .child(row(vec![
+                    label(ui, "clock mode:", 12.),
+                    btn(ui, cx, "clock", self.clock_mode == ClockMode::Clock, |this, _, _, cx| {
+                        this.clock_mode = ClockMode::Clock;
+                        this.resync_clock(cx);
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "stopwatch", self.clock_mode == ClockMode::Stopwatch, |this, _, _, cx| {
+                        this.clock_mode = ClockMode::Stopwatch;
+                        this.resync_clock(cx);
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "whole-song stage", self.whole_song_stage, |this, _, _, cx| {
+                        this.whole_song_stage = !this.whole_song_stage;
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "ref header", self.whole_ref_header, |this, _, _, cx| {
+                        this.whole_ref_header = !this.whole_ref_header;
+                        cx.notify();
+                    }),
+                ]))
+            .child(row(vec![
+                    label(ui, "projector monitor:", 12.),
+                    btn(ui, cx, "Display 1", self.projector_display == 0, |this, _, _, cx| {
+                        this.set_projector_display(cx, 0);
+                    }),
+                    btn(ui, cx, "Display 2", self.projector_display == 1, |this, _, _, cx| {
+                        this.set_projector_display(cx, 1);
+                    }),
+                    btn(ui, cx, "Display 3", self.projector_display == 2, |this, _, _, cx| {
+                        this.set_projector_display(cx, 2);
+                    }),
+                    btn(ui, cx, "✖ Close projector", false, |this, _, _, cx| {
+                        this.close_projector(cx);
+                    }),
+                ]))
+            .child(row(vec![
+                    label(ui, "workspace:", 12.),
+                    btn(ui, cx, "Control", self.mode == Mode::Control, |this, _, _, cx| {
+                        this.ui_go(Mode::Control, cx);
+                    }),
+                    btn(ui, cx, "Projector", self.mode == Mode::Projector, |this, _, _, cx| {
+                        this.ui_go(Mode::Projector, cx);
+                    }),
+                    label(ui, "theme:", 12.),
+                    btn(ui, cx, "Light", self.theme_id == "light", |this, _, _, cx| {
+                        this.theme_id = "light".into();
+                        this.persist_layout_quiet();
+                        this.republish(cx);
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "Dark", self.theme_id == "dark", |this, _, _, cx| {
+                        this.theme_id = "dark".into();
+                        this.persist_layout_quiet();
+                        this.republish(cx);
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
+                        this.lang = "en".into();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
+                        this.lang = "fr".into();
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
+                        this.toggle_viewer_mode(cx);
+                    }),
+                ]))
+            .child(row(vec![
+                    label(ui, "default font size:", 12.),
+                    btn(ui, cx, "A-", false, |this, _, _, cx| {
+                        this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+                        this.mirror_font_to_style();
+                        let sz = this.font_size;
+                        this.persist_layout_quiet();
+                        this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                            v.size = Some(sz);
+                        });
+                    }),
+                    label(ui, &format!("A {}", self.font_size.round() as i32), 12.),
+                    btn(ui, cx, "A+", false, |this, _, _, cx| {
+                        this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
+                        this.mirror_font_to_style();
+                        let sz = this.font_size;
+                        this.persist_layout_quiet();
+                        this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                            v.size = Some(sz);
+                        });
+                    }),
+                ]))
+            .child(row(vec![btn(ui, cx, "Close settings", false, |this, _, _, cx| {
+                    this.show_message_settings = false;
+                    cx.notify();
+                })]));
+        // Outside-click catcher: dim full-area backdrop UNDER the card.
+        // A press outside the card lands here and dismisses (the card
+        // itself stops propagation, like the ribbon dropdowns).
+        div()
+            .absolute()
+            .left(px(0.))
+            .top(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .bg(Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.55,
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.show_message_settings = false;
+                    cx.notify();
+                }),
+            )
+            .child(card)
+    }
+
+    #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
     fn utility_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         div()
             .flex()
@@ -5234,6 +6897,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "light".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5245,6 +6910,8 @@ impl Root {
                 |this, _, _, cx| {
                     this.theme_id = "dark".into();
                     this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
                     cx.notify();
                 },
             ))
@@ -5267,7 +6934,204 @@ impl Root {
     // notation) | Colors (accent swatches) | Animation (transition selector
     // stored in the style). Text/unicode glyphs only (clean room).
 
+    /// Background tab groups matching 1.29 (Screenshot 2026-10-30 111820):
+    /// Image thumbnails + Video thumbnails + Brightness + Animation +
+    /// Aspect ratio, inline in the ribbon — not dropdown buttons that open
+    /// a panel below. Empty galleries show a one-line way in (Browse…)
+    /// so the tab never reads as broken when the library is empty.
+    fn background_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        // Image group: the compact single-row strip (real thumbnails, numbered,
+        // no filenames) + ▾ arrow into the full gallery below. The strip
+        // lives in `media_gallery` next to the panel so the two cannot
+        // disagree about filtering, pinning or assignment.
+        let image_group = group(
+            ui,
+            "Image",
+            vec![media_gallery::gallery_strip(
+                self,
+                ui,
+                cx,
+                MediaFileKind::Image,
+            )],
+        );
+        // Video group: same shape, video kinds (leading ■ sentinel
+        // unassigns back to Base).
+        let video_group = group(
+            ui,
+            "Video",
+            vec![media_gallery::gallery_strip(
+                self,
+                ui,
+                cx,
+                MediaFileKind::Video,
+            )],
+        );
+        // Brightness group: sun + steppers (Luminosité at Images level).
+        let mut bright_kids: Vec<Div> = vec![
+            btn(ui, cx, "☀ -", false, |this, _, _, cx| {
+                media_gallery::step_luminosity(this, cx, MediaFileKind::Image, -5.0);
+            }),
+            btn(ui, cx, "☀ +", false, |this, _, _, cx| {
+                media_gallery::step_luminosity(this, cx, MediaFileKind::Image, 5.0);
+            }),
+        ];
+        let _ = &mut bright_kids;
+        // Animation group: same transitions as the Text tab.
+        let mut anim_kids: Vec<Div> = Vec::new();
+        for t in transitions() {
+            let active = self.transition == t;
+            let text = match t {
+                "none" => "○ none",
+                "fade" => "◐ fade",
+                "slide" => "▸ slide",
+                "zoom" => "⊕ zoom",
+                _ => t,
+            };
+            anim_kids.push(btn(ui, cx, text, active, move |this, _, _, cx| {
+                this.set_transition(cx, t);
+            }));
+        }
+        // Website group: operator-typed page behind the lyrics. Stored as
+        // data only (offline-first — never fetched); the projector shows a
+        // titled tile and Open launches the OS browser (no web-view in
+        // gpui 0.2.2). Setting clears any file background; picking a file
+        // clears the URL (one background at a time).
+        let web_active = self.bg_kind == BackgroundKind::Website;
+        let web_url = self.bg_website.clone().unwrap_or_default();
+        let web_status = if web_active && !web_url.is_empty() {
+            format!("showing: {web_url}")
+        } else {
+            "paste a page URL, Set shows it behind the lyrics".to_string()
+        };
+        // Live web view: one toggle, invisible until wanted. Default off =
+        // today's offline tiles; on = website slides open in a hardened
+        // browser window on the projector display (loopback exempt, remote
+        // asks Allow first, dead servers keep the tile).
+        let live_on = self.live_web_on;
+        let live_pending = self.live_web_pending.clone();
+        let live_status = if !live_on {
+            "Live view off — tiles only (default).".to_string()
+        } else if let Some(u) = live_pending.as_deref() {
+            format!("Live view: remote page waiting — Allow: {u}")
+        } else {
+            "Live view on — loopback instant, remote asks first.".to_string()
+        };
+        let mut live_row = vec![btn(
+            ui,
+            cx,
+            if live_on { "Live: On" } else { "Live: Off" },
+            live_on,
+            |this, _, _, cx| {
+                this.toggle_live_web(cx);
+            },
+        )];
+        if live_pending.is_some() {
+            live_row.push(btn(ui, cx, "Allow page", false, |this, _, _, cx| {
+                this.allow_live_web(cx);
+            }));
+        }
+        let website_group = group(
+            ui,
+            "Website",
+            vec![
+                div().flex().flex_row().gap_1().items_center().child(
+                    div().flex_1().min_w(px(180.)).child(self.website_field.clone()),
+                ),
+                row(vec![
+                    btn(ui, cx, "Set", web_active, |this, _, _, cx| {
+                        this.assign_website_from_field(cx);
+                    }),
+                    btn(ui, cx, "Open", false, |this, _, _, cx| {
+                        this.open_website_background(cx);
+                    }),
+                    btn(ui, cx, "Clear", false, |this, _, _, cx| {
+                        this.clear_website_background(cx);
+                    }),
+                ]),
+                row(vec![label(ui, &web_status, 11.)]),
+                row(live_row),
+                row(vec![label(ui, &live_status, 11.)]),
+            ],
+        );
+        // Aspect ratio group: Current + 5 presets (1.29 right edge).
+        let mut aspect_kids: Vec<Div> = Vec::new();
+        for ratio in ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"] {
+            let active = self.aspect_ratio == ratio;
+            let caption = if ratio == "current" { "Current" } else { ratio };
+            aspect_kids.push(btn(ui, cx, caption, active, move |this, _, _, cx| {
+                this.aspect_ratio = ratio.to_string();
+                this.persist_layout_quiet();
+                // The room letterboxes from the published aspect: publish.
+                // (The Message-tab row is labeled preview-only: untouched.)
+                this.republish(cx);
+                cx.notify();
+            }));
+        }
+        // 1.29 single ribbon row: Image | Video | Website | Brightness |
+        // Animation | Aspect ratio side by side (wrapping on narrow windows), not
+        // stacked full-width grids. Each strip flexes with at least a
+        // 3-tile window; its own x-scroller + ◀ ▶ catch the overflow.
+        let ribbon_row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .items_start()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(320.))
+                    .min_h_0()
+                    .child(image_group),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(320.))
+                    .min_h_0()
+                    .child(video_group),
+            )
+            .child(group(ui, "Brightness", bright_kids))
+            .child(website_group)
+            .child(group(ui, &self.t("animation"), anim_kids))
+            .child(group(ui, "Aspect ratio", aspect_kids));
+        // The open gallery drops its full panel (search, captioned grid,
+        // the seven-row control stack) under the strips; picking assigns
+        // and collapses back unless pinned. The panel gets its own bounded
+        // scroller (the ribbon never scrolls): without it ~800px of chrome
+        // crushes the editor on short windows.
+        let panel_scroll = self.galleries.scroll_panel.clone();
+        match self.galleries.open {
+            Some(kind) => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(ribbon_row)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .id("gallery-panel-scroll")
+                        .overflow_y_scroll()
+                        .track_scroll(&panel_scroll)
+                        .max_h(px(460.))
+                        .child(media_gallery::gallery_panel(self, ui, cx, kind)),
+                ),
+            None => ribbon_row,
+        }
+    }
+
     fn format_ribbon(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        // 1.29 tabs own their groups (Screenshot 2026-10-30 111820): the
+        // Background tab shows Image / Video / Brightness / Animation /
+        // Aspect ratio, NOT the Text tab's Song/Styles/Font groups. The old
+        // code always rendered Text groups, so the Background tab stacked
+        // Text controls over empty dropdowns and never looked like 1.29.
+        if self.ribbon == RibbonTab::Background {
+            return self.background_ribbon(ui, cx);
+        }
         // Song group: the only group of the Text tab's left edge
         // (SCREENSHOT-1.29-LAYOUT.md §Ribbon). Song-document actions live
         // here, not buried in the editor panel.
@@ -5319,7 +7183,7 @@ impl Root {
             })
             .child("●".to_string());
         style_kids.push(row(vec![
-            btn(
+            btn_stop(
                 ui,
                 cx,
                 &style_dropdown_label(&self.style_level),
@@ -5344,18 +7208,10 @@ impl Root {
                 },
             ),
         ]));
-        if self.style_menu_open {
-            for level in style_levels() {
-                let active = self.style_level == level;
-                let text = format!("◈ {level}");
-                style_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
-                    this.style_level = level.into();
-                    this.style_menu_open = false;
-                    this.persist_layout_quiet();
-                    cx.notify();
-                }));
-            }
-        }
+        // The 8 style levels live in the floating overlay menu
+        // (`dropdown_overlay`), NOT inline here: inline expansion shoved
+        // the ribbon taller and dumped text down the page instead of
+        // behaving like the 1.29 dropdown.
         // Preset row: quick-pick cascade glyphs setting the same level as
         // the dropdown (UX-RESEARCH §4.2: `Base / Songbooks / Song / Verse`),
         // so the row can never disagree with it.
@@ -5400,7 +7256,7 @@ impl Root {
         // curated `font_families` remain the fallback when the platform
         // reports nothing (headless CI) and the font-safety reference.
         let mut font_kids: Vec<Div> = Vec::new();
-        font_kids.push(btn(
+        font_kids.push(btn_stop(
             ui,
             cx,
             &format!("▾ {}", self.font_family),
@@ -5424,46 +7280,9 @@ impl Root {
                 cx.notify();
             },
         ));
-        if self.font_menu_open {
-            font_kids.push(div().flex_1().child(self.font_filter_field.clone()));
-            let q = self.font_filter.to_lowercase();
-            let all: Vec<String> = self.system_fonts.clone().unwrap_or_default();
-            const FONT_CAP: usize = 40;
-            let mut shown = 0usize;
-            let mut matched = 0usize;
-            for fam in &all {
-                if !q.is_empty() && !fam.to_lowercase().contains(q.as_str()) {
-                    continue;
-                }
-                matched += 1;
-                if shown >= FONT_CAP {
-                    continue;
-                }
-                shown += 1;
-                let active = *fam == self.font_family;
-                let name = fam.clone();
-                let caption = name.clone();
-                font_kids.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
-                    this.font_family = name.clone();
-                    this.font_menu_open = false;
-                    this.mirror_font_to_style();
-                    this.persist_layout_quiet();
-                    cx.notify();
-                }));
-            }
-            font_kids.push(label(
-                ui,
-                &format!(
-                    "{matched} font(s){}",
-                    if matched > shown {
-                        format!(" — showing {shown}, type to narrow")
-                    } else {
-                        String::new()
-                    }
-                ),
-                11.,
-            ));
-        }
+        // The 40-item font list lives in the floating overlay menu
+        // (`dropdown_overlay`), NOT inline here: inline expansion dumped up
+        // to 40 rows of font names down the ribbon.
         // Projector lyric size (WI-026): step the base size; everything
         // projected scales from it (preview proportionally).
         font_kids.push(label(
@@ -5474,29 +7293,39 @@ impl Root {
         font_kids.push(btn(ui, cx, "A-", false, |this, _, _, cx| {
             this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
-            this.persist_layout_quiet();
-            cx.notify();
+            let sz = this.font_size;
+            this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                v.size = Some(sz);
+            });
         }));
         font_kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
             this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
-            this.persist_layout_quiet();
-            cx.notify();
+            let sz = this.font_size;
+            this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                v.size = Some(sz);
+            });
         }));
         font_kids.push(btn(ui, cx, "B", self.bold, |this, _, _, cx| {
             this.bold = !this.bold;
-            this.persist_layout_quiet();
-            cx.notify();
+            let on = this.bold;
+            this.write_style_attr(cx, if on { "Bold on" } else { "Bold off" }, move |v| {
+                v.bold = Some(on);
+            });
         }));
         font_kids.push(btn(ui, cx, "I", self.italic, |this, _, _, cx| {
             this.italic = !this.italic;
-            this.persist_layout_quiet();
-            cx.notify();
+            let on = this.italic;
+            this.write_style_attr(cx, if on { "Italic on" } else { "Italic off" }, move |v| {
+                v.italic = Some(on);
+            });
         }));
         font_kids.push(btn(ui, cx, "U", self.underline, |this, _, _, cx| {
             this.underline = !this.underline;
-            this.persist_layout_quiet();
-            cx.notify();
+            let on = this.underline;
+            this.write_style_attr(cx, if on { "Underline on" } else { "Underline off" }, move |v| {
+                v.underline = Some(on);
+            });
         }));
         for (glyph, want) in [
             ("≡", Align::Left),
@@ -5513,8 +7342,9 @@ impl Root {
             font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
                 this.align = want;
                 this.mirror_font_to_style();
-                this.persist_layout_quiet();
-                cx.notify();
+                this.write_style_attr(cx, &format!("Align {}", label.to_lowercase()), move |v| {
+                    v.align = Some(want.literal().to_string());
+                });
             }));
         }
         // Vertical placement of the lyric block in its frame (WI-021):
@@ -5534,8 +7364,9 @@ impl Root {
             font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
                 this.valign = want;
                 this.mirror_font_to_style();
-                this.persist_layout_quiet();
-                cx.notify();
+                this.write_style_attr(cx, &format!("Vertical align {}", want.literal()), move |v| {
+                    v.v_align = Some(want.literal().to_string());
+                });
             }));
         }
         // Lyric text color (WI-024): preset swatches + Auto (theme). The
@@ -5549,8 +7380,9 @@ impl Root {
             font_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.fg_override = Some(sw.into());
                 this.mirror_font_to_style();
-                this.persist_layout_quiet();
-                cx.notify();
+                this.write_style_attr(cx, &format!("Colour {sw}"), move |v| {
+                    v.color = Some(sw.to_string());
+                });
             }));
         }
         font_kids.push(btn(
@@ -5561,8 +7393,10 @@ impl Root {
             |this, _, _, cx| {
                 this.fg_override = None;
                 this.mirror_font_to_style();
-                this.persist_layout_quiet();
-                cx.notify();
+                // Auto = no local colour: remove the leaf so it re-inherits.
+                this.write_style_attr(cx, "Colour auto (inherits)", move |v| {
+                    v.color = None;
+                });
             },
         ));
         font_kids.push(btn(
@@ -5593,6 +7427,8 @@ impl Root {
             color_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.accent_override = Some(sw.into());
                 this.persist_layout_quiet();
+                // Accent tints the wall snapshot: publish with it.
+                this.republish(cx);
                 cx.notify();
             }));
         }
@@ -5604,6 +7440,7 @@ impl Root {
             |this, _, _, cx| {
                 this.accent_override = None;
                 this.persist_layout_quiet();
+                this.republish(cx);
                 cx.notify();
             },
         ));
@@ -5645,11 +7482,16 @@ impl Root {
                 cx.notify();
             }),
         ];
-        div()
+        // Single scroll-free row that wraps on narrow windows: every group
+        // stays reachable without hiding controls behind a scroller.
+        let ribbon_groups = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_2()
             .items_start()
+            .min_w_0()
+            .overflow_hidden()
             .child(group(ui, "New / Import", vec![
                 btn_tip(
                     ui,
@@ -5688,7 +7530,8 @@ impl Root {
             .child(group(ui, &self.t("font"), font_kids))
             .child(group(ui, "Slide layout", layout_kids))
             .child(group(ui, &self.t("colors"), color_kids))
-            .child(group(ui, &self.t("animation"), anim_kids))
+            .child(group(ui, &self.t("animation"), anim_kids));
+        ribbon_groups
     }
 
     /// Style explorer tree (DoD #6) — hook: delegates to `style_explorer.rs`,
@@ -5746,62 +7589,241 @@ impl Root {
     ///
     /// Our previous build had the editor **and** the slides stacked in one
     /// centre column with a third preview column, which is not the 1.29 layout.
+    /// Floating overlay for the ribbon dropdowns (Styles level + Font
+    /// family): a real dropdown — one panel floating over the content,
+    /// outside-click or Escape dismisses — instead of inline expansion that
+    /// shoved the ribbon taller and dumped text down the page. Painted as a
+    /// later sibling of the content (inside control_view's relative
+    /// wrapper), so it floats above. Presses inside stop propagation so
+    /// the root outside-click dismiss never fires for menu interaction.
+    fn dropdown_overlay(&mut self, ui: &UI, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.style_menu_open && !self.font_menu_open {
+            return None;
+        }
+        // Outside-click catcher: transparent, full-area, UNDER the panels
+        // (earlier sibling). Any press outside a panel bubbles here and
+        // dismisses — real dropdown behavior.
+        let mut layer = div()
+            .absolute()
+            .left(px(0.))
+            .top(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.dismiss_popups(cx);
+            }),
+        );
+        if self.style_menu_open {
+            let mut items: Vec<Div> = Vec::new();
+            for level in style_levels() {
+                let active = self.style_level == level;
+                let text = format!("◈ {level}");
+                items.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
+                    this.style_level = level.into();
+                    this.style_menu_open = false;
+                    this.persist_layout_quiet();
+                    cx.notify();
+                }));
+            }
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(210.))
+                    .top(px(4.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p(px(6.))
+                    .rounded_md()
+                    .bg(ui.panel)
+                    .border_1()
+                    .border_color(ui.engaged)
+                    .shadow_lg()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .children(items),
+            );
+        }
+        if self.font_menu_open {
+            let mut items: Vec<Div> = vec![
+                div()
+                    .flex_1()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .child(self.font_filter_field.clone()),
+            ];
+            let q = self.font_filter.to_lowercase();
+            let all: Vec<String> = self.system_fonts.clone().unwrap_or_default();
+            const FONT_CAP: usize = 40;
+            let mut shown = 0usize;
+            let mut matched = 0usize;
+            for fam in &all {
+                if !q.is_empty() && !fam.to_lowercase().contains(q.as_str()) {
+                    continue;
+                }
+                matched += 1;
+                if shown >= FONT_CAP {
+                    continue;
+                }
+                shown += 1;
+                let active = *fam == self.font_family;
+                let name = fam.clone();
+                let caption = name.clone();
+                items.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
+                    this.font_family = name.clone();
+                    this.font_menu_open = false;
+                    this.mirror_font_to_style();
+                    let fam = name.clone();
+                    let label = format!("Font {fam}");
+                    this.write_style_attr(cx, &label, move |v| {
+                        v.font = Some(fam.clone());
+                    });
+                }));
+            }
+            items.push(label(
+                ui,
+                &format!(
+                    "{matched} font(s){}",
+                    if matched > shown {
+                        format!(" — showing {shown}, type to narrow")
+                    } else {
+                        String::new()
+                    }
+                ),
+                11.,
+            ));
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(500.))
+                    .top(px(4.))
+                    .w(px(340.))
+                    .max_h(px(420.))
+                    .id("font-menu-scroll")
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p(px(6.))
+                    .rounded_md()
+                    .bg(ui.panel)
+                    .border_1()
+                    .border_color(ui.engaged)
+                    .shadow_lg()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .children(items),
+            );
+        }
+        Some(layer)
+    }
+
     /// Viewer mode drops the centre editor entirely and reflows to two columns.
     fn control_view(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
         // Slides panel with the command strip immediately to its right — the
         // strip acts on the slide list, so it belongs beside it, and in 1.29
         // the strip's buttons are **circles**, not bordered squares.
-        let slides_and_commands = div()
+        // Slides list only. The command strip is NOT in this row: when it
+        // shared the slides row's height, a tall preview squeezed the row
+        // and vertically clipped the round buttons (the reported bug — the
+        // strip showed 3-4 buttons then cut off). The strip now stands as a
+        // full-height column beside slides+preview, so it can never be cut
+        // by either panel's share of vertical space.
+        let slides_wrap = div()
             .flex()
-            .flex_row()
-            .gap_1()
+            .flex_col()
             .flex_1()
+            .min_w_0()
             .min_h_0()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(self.slides_panel(ui, cx)),
-            )
-            .child(self.tool_strip_panel(ui, cx));
+            .overflow_hidden()
+            .child(self.slides_panel(ui, cx));
+        let tool_strip = self.tool_strip_panel(ui, cx);
 
+        // Viewport-relative clamp: persisted widths can sum past a narrow
+        // window (left + center-min + right > vw), which pushed the right
+        // column — and the tool strip at its edge — off-screen. Each side
+        // column is capped at 32% of the viewport so all three columns plus
+        // the fixed 44px strip always fit; the center absorbs the rest.
+        let left_w = self.left_w.min((vw * 0.32).max(180.0));
+        let right_w = self.right_w.min((vw * 0.32).max(220.0));
         let left = div()
             .flex()
             .flex_col()
             .gap_2()
-            .w(px(360.))
+            .w(px(left_w))
+            .flex_none()
             .min_h_0()
-            .child(self.agenda_panel(ui, cx))
-            .child(div().flex_1().min_h_0().child(self.browser_panel(ui, cx)));
+            .overflow_hidden()
+            // Agenda caps at ~360px so the song/Bible browser below keeps a
+            // usable viewport: both panels were flex_1, splitting the column
+            // 50/50 and squeezing the songs list to ~50px (the "not
+            // scrollable / feels bad" complaint — the list scrolled, but its
+            // window was two rows tall). A short agenda fits content; a long
+            // one scrolls inside the cap. Dragging the divider below pins a
+            // fixed height instead (`agenda_h`), persisted like the widths.
+            .child(self.agenda_wrap(ui, cx))
+            .child(self.hdivider(ui, cx, 0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.browser_panel(ui, cx)),
+            );
 
         if self.viewer_mode {
-            return div()
+            let mut v = div()
                 .flex()
                 .flex_row()
                 .gap_2()
                 .flex_1()
                 .p(px(6.))
                 .overflow_hidden()
+                .relative()
                 .child(left)
                 .child(
                     div()
                         .flex()
-                        .flex_col()
+                        .flex_row()
                         .gap_2()
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
-                        .child(slides_and_commands)
-                        .child(self.preview_big_panel(ui, cx, vw, vh))
-                        // Contextual help (`F1`): on demand under the slide
-                        // side, never a permanent third of the slide panel.
-                        .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .flex_1()
+                                .min_w_0()
+                                .min_h_0()
+                                .overflow_hidden()
+                                .child(slides_wrap)
+                                .child(self.preview_big_panel(ui, cx, vw, vh))
+                                // Contextual help (`F1`): on demand under the slide
+                                // side, never a permanent third of the slide panel.
+                                .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                        )
+                        .child(tool_strip)
                 );
+            if let Some(layer) = self.dropdown_overlay(ui, cx) {
+                v = v.child(layer);
+            }
+            return v;
         }
 
-        div()
+        let mut root = div()
             .flex()
             .flex_row()
             .gap_2()
@@ -5809,7 +7831,26 @@ impl Root {
             .min_h_0()
             .p(px(6.))
             .overflow_hidden()
+            .relative()
+            .on_drag_move::<ColSplit>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<ColSplit>, _win, cx| {
+                    this.col_move(cx, f32::from(ev.event.position.x));
+                },
+            ))
+            .on_drag_move::<RowSplit>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<RowSplit>, _win, cx| {
+                    this.row_move(cx, f32::from(ev.event.position.y));
+                },
+            ))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    this.col_end(cx);
+                    this.row_end(cx);
+                }),
+            )
             .child(left)
+            .child(self.divider(ui, cx, 0))
             // Centre: the song editor, full height. min_w_0 is load-
             // bearing: without it the flex default (min-width:auto) lets
             // long slide/editor rows push the right column — and the
@@ -5824,21 +7865,62 @@ impl Root {
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
             )
-            // Right: slides + strip above, preview below.
+            // Right: slides above, preview below (split by a draggable
+            // divider), command strip full-height at the panel's edge.
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_2()
-                    .w(px(560.))
+                    .flex_row()
+                    .gap_1()
+                    .w(px(right_w))
+                    .flex_none()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(slides_and_commands)
-                    .child(self.preview_big_panel(ui, cx, vw, vh))
-                    // Contextual help (`F1`): on demand under the slide
-                    // side, never a permanent third of the slide panel.
-                    .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(slides_wrap)
+                            .child(self.hdivider(ui, cx, 1))
+                            .child(self.preview_wrap(ui, cx, vw, vh))
+                            // Contextual help (`F1`): on demand under the slide
+                            // side, never a permanent third of the slide panel.
+                            .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
+                    )
+                    .child(tool_strip)
             )
+            .child(self.divider(ui, cx, 1));
+        if let Some(layer) = self.dropdown_overlay(ui, cx) {
+            root = root.child(layer);
+        }
+        root
+    }
+
+    /// Agenda wrapper: automatic (content up to the 360 px cap) until the
+    /// operator drags the divider below it, then the pinned height.
+    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        wrap = match self.agenda_h {
+            Some(h) => wrap.h(px(h)),
+            None => wrap.flex_none().max_h(px(360.)),
+        };
+        wrap.child(self.agenda_panel(ui, cx))
+    }
+
+    /// Preview wrapper: automatic (content-sized) until the operator drags
+    /// the divider above it, then the pinned height (letterboxed inside).
+    fn preview_wrap(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
+        let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        wrap = match self.preview_h {
+            Some(h) => wrap.h(px(h)),
+            None => wrap.flex_none(),
+        };
+        wrap.child(self.preview_big_panel(ui, cx, vw, vh))
     }
 
     /// LEFT-top agenda panel: items with kind badges + add / save /
@@ -5847,7 +7929,9 @@ impl Root {
     /// slides panel.
     fn agenda_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let mut rows: Vec<Div> = Vec::new();
-        // No cap: the original shows every agenda item and scrolls.
+        // No per-row cap: every agenda item is rendered. The panel wrapper
+        // caps the whole list at 360px (see `left` in `control_view`), so a
+        // long agenda scrolls inside that cap and a short one fits content.
         for (idx, item) in self.agenda.items.iter().enumerate() {
             let selected = self.sel_item == Some(idx);
             let live = self.live_item == Some(idx);
@@ -5928,7 +8012,7 @@ impl Root {
                     .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(if live { ui.selection } else { ui.bg })
+                    .bg(if live { ui.selection } else { ui.panel })
                     .text_color(if live { ui.selection_ink } else { ui.fg })
                     .cursor_pointer()
                     .child(title_cell)
@@ -6047,7 +8131,13 @@ impl Root {
                 .text_size(px(11.))
                 .child("▾".to_string());
             if enabled {
-                b = b.cursor_pointer().on_mouse_up(
+                b = b
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
+                    .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(move |this, _, _w, cx| {
                         if this.rail_menu.as_deref() == Some(action) {
@@ -6240,6 +8330,8 @@ impl Root {
                 .overflow_hidden()
                 .child(
                     div()
+                        .flex()
+                        .flex_col()
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
@@ -6258,7 +8350,7 @@ impl Root {
     /// number grid with highlighted selection).
     fn browser_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let songs_active = self.left_tab == LeftTab::Songs;
-        let mut kids: Vec<Div> = vec![row(vec![
+        let mut kids: Vec<Div> = vec![row_wrap(vec![
             btn(
                 ui,
                 cx,
@@ -6299,13 +8391,13 @@ impl Root {
         if songs_active {
             // LAYOUT.md / song-search-box.png: magnifier + scope `▾` at the
             // LEFT inside the box, clear `✕` at the right.
-            kids.push(row(vec![
+            kids.push(row_wrap(vec![
                 label(ui, "⌕", 14.),
                 btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
                     this.show_scope_grid = !this.show_scope_grid;
                     cx.notify();
                 }),
-                div().flex_1().child(self.search_field.clone()),
+                div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
                 btn(ui, cx, "×", false, |this, _, _, cx| {
                     this.search_field
                         .update(cx, |field, cx| field.set_text("", cx));
@@ -6315,25 +8407,34 @@ impl Root {
             if self.show_scope_grid {
                 kids.push(self.search_scope_panel(ui, cx));
             }
-            // The book groups live in their own capped scroller (WI-033):
-            // with many songbooks the fixed rows used to eat the whole
-            // panel and squeeze the songs list to zero height — now the
-            // groups scroll in ~5 rows and the songs always keep space.
+            // Single scroller for books + songs: the old split (capped book
+            // box + nested Songs section) squeezed the song list to zero
+            // height on short windows, so scoped songs were unreachable.
+            // One scroll region always reaches every row, like the Bibles
+            // browser below.
+            let mut body: Vec<Div> = Vec::new();
+            body.extend(self.songbook_rows(ui, cx));
+            body.extend(self.songs_browser(ui, cx));
             kids.push(
-                div().flex().flex_col().flex_none().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .min_h_0()
-                        .id("scroll:songbooks")
-                        .max_h(px(150.))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll_songbooks)
-                        .children(self.songbook_rows(ui, cx)),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .flex_1()
+                            .min_h_0()
+                            .id("scroll:songs")
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_songs)
+                            .children(body),
+                    ),
             );
-            kids.extend(self.songs_browser(ui, cx));
         } else {
             // Vendor 3-state magnifier (bible-search-mode-toggle.png,
             // bible-translation-tabs.png): reference -> keyword ->
@@ -6345,7 +8446,7 @@ impl Root {
             } else {
                 "Select verses by their reference"
             };
-            kids.push(row(vec![
+            kids.push(row_wrap(vec![
                 btn_tip(
                     ui,
                     cx,
@@ -6356,14 +8457,37 @@ impl Root {
                         this.cycle_bible_search(cx);
                     },
                 ),
-                div().flex_1().child(self.search_field.clone()),
+                div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
                 btn(ui, cx, "×", false, |this, _, _, cx| {
                     this.search_field
                         .update(cx, |field, cx| field.set_text("", cx));
                     this.apply_bible_search("", cx);
                 }),
             ]));
-            kids.extend(self.bible_browser(ui, cx));
+            // The whole picker (translations + import + books/chapters +
+            // verses) is taller than the panel: it scrolls as one, like the
+            // songs list, with its own handle so song scrolling is undisturbed.
+            let bible_rows = self.bible_browser(ui, cx);
+            kids.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .flex_1()
+                            .min_h_0()
+                            .id("scroll:bible-browser")
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_bible_browser)
+                            .children(bible_rows),
+                    ),
+            );
         }
         section(ui, &self.t("browser"), kids)
     }
@@ -6457,9 +8581,11 @@ impl Root {
         let mut header = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap_1()
             .items_center()
             .px_1()
+            .min_w_0()
             .text_size(px(12.))
             .text_color(ui.accent)
             .child("▤ songbooks")
@@ -6587,14 +8713,20 @@ impl Root {
             div()
                 .px_1()
                 .rounded_sm()
-                .bg(if selected { ui.selection } else { ui.bg })
+                .bg(if selected { ui.selection } else { ui.panel })
                 .text_color(if selected { ui.selection_ink } else { ui.fg })
                 .cursor_pointer()
                 .child(title)
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.select_song(cx, i);
+                    cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
+                        // Double-click plays the song NOW (no agenda
+                        // detour): single click only selects, like before.
+                        if ev.click_count >= 2 {
+                            this.play_browser_song(cx, i);
+                        } else {
+                            this.select_song(cx, i);
+                        }
                         this.focus_root(window);
                     }),
                 ),
@@ -6659,11 +8791,16 @@ impl Root {
             0 => self.t("no_results"),
             n => format!("{} match(es)", n),
         };
-        vec![section_scrolled(
-            ui,
-            &self.t("songs"),
-            vec![
-                label(ui, &hint, 12.),
+        // Flat rows: the caller (`browser_panel`) puts these in the single
+        // books+songs scroller, so everything stays reachable on short
+        // windows (no nested fixed header squeezing the list to zero).
+        let mut out = vec![
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(ui.accent)
+                .child(format!("▤ {} ▤", self.t("songs"))),
+            label(ui, &hint, 12.),
                 row_wrap(vec![
                     btn_tip(
                         ui,
@@ -6736,8 +8873,7 @@ impl Root {
                             this.import_songbook_file(cx);
                         },
                     ),
-                    // Pager: wheel scrolls, but nothing on screen says so —
-                    // these always move the list (WI-031).
+                    // Pager (WI-031): wheel scrolls, but nothing on screen says so.
                     btn_tip(
                         ui,
                         cx,
@@ -6763,16 +8899,116 @@ impl Root {
                         },
                     ),
                 ]),
-            ],
-            rows,
-            &self.scroll_songs,
-            "scroll:songs",
-        )]
+        ];
+        out.extend(rows);
+        out
     }
 
     /// Bible picker: translation badge + switch, bilingual + favorites,
     /// Old/New Testament toggle, book list, chapter number grid, verse
     /// range field with chapter steppers.
+    /// One collapsible Bibles-browser section: `▾/▸ Title` header plus the
+    /// body rows when open. Disclosure state lives in `bible_sec_*` (session
+    /// only, like `agenda_file_open`).
+    fn bible_disclosure(
+        &mut self,
+        ui: &UI,
+        cx: &mut Context<Root>,
+        title: &str,
+        open: bool,
+        which: &'static str,
+        body: Vec<Div>,
+    ) -> Div {
+        let arrow = if open { "\u{25be}" } else { "\u{25b8}" };
+        let mut kids = vec![row(vec![
+            btn(ui, cx, arrow, open, move |this, _, _, cx| {
+                match which {
+                    "trans" => this.bible_sec_trans = !this.bible_sec_trans,
+                    "import" => this.bible_sec_import = !this.bible_sec_import,
+                    _ => this.bible_sec_pick = !this.bible_sec_pick,
+                }
+                cx.notify();
+            }),
+            label(ui, title, 12.),
+        ])];
+        if open {
+            kids.extend(body);
+        }
+        div().flex().flex_col().gap_1().children(kids)
+    }
+
+    /// Keyword/phrase results list for the Bibles browser: the empty-state
+    /// line when a real query matches nothing, else the hit-count hint plus
+    /// the bounded hit scroller. Clicking a hit adopts it as the current
+    /// reference and returns to reference mode. Every hit renders inside a
+    /// bounded scroller (R-6): the old `.take(30)` silently dropped matches
+    /// past 30. Row text is pure (`ux::bible_hit_rows`, unit-tested).
+    fn bible_hits_list(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
+        if ux::keyword_empty_message(
+            self.search_field.read(cx).text().trim().is_empty(),
+            self.bible_hits.is_empty(),
+        )
+        .is_some()
+        {
+            return vec![label(ui, "No Bible verse found.", 12.)];
+        }
+        let mut list = vec![label(
+            ui,
+            &format!(
+                "🔍 {} keyword match(es) — click one, or 🔍 to go back",
+                self.bible_hits.len()
+            ),
+            12.,
+        )];
+        let rows = bible_hit_rows(&self.bible_hits);
+        let mut hits: Vec<Div> = Vec::new();
+        for (hit, (reference, snippet)) in self.bible_hits.clone().into_iter().zip(rows) {
+            hits.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .px_1()
+                    .rounded_sm()
+                    .text_size(px(12.))
+                    .bg(ui.panel)
+                    .child(div().text_color(ui.accent).child(reference))
+                    .child(div().flex_1().child(snippet))
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.pick_bible_hit(&hit, cx);
+                            this.focus_root(window);
+                        }),
+                    ),
+            );
+        }
+        // Bounded scroller with a stable id, like every other panel list:
+        // a fresh id per frame would reset the scroll offset on re-render.
+        list.push(
+            div()
+                .flex()
+                .flex_col()
+                .min_h(px(48.))
+                .max_h(px(280.))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .flex_1()
+                        .min_h_0()
+                        .id("scroll:bible-hits")
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll_bible_hits)
+                        .children(hits),
+                ),
+        );
+        list
+    }
+
     fn bible_browser(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
         // Translation badge + one-click switch.
         let mut ids: Vec<String> = self.bibles.translations().keys().cloned().collect();
@@ -6873,7 +9109,7 @@ impl Root {
                 div()
                     .px_1()
                     .rounded_sm()
-                    .bg(if active { ui.selection } else { ui.bg })
+                    .bg(if active { ui.selection } else { ui.panel })
                     .text_color(if active { ui.selection_ink } else { ui.fg })
                     .cursor_pointer()
                     .child(title)
@@ -6928,12 +9164,28 @@ impl Root {
                 },
             ),
         ];
-        let mut out = vec![
+        // Keyword hunt with a real query: the results take over the picker,
+        // like the original. This also keeps the empty-state line visible in
+        // a short panel instead of buried under the book/chapter/verse grids.
+        if self.bible_search == BibleSearch::Keyword
+            && !self.search_field.read(cx).text().trim().is_empty()
+        {
+            let mut res = vec![row(trans_row)];
+            res.extend(self.bible_hits_list(ui, cx));
+            return res;
+        }
+        let trans_open = self.bible_sec_trans;
+        let import_open = self.bible_sec_import;
+        let pick_open = self.bible_sec_pick;
+        let trans_body = vec![
             row(trans_row),
+            row(fav_row),
+        ];
+        let import_body = vec![
             row(import_row),
             row(vec![label(ui, import_hint, 11.)]),
-            row(fav_row),
-            row(vec![
+        ];
+        let mut pick_body = vec![row(vec![
                 btn(
                     ui,
                     cx,
@@ -6965,13 +9217,13 @@ impl Root {
                         this.project_bible_now(cx);
                     },
                 ),
-            ]),
-            row(vec![label(
-                ui,
-                "Pick book → chapter → verses, then Project ⏵.",
-                11.,
-            )]),
-            row(vec![
+            ])];
+        pick_body.push(row(vec![label(
+            ui,
+            "Pick book → chapter → verses, then Project ⏵.",
+            11.,
+        )]));
+        pick_body.push(row(vec![
                 btn(ui, cx, &self.t("old_testament"), ot, |this, _, _, cx| {
                     this.testament = Testament::OT;
                     cx.notify();
@@ -6980,7 +9232,8 @@ impl Root {
                     this.testament = Testament::NT;
                     cx.notify();
                 }),
-            ]),
+            ]));
+        pick_body.push(
             div()
                 .flex()
                 .flex_row()
@@ -7020,7 +9273,8 @@ impl Root {
                         .overflow_y_scroll()
                         .children(grid),
                 ),
-            row(vec![
+        );
+        pick_body.push(row(vec![
                 btn(ui, cx, "-ch", false, |this, _, _, cx| {
                     this.chapter = this.chapter.saturating_sub(1).max(1);
                     this.rebuild_biref_with_verses(cx, None);
@@ -7038,8 +9292,7 @@ impl Root {
                     this.persist_layout_quiet();
                     cx.notify();
                 }),
-            ]),
-        ];
+            ]));
         // Verse number grid (B-10/B-29): clickable numbers, Shift/Ctrl multi-select.
         {
             let book_name = BOOKS
@@ -7067,7 +9320,7 @@ impl Root {
             if vgrid.is_empty() {
                 vgrid.push(label(ui, "(?)", 12.));
             }
-            out.push(
+            pick_body.push(
                 div()
                     .flex()
                     .flex_col()
@@ -7087,79 +9340,13 @@ impl Root {
                     ),
             );
         }
-        // Keyword/phrase results, listed instantly as you type. Clicking one
-        // adopts it as the current reference and returns to reference mode.
-        // Every hit renders inside a bounded scroller (R-6): the old
-        // `.take(30)` silently dropped matches past 30. A real query with no
-        // hits says so (`bible-search-mode-toggle.png`).
-        if self.bible_search == BibleSearch::Keyword
-            && ux::keyword_empty_message(
-                self.search_field.read(cx).text().trim().is_empty(),
-                self.bible_hits.is_empty(),
-            )
-            .is_some()
-        {
-            out.push(label(ui, "No Bible verse found.", 12.));
-        }
-        if self.bible_search == BibleSearch::Keyword && !self.bible_hits.is_empty() {
-            out.push(label(
-                ui,
-                &format!(
-                    "🔍 {} keyword match(es) — click one, or 🔍 to go back",
-                    self.bible_hits.len()
-                ),
-                12.,
-            ));
-            // Row text is pure (`ux::bible_hit_rows`, unit-tested: N hits in
-            // → N rows out); only the click wrapper needs the GPUI context.
-            let rows = bible_hit_rows(&self.bible_hits);
-            let mut hits: Vec<Div> = Vec::new();
-            for (hit, (reference, snippet)) in self.bible_hits.clone().into_iter().zip(rows) {
-                hits.push(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .px_1()
-                        .rounded_sm()
-                        .text_size(px(12.))
-                        .bg(ui.bg)
-                        .child(div().text_color(ui.accent).child(reference))
-                        .child(div().flex_1().child(snippet))
-                        .cursor_pointer()
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                this.pick_bible_hit(&hit, cx);
-                                this.focus_root(window);
-                            }),
-                        ),
-                );
-            }
-            // Bounded scroller with a stable id, like every other panel list:
-            // a fresh id per frame would reset the scroll offset on re-render.
-            out.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_h(px(48.))
-                    .max_h(px(280.))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(1.))
-                            .flex_1()
-                            .min_h_0()
-                            .id("scroll:bible-hits")
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll_bible_hits)
-                            .children(hits),
-                    ),
-            );
-        }
-        out
+        // The three picker groups are collapsible disclosures so the operator
+        // can hide what they are not using.
+        vec![
+            self.bible_disclosure(ui, cx, "Translations", trans_open, "trans", trans_body),
+            self.bible_disclosure(ui, cx, "Import translation", import_open, "import", import_body),
+            self.bible_disclosure(ui, cx, "Pick a passage", pick_open, "pick", pick_body),
+        ]
     }
 
     /// CENTER slides panel for the selected agenda item, driven by the
@@ -7171,6 +9358,29 @@ impl Root {
     /// Every slide keeps its footer ref line (translation / authors).
     fn slides_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let target = self.sel_item.or(self.live_item);
+        // Which song (if any) the agenda target points at; Bible and other
+        // targets keep the panel regardless of the library selection.
+        let agenda_target = target
+            .and_then(|ti| self.agenda.items.get(ti))
+            .map(|it| match &it.reference {
+                ItemRef::Song { song_id } => ux::AgendaTarget::Song {
+                    song_id: song_id.clone(),
+                },
+                _ => ux::AgendaTarget::Other,
+            });
+        let sel_id = self
+            .sel_song
+            .and_then(|si| self.songs.get(si))
+            .map(|s| s.id.clone());
+        // The editor already follows the browser selection: when it names a
+        // different song than the agenda target (or there is no target),
+        // the panel renders that song transiently instead of a stale agenda
+        // item — editor and slides never show two different songs.
+        if ux::library_preview_wins(sel_id.as_deref(), agenda_target.as_ref()) {
+            if let Some(si) = self.sel_song {
+                return self.library_song_panel(ui, cx, si);
+            }
+        }
         let Some(item_idx) = target else {
             return section(
                 ui,
@@ -7268,6 +9478,206 @@ impl Root {
         )
     }
 
+    /// Display slides for a library song outside the agenda (transient
+    /// `browser:{song}` item, full song — shared by the browser panel rows
+    /// and click-to-project so both see the same list).
+    fn browser_song_slides(&self, si: usize) -> Vec<Slide> {
+        let Some(song) = self.songs.get(si) else {
+            return Vec::new();
+        };
+        let transient = AgendaItem {
+            id: format!("browser:{}", song.id),
+            kind: ItemKind::Song,
+            title: song.title.clone(),
+            reference: ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+            flow_type: FlowType::Default,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let header_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.header.template.as_str())
+            .filter(|t| !t.is_empty());
+        let footer_tpl = self
+            .agenda
+            .settings
+            .style
+            .as_ref()
+            .map(|s| s.footer.template.as_str())
+            .filter(|t| !t.is_empty());
+        compute_item_slides_templated(
+            &transient,
+            &self.song_map(),
+            &self.bibles,
+            &self.opts(),
+            true,
+            self.whole_ref_header,
+            header_tpl,
+            footer_tpl,
+        )
+    }
+
+    /// Transient preview of a library song that is NOT the agenda target:
+    /// same rows as [`Self::song_blocks`] (checkbox, letter badge, wrapped
+    /// text) so the slides panel stays in step with the editor while
+    /// browsing. Checkbox state is keyed under a `browser:{song}` id so it
+    /// never collides with real agenda items; clicking a row adds the song
+    /// when absent and projects that slide. The live row highlights when
+    /// the live item is this same song.
+    fn library_song_panel(&mut self, ui: &UI, cx: &mut Context<Root>, si: usize) -> Div {
+        let Some(song) = self.songs.get(si).cloned() else {
+            return section(ui, &self.t("slides"), vec![label(ui, "(no verses)", 13.)]);
+        };
+        let transient = AgendaItem {
+            id: format!("browser:{}", song.id),
+            kind: ItemKind::Song,
+            title: song.title.clone(),
+            reference: ItemRef::Song {
+                song_id: song.id.clone(),
+            },
+            flow_type: FlowType::Default,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let slides = self.browser_song_slides(si);
+        if slides.is_empty() {
+            return section(ui, &self.t("slides"), vec![label(ui, "(no verses)", 13.)]);
+        }
+        let book = library::list_songbooks(&self.db)
+            .unwrap_or_default()
+            .iter()
+            .find(|b| b.id == song.songbook_id)
+            .map(|b| b.name.clone())
+            .filter(|n| !n.is_empty())
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        let title = format!("♪ {}{}", song.title, book);
+        let tags: std::collections::HashMap<String, String> = song
+            .verses
+            .iter()
+            .map(|v| {
+                let tag = v
+                    .lines
+                    .first()
+                    .map(|l| l.trim())
+                    .filter(|l| {
+                        !l.is_empty() && l.lines().count() == 1 && lyrics_doc::is_tag_line(l)
+                    })
+                    .unwrap_or_default()
+                    .to_string();
+                (v.id.clone(), tag)
+            })
+            .collect();
+        let live_song = self
+            .live_item
+            .and_then(|li| self.agenda.items.get(li))
+            .and_then(|it| match &it.reference {
+                ItemRef::Song { song_id } => Some(song_id.clone()),
+                _ => None,
+            });
+        let live_here = live_song.as_deref() == Some(song.id.as_str());
+        let item_id = transient.id.clone();
+        // Content, not row index: hidden rows shift the live list. Clamped:
+        // a live position past a shrunk list must not unlight every row.
+        let live_content = self.live_item.and_then(|li| {
+            let slides = self.item_slides(li);
+            slides
+                .get(self.live_slide.min(slides.len().saturating_sub(1)))
+                .cloned()
+        });
+        let mut out: Vec<Div> = Vec::new();
+        for (i, slide) in slides.iter().enumerate() {
+            // Embed cards carry no ` — verse` header: key them by URL so
+            // the row still renders (clickable, hideable, live-lit) and the
+            // key survives reordering. Footer-gated (not header-sniffed):
+            // an em dash inside an embed title must never fabricate a verse.
+            let web = slide.footer == "WebSite";
+            let vid = if web {
+                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+            } else {
+                slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
+            };
+            let hidden = self.is_hidden(&item_id, &vid);
+            let preview: String = slide.lines.join(" / ");
+            let live_now = live_here && live_content.as_ref() == Some(slide);
+            let selected = self.sel_block.as_deref() == Some(vid.as_str());
+            let row_bg = if live_now { ui.selection } else { ui.panel };
+            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
+            let border_c = if selected {
+                ui.engaged
+            } else if live_now {
+                ui.selection
+            } else {
+                row_bg
+            };
+            let check = if hidden { "☐" } else { "☑" };
+            let tag = tags.get(&vid).cloned().unwrap_or_default();
+            let badge = if web {
+                "⌂".to_string()
+            } else {
+                lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone())
+            };
+            let vid2 = vid.clone();
+            let id2 = item_id.clone();
+            let vid3 = vid.clone();
+            out.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(row_bg)
+                    .text_color(row_ink)
+                    .border_2()
+                    .border_color(border_c)
+                    .child(btn(ui, cx, check, false, move |this, _, _, cx| {
+                        let hide = !this.is_hidden(&id2, &vid2);
+                        this.set_hidden(&id2, &vid2, hide);
+                        this.sel_block = Some(vid2.clone());
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .child(badge),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .whitespace_normal()
+                            .child(preview),
+                    )
+                    // Single click projects (UX-RESEARCH 3.2): the song
+                    // joins the agenda on demand, like double-click.
+                    // Content match, not row index (see song_blocks).
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.play_browser_song_slide(cx, si, i);
+                            // Web-card keys live outside the verse namespace:
+                            // don't park the verse cursor on them.
+                            if !vid3.starts_with("web:") {
+                                this.sel_block = Some(vid3.clone());
+                            }
+                            this.focus_root(window);
+                        }),
+                    ),
+            );
+        }
+        section_scrolled(ui, &title, Vec::new(), out, &self.scroll_slides, "scroll:slides")
+    }
+
     /// Song slides: one row per projected slide — `[☑] badge <full text>`.
     ///
     /// UX-RESEARCH §3.2: *"one row = one projected slide"*. A verse that
@@ -7307,10 +9717,24 @@ impl Root {
             return vec![label(ui, "(no verses)", 13.)];
         }
         let live_here = self.live_item == Some(item_idx);
+        // Content, not row index, identifies the live row. Clamped: a live
+        // position past a shrunk list must not unlight every row.
+        let live_content = self.live_item.and_then(|li| {
+            let slides = self.item_slides(li);
+            slides
+                .get(self.live_slide.min(slides.len().saturating_sub(1)))
+                .cloned()
+        });
         let mut out: Vec<Div> = Vec::new();
         for (i, slide) in slides.iter().enumerate() {
-            let Some(vid) = slide_verse_id(&slide.header) else {
-                continue;
+            // Embed cards carry no ` — verse` header: key them by URL so
+            // the row still renders (clickable, hideable, live-lit) and the
+            // key survives reordering.
+            let web = slide.footer == "WebSite";
+            let vid = if web {
+                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+            } else {
+                slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
             };
             let hidden = self.is_hidden(&item_id, &vid);
             // R-6 / LAYOUT.md: the slide text is NEVER truncated — the row
@@ -7323,14 +9747,16 @@ impl Root {
             // always visible. The **selected** row is where the keyboard
             // cursor is. Collapsing them into one flag loses the distinction
             // that makes the panel readable mid-service.
-            let live_now = live_here && self.live_slide == i;
+            let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
             // The row currently projecting is highlighted **blue**, always
             // (UX-RESEARCH 10.3 — "the displayed slide is now highlighted in
             // blue", since 1.2, on every skin). Using `ui.accent` here made
             // that cue yellow on two of the four themes. `selected` is the
             // keyboard cursor and stays subtler so the two never read as one.
-            let row_bg = if live_now { ui.selection } else { ui.bg };
+            // White rows on the blue window = the original's white lists
+            // (slides-panel.png); the old window-gray rows read as disabled.
+            let row_bg = if live_now { ui.selection } else { ui.panel };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
             let border_c = if selected {
                 ui.engaged
@@ -7341,7 +9767,11 @@ impl Root {
             };
             let check = if hidden { "☐" } else { "☑" };
             let tag = tags.get(&vid).cloned().unwrap_or_default();
-            let badge = lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone());
+            let badge = if web {
+                "⌂".to_string()
+            } else {
+                lyrics_doc::tag_badge(&tag).unwrap_or_else(|| vid.clone())
+            };
             let vid2 = vid.clone();
             let id2 = item_id.clone();
             let vid3 = vid.clone();
@@ -7386,12 +9816,20 @@ impl Root {
                             .child(preview),
                     )
                     // Single click projects (UX-RESEARCH 3.2).
+                    // Display row → projected index by content: hidden
+                    // verses/cards shift the live list, so raw `i` can land
+                    // on the wrong slide.
                     .cursor_pointer()
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            this.goto_item_slide(cx, item_idx, i);
-                            this.sel_block = Some(vid3.clone());
+                            let target = this.display_row_to_projected(item_idx, i);
+                            this.goto_item_slide(cx, item_idx, target);
+                            // Web-card keys live outside the verse namespace:
+                            // don't park the verse cursor on them.
+                            if !vid3.starts_with("web:") {
+                                this.sel_block = Some(vid3.clone());
+                            }
                             this.focus_root(window);
                         }),
                     ),
@@ -7441,7 +9879,8 @@ impl Root {
                     .all(|v| self.is_hidden(&item_id, &v.to_string()));
             let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(badge.as_str());
-            let row_bg = if live_now { ui.selection } else { ui.bg };
+            // White rows on the blue window = the original's white lists.
+            let row_bg = if live_now { ui.selection } else { ui.panel };
             let row_ink = if live_now { ui.selection_ink } else { ui.fg };
             let border_c = if selected {
                 ui.engaged
@@ -7592,7 +10031,9 @@ impl Root {
                             snap.bg_kind,
                             snap.bg_file.as_ref(),
                             snap.bg_fit,
-                            snap.bg_frame.as_ref(),
+                            snap.video_poster.as_ref(),
+                            snap.video_frame.as_ref(),
+                            snap.bg_website.as_deref(),
                         )),
                 );
         // Same rule as the projector (projector_window::grades_luminosity_overlay):
@@ -7687,13 +10128,20 @@ impl Root {
             .rounded_sm()
             .border_1()
             .border_color(ui.border)
+            .bg(ui.panel)
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_2()
+                    .px(px(6.))
+                    .py(px(3.))
+                    .rounded_sm()
+                    .bg(rgb(0xC9DDF3))
+                    .text_color(rgb(0x1E3A5F))
                     .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
                     .child(format!(
                         "{} — {} {count}",
                         self.t("preview"),
@@ -7720,6 +10168,21 @@ impl Root {
     /// Persistent state chips for the 4 distinct presentation states (B-04).
     fn state_chips(&self, ui: &UI) -> Vec<Div> {
         let mut chips = Vec::new();
+        // Live page on screen beats every other state note: the operator
+        // must see at a glance that the room is looking at a browser, not
+        // the tile (a windowed browser can hide behind the control window
+        // and otherwise read as broken).
+        if self.live_view_url.is_some() {
+            chips.push(
+                div()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(rgb(0x2E7D32))
+                    .text_color(rgb(0xFFFFFF))
+                    .text_size(px(11.))
+                    .child("\u{1F310} LIVE WEB"),
+            );
+        }
         if self.shield {
             chips.push(
                 div()
@@ -7817,8 +10280,9 @@ impl Root {
             .text_size(px(15.))
             .cursor_pointer()
             .when(outline, |d| d.border_2().border_color(ui.engaged))
-            // Lane G: drawn SVG on a neutral chip, so a coloured icon stays
-            // readable on its same-coloured circle (and on light skins).
+            // Lane G: drawn SVG on a white chip, so a coloured icon stays
+            // readable on its same-coloured circle (VideoPsalm's solid glossy
+            // buttons: tint ring with white center).
             .child(
                 div()
                     .w(px(26.))
@@ -7827,7 +10291,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(ui.bg)
+                    .bg(rgb(0xFFFFFF))
                     .child(icons::art(icon)),
             )
             .on_mouse_up(
@@ -7903,8 +10367,10 @@ impl Root {
             .flex()
             .flex_col()
             .gap_1()
-            .w(px(40.))
+            .w(px(44.))
+            .min_w(px(44.))
             .flex_none()
+            .overflow_hidden()
             .items_center()
             .children(col)
     }
@@ -7953,6 +10419,10 @@ impl Root {
             self.blank = false;
             Some(left.join(", "))
         };
+        // NDI is opt-in (Display > NDI toggle): Go-live never starts the
+        // engine by itself. When the engine is on, the re-project below
+        // feeds it; when off, the push is a no-op.
+        let ndi_note: Option<String> = None;
         // Go live means the LIVE selection: re-project it (an edit made
         // while frozen only lands when the operator says so — here).
         self.push_projection(cx);
@@ -7960,10 +10430,13 @@ impl Root {
         // open_projector defers the real open past this update, so the
         // handle is legitimately still None here on first press. Report
         // live either way — the deferred callback overwrites on failure.
-        let msg = match cleared {
+        let mut msg = match cleared {
             Some(what) => format!("Left {what} — projection live in the projector window."),
             None => "Live — projector window opening…".to_string(),
         };
+        if let Some(n) = ndi_note {
+            msg.push_str(&format!(" [{n}]"));
+        }
         self.set_status(cx, msg);
         cx.notify();
     }
@@ -8032,20 +10505,36 @@ impl Root {
             .flex_col()
             .gap_1()
             .p(px(6.))
+            .min_w_0()
             .min_h_0()
             .flex_1()
             .overflow_hidden()
             .rounded_sm()
             .border_1()
             .border_color(ui.border)
+            .bg(ui.panel)
             // Panel title is the song title with the songbook's note glyph.
             // Song header carries its own `*` — the agenda's flag covers the
-            // agenda, this covers the lyrics document.
-            .child(div().text_size(px(13.)).child(format!(
-                "♪ {}{}",
-                if self.song_dirty { "*" } else { "" },
-                song.title
-            )))
+            // agenda, this covers the lyrics document. Blue bar like the
+            // original's panel headers (agenda-panel.png).
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px(px(6.))
+                    .py(px(3.))
+                    .rounded_sm()
+                    .bg(rgb(0xC9DDF3))
+                    .text_color(rgb(0x1E3A5F))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!(
+                        "♪ {}{}",
+                        if self.song_dirty { "*" } else { "" },
+                        song.title
+                    )),
+            )
             // `Paroles | Divers` — Divers holds transposition, capo and CCLI.
             .child(row(vec![
                 // Four document tabs, not two. `Lyrics | Files | Chords | Miscellaneous`
@@ -8090,7 +10579,7 @@ impl Root {
                 label(ui, "Title:", 12.),
                 div().flex_1().child(self.song_title_field.clone()),
             ]))
-            .child(document)
+            .child(document_wrap(document))
             // English 1.29 uses five editable footer fields: References and
             // Author/Composer on the left; Verse order and Copyright on the
             // right. Verse order is LIVE: the agenda item's override when one
@@ -8098,12 +10587,8 @@ impl Root {
             // custom order back to the song default; `⌃`/`⌄` rotate it.
             .child({
                 let song_id = song.id.clone();
-                let default_order: Vec<String> = {
-                    let mut vs: Vec<&vp_core::schema::SongVerse> =
-                        song.verses.iter().collect();
-                    vs.sort_by_key(|v| v.order);
-                    vs.into_iter().map(|v| v.id.clone()).collect()
-                };
+                let default_order: Vec<String> =
+                    song.ordered_verses().into_iter().map(|v| v.id.clone()).collect();
                 let owner = self.agenda.items.iter().find_map(|it| match &it.reference {
                     ItemRef::Song { song_id: sid } if sid == &song_id => Some(it.id.clone()),
                     _ => None,
@@ -8124,11 +10609,84 @@ impl Root {
                 let owner_down = owner.clone();
                 let default_up = default_order.clone();
                 let default_down = default_order.clone();
-                row(vec![
+                row_wrap(vec![
                     label(ui, "References:", 12.),
-                    div().flex_1().child(self.references_field.clone()),
+                    div().flex_1().min_w(px(140.)).child(self.references_field.clone()),
                     label(ui, "Verse order:", 12.),
-                    metadata_box(&order_text),
+                    {
+                        // Long medleys string 70+ ids into a wall of text, so
+                        // the order is a disclosure: one-line summary shut,
+                        // full wrapped list in a capped scroller open.
+                        let open = self.verse_order_open;
+                        let summary = ux::verse_order_summary(&current);
+                        let full = order_text.clone();
+                        let mut col = div()
+                            .flex_1()
+                            // Guaranteed room for ▸/▾ + the summary: the
+                            // References field would otherwise squeeze the
+                            // column to zero and the toggle vanished with it.
+                            .min_w(px(190.))
+                            .flex()
+                            .flex_col()
+                            .relative()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1()
+                                    .cursor_pointer()
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.verse_order_open = !this.verse_order_open;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(btn(
+                                        ui,
+                                        cx,
+                                        if open { "▾" } else { "▸" },
+                                        open,
+                                        |this, _, _, cx| {
+                                            // The row behind also toggles on bubble:
+                                            // stop here or the flag flips twice (no-op arrow).
+                                            cx.stop_propagation();
+                                            this.verse_order_open = !this.verse_order_open;
+                                            cx.notify();
+                                        },
+                                    ))
+                                    .child(metadata_box(&summary)),
+                            );
+                        if open {
+                            // Overlay, not in-flow: the editor panel clips at
+                            // its bottom edge, so an in-flow list is cut off
+                            // instead of shown (the old wall-of-text bug in
+                            // reverse). It drops below the toggle row like a
+                            // dropdown and paints above the rows beneath.
+                            col = col.child(
+                                div()
+                                    .absolute()
+                                    .top(px(30.))
+                                    .left(px(0.))
+                                    .right(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .min_h_0()
+                                    .id("scroll:verse-order")
+                                    .max_h(px(140.))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll_verse_order)
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(ui.border)
+                                    .bg(ui.panel)
+                                    .child(metadata_box(&full)),
+                            );
+                        }
+                        col
+                    },
                     btn(ui, cx, "×", false, move |this, _, _, cx| {
                         if let Some(id) = owner_clear.clone() {
                             if let Some(it) =
@@ -8183,15 +10741,15 @@ impl Root {
                     }),
                 ])
             })
-            .child(row(vec![
+            .child(row_wrap(vec![
                 label(ui, "Author:", 12.),
-                div().flex_1().child(self.author_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.author_field.clone()),
                 label(ui, "Copyright:", 12.),
-                div().flex_1().child(self.copyright_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.copyright_field.clone()),
             ]))
-            .child(row(vec![
+            .child(row_wrap(vec![
                 label(ui, "Composer:", 12.),
-                div().flex_1().child(self.composer_field.clone()),
+                div().flex_1().min_w(px(120.)).child(self.composer_field.clone()),
                 // Explicit affordance: footer fields persist via song Save.
                 // The Song ribbon group owns the canonical Save; this footer
                 // copy is the same action, so `*` in the header can never
@@ -8212,6 +10770,7 @@ impl Root {
             ]))
     }
 
+    #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
     fn live_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let slides = self.live_slides();
         let n = slides.len();
@@ -8290,6 +10849,10 @@ impl Root {
                         }
                     }),
                     btn(ui, cx, &self.t("play_pause"), false, |this, _, _, cx| {
+                        // In-app motion owns the press while a pump runs.
+                        if this.motion_toggle_pause(cx) {
+                            return;
+                        }
                         let p = this.media_path_field.read(cx).text();
                         if !p.trim().is_empty()
                             && this
@@ -8308,6 +10871,7 @@ impl Root {
                         cx.notify();
                     }),
                     btn(ui, cx, &self.t("stop"), false, |this, _, _, cx| {
+                        this.stop_motion();
                         this.media.stop();
                         cx.notify();
                     }),
@@ -8341,7 +10905,9 @@ impl Root {
                         },
                     ),
                 ]),
-                // B-12: Single-click monitor switcher
+                // B-12: Single-click monitor switcher (same move-on-pick
+                // contract as the Settings buttons: an open room window
+                // follows the choice).
                 row(vec![
                     label(ui, "projector monitor:", 12.),
                     btn(
@@ -8350,8 +10916,7 @@ impl Root {
                         "Display 1 (Primary)",
                         self.projector_display == 0,
                         |this, _, _, cx| {
-                            this.projector_display = 0;
-                            this.persist_layout_quiet();
+                            this.set_projector_display(cx, 0);
                             this.set_status(cx, "Projector target set to Display 1 (Primary).");
                         },
                     ),
@@ -8361,8 +10926,7 @@ impl Root {
                         "Display 2 (External)",
                         self.projector_display == 1,
                         |this, _, _, cx| {
-                            this.projector_display = 1;
-                            this.persist_layout_quiet();
+                            this.set_projector_display(cx, 1);
                             this.set_status(cx, "Projector target set to Display 2 (External).");
                         },
                     ),
@@ -8372,8 +10936,7 @@ impl Root {
                         "Display 3",
                         self.projector_display == 2,
                         |this, _, _, cx| {
-                            this.projector_display = 2;
-                            this.persist_layout_quiet();
+                            this.set_projector_display(cx, 2);
                             this.set_status(cx, "Projector target set to Display 3.");
                         },
                     ),
@@ -8430,6 +10993,7 @@ impl Root {
                         self.alert_visible,
                         |this, _, _, cx| {
                             this.alert_visible = !this.alert_visible;
+                            this.republish(cx);
                             cx.notify();
                         },
                     ),
@@ -8447,6 +11011,7 @@ impl Root {
                         self.clock_mode == ClockMode::Clock,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Clock;
+                            this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -8457,6 +11022,7 @@ impl Root {
                         self.clock_mode == ClockMode::Countdown,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Countdown;
+                            this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -8467,6 +11033,7 @@ impl Root {
                         self.clock_mode == ClockMode::Stopwatch,
                         |this, _, _, cx| {
                             this.clock_mode = ClockMode::Stopwatch;
+                            this.resync_clock(cx);
                             cx.notify();
                         },
                     ),
@@ -8567,7 +11134,7 @@ impl Root {
                         bold: self.bold,
                         italic: self.italic,
                         underline: self.underline,
-                        shadow: false,
+                        shadow: true,
                     },
                 )
             })
@@ -8582,7 +11149,7 @@ impl Root {
                     bold: self.bold,
                     italic: self.italic,
                     underline: self.underline,
-                    shadow: false,
+                    shadow: true,
                 },
             ));
         }
@@ -8633,10 +11200,266 @@ impl Root {
         )
     }
 
+    /// Website agenda item: build a WebSite/YouTube item from the URL in
+    /// `website_field` (same field as the background tile — offline data,
+    /// never fetched). YouTube hosts become `ItemKind::YouTube`, everything
+    /// else `ItemKind::WebSite`; title defaults to the host+path. Empty/bad
+    /// input keeps the agenda untouched and says so in the status line.
+    fn add_website_to_agenda(&mut self, cx: &mut Context<Self>) {
+        let raw = self.website_field.read(cx).text();
+        match website_agenda_item(&raw) {
+            Some((kind, title, url)) => {
+                self.agenda.items.push(AgendaItem {
+                    id: agenda_ops::new_id("item"),
+                    kind,
+                    title: title.clone(),
+                    reference: ItemRef::Url { url: url.clone() },
+                    flow_type: FlowType::Manual,
+                    auto_advance_ms: None,
+                    overrides: Default::default(),
+                });
+                self.sel_item = Some(self.agenda.items.len() - 1);
+                self.agenda_dirty = true;
+                self.set_status(cx, format!("{kind:?} added: {title} ({url})."));
+                cx.notify();
+            }
+            None => self.set_status(
+                cx,
+                "Website item: type a page URL first (Background > Website field — example.com/live or a YouTube link).",
+            ),
+        }
+    }
+
+    /// Website background: normalize + assign the URL in `website_field`.
+    /// One background at a time — assigning clears any file background
+    /// and stops in-app video motion (the tile is static). Empty/bad input
+    /// keeps the current background and says so in the status line.
+    fn assign_website_from_field(&mut self, cx: &mut Context<Self>) {
+        let raw = self.website_field.read(cx).text();
+        match vp_core::schema::normalize_website_url(&raw) {
+            Some(url) => {
+                self.stop_motion();
+                self.bg_kind = BackgroundKind::Website;
+                self.bg_website = Some(url.clone());
+                self.bg_file = None;
+                self.persist_layout_quiet();
+                crate::presentation::publish(self, cx);
+                self.set_status(cx, format!("Website background: {url} (lyrics project over the page tile — Open launches the browser)."));
+            }
+            None => self.set_status(
+                cx,
+                "Website background: type a page URL first (example.com/live — https:// is added).",
+            ),
+        }
+        cx.notify();
+    }
+
+    /// Drop a website background back to the plain color.
+    fn clear_website_background(&mut self, cx: &mut Context<Self>) {
+        self.bg_kind = BackgroundKind::Color;
+        self.bg_website = None;
+        self.bg_file = None;
+        self.persist_layout_quiet();
+        crate::presentation::publish(self, cx);
+        self.set_status(cx, "Website background removed — plain color.");
+        cx.notify();
+    }
+
+    /// Live web view toggle: one click on, one click off. Persisted like
+    /// every other layout choice; default off so the offline tiles rule
+    /// until the operator asks for more.
+    fn toggle_live_web(&mut self, cx: &mut Context<Self>) {
+        self.live_web_on = !self.live_web_on;
+        if !self.live_web_on {
+            self.live_view.hide();
+            self.live_web_pending = None;
+            self.live_web_confirmed.clear();
+            self.set_status(cx, "Live web view off — website slides are offline tiles again.");
+        } else {
+            self.set_status(cx, "Live web view on — website slides open in a browser window on the projector display.");
+        }
+        self.persist_layout_quiet();
+        crate::presentation::publish(self, cx);
+        // Toggling on while a website slide is already live must take
+        // effect at once, not on the next navigation.
+        if self.live_web_on {
+            self.sync_live_web(cx);
+        }
+        cx.notify();
+    }
+
+    /// Allow this show's pending remote page into the live view (one click,
+    /// this session only — nothing is remembered on disk). Stale approvals
+    /// (navigated away since) are dropped instead of applied.
+    fn allow_live_web(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .projected_slides
+            .get(self.projected_slide)
+            .and_then(live_web::live_url_for_slide);
+        if let Some(url) = self.live_web_pending.take() {
+            if current.as_deref() != Some(url.as_str()) {
+                self.set_status(cx, "Live view: the slide moved on — Allow again for the new page.");
+            } else {
+                if !self.live_web_confirmed.contains(&url) {
+                    self.live_web_confirmed.push(url.clone());
+                }
+                self.set_status(cx, format!("Live web view allowed for this show: {url}"));
+                self.sync_live_web(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Keep the live browser window in step with the pushed slide. Runs at
+    /// the end of every [`Self::push_projection`]: spawn on website slides,
+    /// die the moment they leave, never fetch anything itself.
+    fn sync_live_web(&mut self, cx: &mut Context<Self>) {
+        let desired = self
+            .projected_slides
+            .get(self.projected_slide)
+            .and_then(live_web::live_url_for_slide);
+        if desired.is_none() {
+            // Not a website slide: make sure nothing lingers, quietly.
+            if self.live_view_url.is_some() {
+                self.live_view.hide();
+                self.live_view_url = None;
+                self.live_web_pending = None;
+            }
+            return;
+        }
+        let url = desired.unwrap();
+        if !self.live_web_on {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.live_web_pending = None;
+            // Say it every push: a tile with no explanation looks broken.
+            self.set_status(cx, format!("Website slide live as a tile — turn Live: On (Background > Website) to open the page: {url}"));
+            cx.notify();
+            return;
+        }
+        // Loopback is exempt (no packet leaves the machine); remote hosts
+        // need a per-session Allow or the tile stays and the operator is
+        // told exactly what is waiting.
+        if !live_web::is_loopback(&url) && !self.live_web_confirmed.contains(&url) {
+            self.live_view.hide();
+            self.live_view_url = None;
+            if self.live_web_pending.as_deref() != Some(url.as_str()) {
+                self.live_web_pending = Some(url.clone());
+                self.set_status(cx, format!("Remote page blocked from live view — Allow it in Background > Website: {url}"));
+                cx.notify();
+            }
+            return;
+        }
+        self.live_web_pending = None;
+        // Window placement needs the projector output; resolving it costs
+        // one local `xrandr` call (no network). Geometry is computed first
+        // so an already-live window short-circuits before any probe.
+        let monitors = monitors::list();
+        let target = monitors::resolve_target(
+            &monitors,
+            self.projector_monitor.as_deref(),
+            self.projector_display,
+        );
+        let primary = monitors.first();
+        // Windowed unless the target is a distinct non-primary rect:
+        // mirrored/cloned outputs share the primary's rect and must not
+        // cover the console, and a missing RandR list fails safe.
+        let geometry = match (&target, primary) {
+            (Some(t), Some(p))
+                if t.name != p.name
+                    && (t.x, t.y, t.w, t.h) != (p.x, p.y, p.w, p.h) =>
+            {
+                Some((t.x, t.y, t.w, t.h))
+            }
+            _ => None,
+        };
+        // Our own projector window is fullscreen: a windowed browser would
+        // open underneath it, invisible. Take over instead — the tile it
+        // covers is the placeholder for this very page.
+        let room_fullscreen =
+            self.projector_window.is_some() && self.projector_fullscreen;
+        // Already showing exactly this: re-pushes must not re-probe (DNS on
+        // the UI thread) or flicker the projector window.
+        if self.live_view.showing(&url, geometry, room_fullscreen) {
+            self.live_view_url = Some(url);
+            return;
+        }
+        // Reachability is a TCP handshake, not a fetch: a dead stage server
+        // reports honestly instead of opening a blank window.
+        if !live_web::reachable(&url, std::time::Duration::from_millis(1500)) {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.set_status(cx, format!("Live web view: nothing serving {url} — tile stays."));
+            cx.notify();
+            return;
+        }
+        let Some((kind, bin)) = live_web::pick_browser() else {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.set_status(cx, "Live web view: no supported browser found (chromium / google-chrome / edge / firefox).");
+            cx.notify();
+            return;
+        };
+        if self.live_view.show(&bin, &kind, &url, geometry, room_fullscreen) {
+            self.live_view_url = Some(url.clone());
+            // Firefox ignores geometry (private window, no placement
+            // control), so only a Chromium-family window on a dedicated
+            // output may claim the projector.
+            let on_projector =
+                matches!(geometry, Some(_)) && matches!(kind, live_web::BrowserKind::Chromium);
+            self.set_status(cx, match (on_projector, room_fullscreen) {
+                (true, _) => format!("Live web view on the projector: {url}"),
+                (false, true) => format!("Live web view fullscreen (projector was fullscreen — Alt+Tab to return): {url}"),
+                (false, false) => format!("Live web view (windowed — no separate projector output): {url}"),
+            });
+        } else {
+            self.live_view_url = None;
+            self.set_status(cx, format!("Live web view: browser failed to start — tile stays: {url}"));
+        }
+    }
+
+    /// Open the assigned website URL in the OS browser (best effort).
+    /// Pure data stays offline: this spawns the handler only, never fetches.
+    fn open_website_background(&mut self, cx: &mut Context<Self>) {
+        let Some(url) = self.bg_website.clone() else {
+            self.set_status(cx, "Website background: nothing assigned — Set a URL first.");
+            return;
+        };
+        // Windows launches without a shell round-trip: `rundll32` hands the
+        // URL straight to the protocol handler, so there is no `cmd`
+        // metacharacter surface at all (no blocklist to maintain).
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = std::process::Command::new("rundll32.exe");
+            cmd.args(["url.dll,FileProtocolHandler", &url]);
+            return match cmd.spawn() {
+                Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
+                Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
+            };
+        }
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        match cmd.arg(&url).spawn() {
+            Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
+            Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
+        }
+        cx.notify();
+    }
+
     /// Note shown when the style asks for a background kind v1 cannot fully
-    /// render. Images render via `gpui::img`; video loops show a captioned
-    /// placeholder tile (gpui 0.2.2 has no video element); only the camera is
-    /// still a solid-color stand-in.
+    /// render. Images render via `gpui::img`; video loops move in-app when
+    /// ffmpeg exists (poster still, else captioned tile, as fallback); the
+    /// camera is still a solid-color stand-in; a website shows as a titled
+    /// tile behind the lyrics (no web-view in gpui 0.2.2) with the live
+    /// page one click away in the OS browser.
     fn background_note(&self) -> Option<&'static str> {
         match self.bg_kind {
             BackgroundKind::Color => None,
@@ -8645,6 +11468,7 @@ impl Root {
                 Some("▶ video loop = captioned tile (no video element in gpui 0.2.2)")
             }
             BackgroundKind::Camera => Some("◉ camera background = v1 stub (solid color shown)"),
+            BackgroundKind::Website => Some("🌐 website background = titled tile (no web-view in gpui 0.2.2 — Open launches the browser)"),
         }
     }
 
@@ -8858,6 +11682,19 @@ unsafe extern "system" {
     fn AttachConsole(dwProcessId: u32) -> i32;
 }
 
+/// Clamp the boot window to the available display, keeping a margin for
+/// OS chrome/taskbar. Found by boaz headless testing: the hardcoded
+/// 1500x950 opens at -108,-75 (overflowing) on any display smaller than
+/// itself, e.g. 1280x800. Pure so unit tests pin it without a GPU/display.
+fn clamp_boot_size(want: (f32, f32), avail: (f32, f32)) -> (f32, f32) {
+    const MARGIN: f32 = 64.0;
+    const MIN: (f32, f32) = (800.0, 600.0);
+    (
+        want.0.min((avail.0 - MARGIN).max(MIN.0)),
+        want.1.min((avail.1 - MARGIN).max(MIN.1)),
+    )
+}
+
 fn main() {
     // Crash diagnostics first: on Windows GUI builds there is no console,
     // so without this a panic is a silent vanishing act (WI-029).
@@ -8898,7 +11735,17 @@ fn main() {
             cx.bind_keys([KeyBinding::new("ctrl-q", QuitApp, None)]);
             cx.on_action(|_: &QuitApp, cx| cx.quit());
 
-            let bounds = Bounds::centered(None, size(px(1500.), px(950.)), cx);
+            let avail = cx
+                .displays()
+                .into_iter()
+                .next()
+                .map(|d| {
+                    let s = d.bounds().size;
+                    (f32::from(s.width), f32::from(s.height))
+                })
+                .unwrap_or((1500., 950.));
+            let (boot_w, boot_h) = clamp_boot_size((1500., 950.), avail);
+            let bounds = Bounds::centered(None, size(px(boot_w), px(boot_h)), cx);
             // OS chrome carries the agenda name, like the original's
             // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
             // Same sample Root::build opens, so the two can never disagree.
@@ -8927,6 +11774,106 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_size_keeps_default_on_large_display() {
+        assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn col_widths_clamp_so_no_column_can_vanish_or_eat_the_editor() {
+        // VJSM parity: dividers drag 220..720 px. Live proof: a +96 px drag
+        // persisted left_w 456.0015 (boaz shots/parity/rust-divider-drag-
+        // proven.png + videopsalm-layout.json).
+        assert_eq!(clamp_col_width(360.0), 360.0);
+        assert_eq!(clamp_col_width(360.0 + 96.0), 456.0);
+        assert_eq!(clamp_col_width(0.0), 220.0);
+        assert_eq!(clamp_col_width(5000.0), 720.0);
+        assert_eq!(clamp_col_width(-40.0), 220.0);
+    }
+
+    #[test]
+    fn row_heights_clamp_so_no_pane_can_vanish_or_push_out_its_sibling() {
+        // 0 = agenda/browser split (100..520), 1 = slides/preview (160..560).
+        assert_eq!(clamp_row_height(0, 300.0), 300.0);
+        assert_eq!(clamp_row_height(0, 0.0), 100.0);
+        assert_eq!(clamp_row_height(0, 5000.0), 520.0);
+        assert_eq!(clamp_row_height(1, 300.0), 300.0);
+        assert_eq!(clamp_row_height(1, 0.0), 160.0);
+        assert_eq!(clamp_row_height(1, 5000.0), 560.0);
+    }
+
+    #[test]
+    fn hover_reveal_ignores_the_collapse_click_itself() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        // Expanded: never armed.
+        assert!(!Root::hover_reveal_armed(false, None, now));
+        assert!(!Root::hover_reveal_armed(false, Some(now), now));
+        // Collapsed 50 ms ago (the Hide click mounting the strip under
+        // the cursor): the immediate hover(true) must NOT re-expand.
+        let just = now - Duration::from_millis(50);
+        assert!(!Root::hover_reveal_armed(true, Some(just), now));
+        // Collapsed 2 s ago, cursor returns: reveal fires.
+        let old = now - Duration::from_secs(2);
+        assert!(Root::hover_reveal_armed(true, Some(old), now));
+        // Restarted while collapsed: no timestamp, but the strip must
+        // still reveal (otherwise hover is dead for the whole session).
+        assert!(Root::hover_reveal_armed(true, None, now));
+    }
+
+    #[test]
+    fn web_row_keys_and_content_mapping_are_stable() {
+        assert_eq!(
+            web_row_key("https://example.com/live"),
+            "web:https://example.com/live"
+        );
+        let lyric = Slide::text("T — V1", vec!["x".to_string()], "Song");
+        let card = Slide::text(
+            "Card",
+            vec!["https://example.com".to_string()],
+            "WebSite",
+        );
+        let display = vec![lyric, card.clone()];
+        // Lyric hidden: card row 1 still resolves to projected 0.
+        assert_eq!(projected_index_for_row(&display, &[card.clone()], 1), 0);
+        // Hidden lyric row itself: no counterpart, clamps to 0.
+        assert_eq!(projected_index_for_row(&display, &[card.clone()], 0), 0);
+        // Nothing hidden: identity.
+        assert_eq!(projected_index_for_row(&display, &display, 1), 1);
+        // Empty show: clamps, never panics.
+        assert_eq!(projected_index_for_row(&[], &[], 3), 0);
+    }
+
+    #[test]
+    fn website_field_classifies_youtube_vs_plain_site() {
+        let (kind, title, url) = website_agenda_item("example.com/live").unwrap();
+        assert_eq!(kind, ItemKind::WebSite);
+        assert_eq!(url, "https://example.com/live");
+        assert_eq!(title, "example.com/live");
+        let (kind, _, url) =
+            website_agenda_item("https://www.youtube.com/watch?v=abc").unwrap();
+        assert_eq!(kind, ItemKind::YouTube);
+        assert!(url.contains("youtube.com"));
+        let (kind, _, _) = website_agenda_item("https://youtu.be/abc").unwrap();
+        assert_eq!(kind, ItemKind::YouTube);
+        assert!(website_agenda_item("  ").is_none());
+        assert!(website_agenda_item("javascript:alert(1)").is_none());
+    }
+
+    #[test]
+    fn boot_size_clamps_to_small_display() {
+        // boaz headless screen: 1280x800 must not open a 1500x950 window.
+        assert_eq!(
+            clamp_boot_size((1500., 950.), (1280., 800.)),
+            (1216., 736.)
+        );
+    }
+
+    #[test]
+    fn boot_size_floors_on_tiny_display() {
+        assert_eq!(clamp_boot_size((1500., 950.), (400., 300.)), (800., 600.));
+    }
 
     fn test_song(id: &str, book: &str) -> Song {
         Song {
@@ -9206,5 +12153,32 @@ mod tests {
         assert!(!can_freeze(0));
         assert!(can_freeze(1));
         assert!(can_freeze(40));
+    }
+
+    #[test]
+    fn clock_loop_runs_while_there_is_time_to_show() {
+        // Countdown running, overlay on/off: the loop repaints control.
+        assert!(clock_tick_active(true, false));
+        assert!(clock_tick_active(true, true));
+        // Static wall-clock overlay with nothing running: one publish so
+        // the room stops showing a stale time, then the loop sleeps.
+        assert!(clock_tick_active(false, true));
+        // Nothing to show: no loop, no wakeups.
+        assert!(!clock_tick_active(false, false));
+    }
+
+    #[test]
+    fn room_republishes_only_when_its_clock_text_moves() {
+        // Overlay up, first sight: publish.
+        assert!(clock_text_moved(true, None, "00:04:59"));
+        // Same second (250ms loop, 1Hz text): stay quiet.
+        assert!(!clock_text_moved(true, Some("00:04:59"), "00:04:59"));
+        // Next second: publish once.
+        assert!(clock_text_moved(true, Some("00:04:59"), "00:04:58"));
+        // Overlay off: no TEXT republish from the tick (the room shows no
+        // clock). The overlay flip itself still republishes once — via the
+        // toggle handler, not this helper — so a hidden clock never sticks.
+        assert!(!clock_text_moved(false, None, "00:04:59"));
+        assert!(!clock_text_moved(false, Some("00:04:59"), "00:04:58"));
     }
 }

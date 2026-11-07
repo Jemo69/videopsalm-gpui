@@ -1,18 +1,32 @@
+# Build output
+target/
+dist/
+node_modules/
+
+# Scratch captures / binaries (never commit — see AGENTS.md)
+shots/
+
+# Local editor / OS noise
+.DS_Store
+*.orig
+*.Zone.Identifier
+*.msi
+pi-session-*.html
+
+# Vendored / generated (rebuildable)
+.opencode/
+gpui-app/target/
 electron-app/node_modules/
 electron-app/dist/
 electron-app/release-pkg/
-gpui-app/target/
-/target/
-*.Zone.Identifier
-*.msi
-shots/
-pi-session-*.html
-.opencode/
 gpui-app/bibles/*.xml
 electron-app/data/bibles/*.xml
 gpui-app/media/
+
+# Review verdicts live next to the tree but out of history
+reviews/
+
 windows/*
 !windows/perez.iss
 !windows/make-start-menu.ps1
 !windows/perez.ico
-reviews/

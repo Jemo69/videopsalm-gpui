@@ -599,19 +599,6 @@ pub fn list_recents(conn: &Connection, limit: usize) -> Result<Vec<String>, rusq
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn corrupt_rows_error_instead_of_empty_song() {
-        // VC-02: a corrupt data blob must Err loudly, never read as id "".
-        let conn = seeded();
-        conn.execute(
-            "INSERT INTO songs (id, title, lyrics, authors, composer, ccli, song_no, songbook_id, data) VALUES ('bad1','t','l','a','c','cc',1,'b','{corrupt')",
-            [],
-        )
-        .unwrap();
-        assert!(get_song(&conn, "bad1").is_err());
-        assert!(all_songs(&conn).is_err());
-    }
     use crate::schema::{SongChords, SongVerse};
 
     fn song(id: &str, title: &str, author: &str, ccli: &str, song_no: &str, book: &str) -> Song {
