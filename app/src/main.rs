@@ -5727,7 +5727,21 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             PresKey::ToggleShield => self.toggle_shield(cx),
             PresKey::ToggleFreeze => self.toggle_freeze(cx),
             PresKey::ToggleMode => self.toggle_viewer_mode(cx),
-            PresKey::StartPres => self.start_presentation(cx),
+            // Electron F5 parity (presKeys §F5 block, RESEARCH-weebly §1.6):
+            // F5 restarts from the beginning (startPres) normally, but
+            // play/pause when a video/audio player owns focus — "which is
+            // also what a Logitech R400 sends" (1.27b). This port has no
+            // focusable player widget, so "owns focus" is the live in-app
+            // media session: `motion_toggle_pause` proves ownership by
+            // answering the press (pump alive/paused or any loop session);
+            // only when nothing media owns the press does F5 restart the
+            // show from the beginning (startPres), exactly as Electron's
+            // mediaFocused=false branch does.
+            PresKey::StartPres => {
+                if !self.motion_toggle_pause(cx) {
+                    self.start_presentation(cx);
+                }
+            }
             PresKey::ToggleRibbon => {
                 let to = !self.ribbon_collapsed;
                 self.set_ribbon_collapsed(cx, to);

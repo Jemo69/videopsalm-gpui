@@ -443,11 +443,14 @@ pub enum PresKey {
     ToggleMode,
     /// Restart the presentation from the beginning (F5).
     ///
-    /// Context-dependent in the original (RESEARCH-weebly §1.6): F5 also
-    /// toggles media play/pause *"when the video/audio player owns focus"*
-    /// (1.27b — the Logitech R400 case). This port has no focusable player
-    /// widget, so F5 always restarts; play/pause stays one click away on the
-    /// Message-tab transport button, which the help row says.
+    /// Context-dependent in the original (RESEARCH-weebly §1.6, Electron's
+    /// presKeys): F5 restarts-from-beginning normally, but toggles media
+    /// play/pause *"when the video/audio player owns focus"* (1.27b — the
+    /// Logitech R400 case). This port has no focusable player widget, so
+    /// "owns focus" is the live in-app media session (pump/loop, held or
+    /// paused); the dispatch toggles it while it lives and restarts only
+    /// when idle — Electron's same two branches with the session as the
+    /// focus proxy.
     StartPres,
     /// Save the document being edited (Ctrl+S).
     ///
@@ -721,12 +724,12 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B", "arm / disarm the shield"),
         ("Ctrl+R", "freeze / unfreeze the projected slide"),
         ("Ctrl+E", "switch Edit ↔ Viewer mode"),
-        // F5 restarts from the beginning (§1.6); the player-focus play/pause
-        // the changelog adds has no focusable widget in this port, so media
-        // toggling lives on the Message-tab transport button instead.
+        // F5 restarts from the beginning (§1.6); while a video/audio
+        // session owns playback it toggles play/pause instead (the
+        // Logitech R400 branch).
         (
             "F5",
-            "start presentation from the beginning (play/pause: Message-tab transport)",
+            "start from the beginning (play/pause while media plays)",
         ),
         ("X", "next PowerPoint slide"),
         ("F6", "focus the slide panel"),
@@ -1907,6 +1910,11 @@ mod tests {
         assert_eq!(route_pres_key("b"), Some(PresKey::Section('B')));
         assert_eq!(route_pres_key("C"), Some(PresKey::Section('C')));
         assert_eq!(route_pres_key("v"), Some(PresKey::Section('V')));
+        // I/O navigate slides via the same section jump (instrumental/other).
+        assert_eq!(route_pres_key("i"), Some(PresKey::Section('I')));
+        assert_eq!(route_pres_key("o"), Some(PresKey::Section('O')));
+        assert_eq!(route_pres_key("I"), Some(PresKey::Section('I')));
+        assert_eq!(route_pres_key("O"), Some(PresKey::Section('O')));
         // Typing letters that are not presentation keys is not routed.
         for k in ["z", "q", "w", "!", "", "shift-a", "ctrl-z"] {
             assert_eq!(route_pres_key(k), None, "{k} must not route");
