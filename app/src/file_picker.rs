@@ -197,12 +197,32 @@ pub fn videopsalm_start_dir() -> Option<PathBuf> {
 /// Image extensions accepted by the gallery + background picker.
 pub const IMAGE_FILTER: (&str, &[&str]) = ("Images", &["jpg", "jpeg", "png", "gif", "bmp", "webp"]);
 /// Video extensions accepted by the gallery + background picker.
-pub const VIDEO_FILTER: (&str, &[&str]) = ("Videos", &["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
+/// The Electron pick set (11): `asf, avi, mp4, m4v, mkv, mov, mpg, mpeg,
+/// wmv, webm, ogv` — the Rust probe + captioned tile handle every
+/// non-H264 file honestly, and ffmpeg plays what it can, so widening
+/// only stops hiding files Electron users expect.
+pub const VIDEO_FILTER: (&str, &[&str]) = (
+    "Videos",
+    &[
+        "asf", "avi", "mp4", "m4v", "mkv", "mov", "mpg", "mpeg", "wmv", "webm", "ogv",
+    ],
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn video_filter_is_the_electron_pick_set() {
+        // Hardcoded on purpose: the set must match the Electron "Videos"
+        // picker (`electron-app/src/main.ts`) exactly — any drift fails loud.
+        let expected = [
+            "asf", "avi", "mp4", "m4v", "mkv", "mov", "mpg", "mpeg", "wmv", "webm", "ogv",
+        ];
+        assert_eq!(VIDEO_FILTER.0, "Videos");
+        assert_eq!(VIDEO_FILTER.1, expected);
+    }
 
     #[test]
     fn picker_wins_over_typed_and_fallback() {
