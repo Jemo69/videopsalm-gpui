@@ -11,9 +11,11 @@ import {
   applySongToVideopsalm,
   parseVideopsalm,
   readVideopsalmSongbook,
+  resolveVideopsalmDataFolder,
   saveSongToVideopsalm,
   scanVideopsalmFolder,
   stringifyVideopsalm,
+  videopsalmFolderCandidates,
   videopsalmToSongs,
   type VpObject,
 } from "../src/core/videopsalm";
@@ -363,6 +365,48 @@ describe("VideoPsalm document folder scan", () => {
       assert.equal(scan.errors.length, 0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("first-boot auto-find: default candidates resolve to a scannable folder", () => {
+    // The renderer auto-finds on first boot with no saved folder: main picks
+    // the first existing candidate (videopsalmFolderCandidates) and follows
+    // CommonSettings (resolveVideopsalmDataFolder), then scans it. This pins
+    // that pure chain end-to-end (the bridge/apply glue needs a DOM).
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "vp-autofind-"));
+    const home = path.join(base, "home");
+    const docs = path.join(base, "Documents");
+    const vpDir = path.join(docs, "VideoPsalm");
+    const prevFolder = process.env["VIDEOPSALM_FOLDER"];
+    const prevPublic = process.env["PUBLIC"];
+    try {
+      fs.mkdirSync(path.join(vpDir, "SongBooks"), { recursive: true });
+      fs.writeFileSync(path.join(vpDir, "SongBooks", "Boot.json"), SAMPLE, "utf8");
+      // Keep candidates hermetic: blank override/public so the home/documents
+      // args decide. Empty strings are filtered by videopsalmFolderCandidates.
+      process.env["VIDEOPSALM_FOLDER"] = "";
+      delete process.env["PUBLIC"];
+
+      const cands = videopsalmFolderCandidates(home, docs);
+      // documents/VideoPsalm is the most-specific non-env candidate.
+      assert.equal(cands[0], vpDir);
+      // Mirror main.ts defaultVideopsalmFolder: first existing directory wins.
+      const hit = cands.find((d) => {
+        try { return fs.existsSync(d) && fs.statSync(d).isDirectory(); }
+        catch { return false; }
+      });
+      assert.equal(hit, vpDir);
+      const resolved = resolveVideopsalmDataFolder(hit!);
+      const scan = scanVideopsalmFolder(resolved);
+      assert.equal(scan.songbooks.length, 1);
+      assert.equal(scan.songs.length, 1);
+      assert.equal(scan.errors.length, 0);
+    } finally {
+      if (prevFolder === undefined) delete process.env["VIDEOPSALM_FOLDER"];
+      else process.env["VIDEOPSALM_FOLDER"] = prevFolder;
+      if (prevPublic === undefined) delete process.env["PUBLIC"];
+      else process.env["PUBLIC"] = prevPublic;
+      fs.rmSync(base, { recursive: true, force: true });
     }
   });
 });

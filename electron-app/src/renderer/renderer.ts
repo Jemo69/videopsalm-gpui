@@ -2230,9 +2230,20 @@ async function openVpSongbook(): Promise<void> {
 
 async function restoreVideopsalmFolder(): Promise<void> {
   updateVpFolderChrome();
-  if (!prefs.videopsalmFolder) return;
+  let folder = prefs.videopsalmFolder;
+  if (!folder) {
+    // First boot: auto-find the default VideoPsalm folder (main resolves
+    // candidates + CommonSettings.json). Null/empty = nothing to scan;
+    // the manual picker (`openVpFolder`) stays the override.
+    try {
+      folder = ((await bridge().defaultVideopsalmFolder()) as string | null) || "";
+    } catch {
+      folder = "";
+    }
+    if (!folder) return;
+  }
   try {
-    const res = (await bridge().scanVideopsalmFolder(prefs.videopsalmFolder)) as VpFolderResult;
+    const res = (await bridge().scanVideopsalmFolder(folder)) as VpFolderResult;
     if (res.folder) await applyVpFolderResult(res, false);
   } catch {
     // A moved/deleted folder must not stop the app from booting.
@@ -3395,7 +3406,9 @@ mountMediaGalleriesNow();
 void refreshAgenda();
 void runSongSearch();
 // Restore the last native VideoPsalm document folder (Songbooks + galleries +
-// style background). No folder selected = no scan, no surprise writes.
+// style background). First boot with no saved folder auto-finds the default
+// folder (main resolves candidates + CommonSettings.json); the manual picker
+// stays the override. A missing/deleted folder must not stop boot.
 void restoreVideopsalmFolder();
 // Display plug/unplug while running arrives via window focus, not via
 // projection — re-read the count so the single-screen guard never goes stale.
