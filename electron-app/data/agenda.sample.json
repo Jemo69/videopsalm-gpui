@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "title": "Sample Sunday Service",
+  "items": [
+    { "id": "item-song-1", "kind": "Song", "title": "Amazing Grace", "ref": { "songId": "song-amazing-grace" }, "flowType": "Manual" },
+    { "id": "item-bible-1", "kind": "BibleVerses", "title": "John 3:16-17", "ref": { "bibleRef": { "translationId": "sample-en", "book": "John", "chapter": 3, "verses": [16, 17], "versification": "EN" } }, "flowType": "Manual" },
+    { "id": "item-image-1", "kind": "Image", "title": "Welcome background", "ref": { "file": "backgrounds/welcome.jpg" }, "flowType": "Manual" },
+    { "id": "item-video-1", "kind": "Video", "title": "Intro loop", "ref": { "file": "media/intro.mp4" }, "flowType": "Loop" },
+    { "id": "item-audio-1", "kind": "Audio", "title": "Prelude", "ref": { "file": "media/prelude.mp3" }, "flowType": "Manual" },
+    { "id": "item-pdf-1", "kind": "Pdf", "title": "Bulletin", "ref": { "file": "docs/bulletin.pdf" }, "flowType": "Manual" },
+    { "id": "item-ppt-1", "kind": "PowerPoint", "title": "Sermon slides (imported)", "ref": { "file": "slides/sermon.pptx-import/slide1.png" }, "flowType": "Manual", "overrides": { "pptxImport": true, "slides": ["slides/sermon.pptx-import/slide1.png"] } },
+    { "id": "item-yt-1", "kind": "YouTube", "title": "Worship video (link card)", "ref": { "url": "https://www.youtube.com/watch?v=example" }, "flowType": "Manual", "overrides": { "linkCardOnly": true } },
+    { "id": "item-web-1", "kind": "WebSite", "title": "Church website (link card)", "ref": { "url": "https://example.org" }, "flowType": "Manual", "overrides": { "linkCardOnly": true } },
+    { "id": "item-clock-1", "kind": "Clock", "title": "Countdown 5:00", "ref": { "text": "countdown:300" }, "flowType": "Manual" },
+    { "id": "item-alert-1", "kind": "Alert", "title": "Welcome alert", "ref": { "text": "Welcome! Please silence your phones." }, "flowType": "Manual" },
+    { "id": "item-ccli-1", "kind": "CCLI", "title": "CCLI #2762838", "ref": { "text": "CCLI 2762838" }, "flowType": "Manual" }
+  ],
+  "settings": { "lang": "en", "theme": "dark" }
+}

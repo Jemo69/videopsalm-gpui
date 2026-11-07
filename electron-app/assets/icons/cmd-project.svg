@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Project onto the projector</title>
+  <!-- Original mark: a monitor on its stand with a green arrow lifting out of
+       the screen. The arrow is the half that says "send it over there". -->
+  <rect x="2.8" y="4.6" width="18.4" height="12.6" rx="2.1" stroke="#78909C" stroke-width="1.8"/>
+  <path d="M12 17.2v3.4M8.7 20.6h6.6" stroke="#78909C" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M12 15.4V8.4" stroke="#43A047" stroke-width="2.1" stroke-linecap="round"/>
+  <path d="m8.85 11.15 3.15-3.15 3.15 3.15" stroke="#43A047" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

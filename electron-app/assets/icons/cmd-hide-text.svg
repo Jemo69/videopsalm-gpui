@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Hide / show the text</title>
+  <!-- Original mark: a sheet whose lower text block has been replaced by one
+       solid bar. The surviving faint rules above it are the words; the bar is
+       them being taken away. The background keeps playing either way. -->
+  <path d="M6 3.6h8.4L19 8.2v12.2H6z" stroke="#F57C00" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="M14.4 3.6v4.6H19" stroke="#F57C00" stroke-width="1.8" stroke-linejoin="round" opacity="0.55"/>
+  <path d="M8.9 11.2h6.2M8.9 14h4.4" stroke="#F57C00" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+  <rect x="8.4" y="16.6" width="8" height="2.7" rx="1.35" fill="#F57C00"/>
+</svg>

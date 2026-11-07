@@ -37,6 +37,21 @@ jobs:
       - run: cargo test -p vp-core
       - run: cargo test --workspace
 
+  test-electron:
+    name: Tests (Electron Perez TS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - working-directory: electron-app
+        run: npm ci
+      - working-directory: electron-app
+        run: npm run typecheck
+      - working-directory: electron-app
+        run: npm test
+
   package-linux:
     name: Package + upload (Linux x64)
     runs-on: ubuntu-latest

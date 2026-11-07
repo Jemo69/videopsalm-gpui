@@ -1,0 +1,33 @@
+{
+  "name": "perez-ts",
+  "version": "0.1.27",
+  "private": true,
+  "description": "Perez TS — clean-room worship presenter (Electron target). Offline-first.",
+  "main": "dist/src/main.js",
+  "scripts": {
+    "install:app": "npm install",
+    "build": "tsc -p tsconfig.json && npm run bundle:renderer && npm run copy:html",
+    "copy:html": "node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('dist/src/renderer',{recursive:true});for(const f of fs.readdirSync('src/renderer')){if(/\\.(html|css)$/.test(f))fs.copyFileSync(p.join('src/renderer',f),p.join('dist/src/renderer',f))}\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "start": "npm run build && dbus-run-session -- npx electron dist/src/main.js --disable-gpu --disable-software-rasterizer",
+    "start:control-only": "npm run build && dbus-run-session -- npx electron dist/src/main.js --control-only --disable-gpu --disable-software-rasterizer",
+    "dev": "npm run build && dbus-run-session -- npx electron dist/src/main.js --dev --disable-gpu --disable-software-rasterizer",
+    "bundle:renderer": "esbuild src/renderer/renderer.ts src/renderer/projector.ts src/renderer/stage.ts --bundle --outdir=dist/src/renderer --format=iife --target=chrome120 --log-level=warning",
+    "package": "npm run build && electron-packager . perez-ts --platform=linux --arch=x64 --out=release-pkg --overwrite --prune=true --icon=assets/icons/perez --ignore=\"^(src|tests|\\..*)\"",
+    "package:win": "npm run build && electron-packager . perez-ts --platform=win32 --arch=x64 --out=release-pkg --overwrite --prune=true --icon=assets/icons/perez --ignore=\"^(src|tests|\\..*)\""
+  },
+  "dependencies": {
+    "sql.js": "^1.10.2"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/node": "^22.0.0",
+    "electron": "^33.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.0"
+  }
+}
