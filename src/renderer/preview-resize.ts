@@ -226,16 +226,38 @@ function pct(v: number): string {
  * — the same string lays the frame out identically in the preview and on the
  * projector. `position:absolute` is inline (not a stylesheet rule) so the
  * projected HTML carries its own positioning into the projector window, which
- * shares no other CSS with the control preview. The body keeps a vertical
- * centering flex so absolutely-positioned text reads as before.
+ * shares no other CSS with the control preview. The body's vertical flex
+ * follows the style's `valign` (Rust `BodyStyle.valign`: top/center/bottom);
+ * header/footer keep the historical centering.
  */
-export function frameBoxCss(rect: Rect, _frame: FrameId): string {
+export function frameBoxCss(rect: Rect, _frame: FrameId, justify: string = "center"): string {
   const p = resolveRectPercent(rect, viewport(1000, 1000), "fill");
   return (
     `position:absolute;left:${pct(p.x)};top:${pct(p.y)};` +
     `width:${pct(p.w)};height:${pct(p.h)};overflow:hidden;` +
-    `display:flex;flex-direction:column;justify-content:center;`
+    `display:flex;flex-direction:column;justify-content:${justify};`
   );
+}
+
+/**
+ * The style's vertical lyric placement (`StyleBody.valign`) for these
+ * settings, defaulting to `center` when absent — mirroring Rust, which
+ * skips the key on write when it is center, so an omitted key must read
+ * as centered, never as unaligned. Unknown literals also fall back to
+ * center rather than breaking projection.
+ */
+export function getStyleValign(settings: unknown): "top" | "center" | "bottom" {
+  const style = (settings as { style?: unknown } | null)?.style as
+    | { body?: { valign?: unknown } }
+    | undefined;
+  const v = style?.body?.valign;
+  return v === "top" || v === "bottom" ? v : "center";
+}
+
+/** CSS `justify-content` for a style `valign` (column flex): Rust maps
+ * Top→Start, Center→Center, Bottom→End in `body_layout`. */
+export function valignJustify(valign: "top" | "center" | "bottom"): string {
+  return valign === "top" ? "flex-start" : valign === "bottom" ? "flex-end" : "center";
 }
 
 /** Fractional (0..1) box of a frame, for handle/outline placement. */

@@ -2,7 +2,7 @@
 //
 // Offline-first contract: NOTHING runs at startup and no network happens
 // unless the operator explicitly picks "Check for Updates…" from the menu.
-// When packaged, that check queries the perez-js GitHub releases feed,
+// When packaged, that check queries the perez-ts GitHub releases feed,
 // downloads only with consent, and installs on quit. In dev (`npm start`)
 // or when electron-updater is not installed, every entry point is a safe
 // no-op that reports "unavailable" instead of throwing.
@@ -54,7 +54,7 @@ export function initUpdater(): void {
     void dialog
       .showMessageBox(win, {
         type: "question",
-        title: "Perez JS update",
+        title: "Perez TS update",
         message: `Version ${version} is available. Download it now?`,
         buttons: ["Download", "Later"],
         defaultId: 0,
@@ -73,7 +73,7 @@ export function initUpdater(): void {
     void dialog
       .showMessageBox(win, {
         type: "question",
-        title: "Perez JS update",
+        title: "Perez TS update",
         message: `Version ${version} downloaded. Restart and install now?`,
         buttons: ["Restart now", "On next launch"],
         defaultId: 0,
@@ -97,7 +97,7 @@ export function checkForUpdatesNow(): void {
     if (win) {
       void dialog.showMessageBox(win, {
         type: "info",
-        title: "Perez JS update",
+        title: "Perez TS update",
         message: "Automatic updates run in installed builds only — this is a development run.",
       });
     }

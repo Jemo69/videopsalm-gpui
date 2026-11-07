@@ -5,6 +5,7 @@ import { BrowserWindow, app, ipcMain, screen, dialog, Menu, type MenuItemConstru
 import * as fs from "fs";
 import * as path from "path";
 import { openLibrary, type Library } from "./core/library";
+import { initUpdater, checkForUpdatesNow } from "./updater";
 import { parseAgenda, serializeAgenda, createAgenda } from "./core/agendaSerde";
 import { importBibleXml } from "./core/bibleImport";
 import { filterSongs, type SearchScope } from "./core/search";
@@ -83,7 +84,7 @@ function createControlWindow(): void {
   controlWin = new BrowserWindow({
     width: 1280,
     height: 860,
-    title: "VideoPsalm (Electron v1) — Control",
+    title: "Perez TS — Control",
     webPreferences: { preload: distFile("preload.js"), contextIsolation: true, nodeIntegration: false },
   });
   secureWebContents(controlWin.webContents);
@@ -133,7 +134,7 @@ function createProjectorWindow(): BrowserWindow {
     height: single ? 540 : undefined,
     fullscreen: !single,
     backgroundColor: "#000000",
-    title: "VideoPsalm — Projector",
+    title: "Perez TS — Projector",
     webPreferences: { preload: distFile("preload.js"), contextIsolation: true, nodeIntegration: false },
   });
   secureWebContents(projectorWin.webContents);
@@ -151,7 +152,7 @@ function createStageWindow(): BrowserWindow {  if (stageWin && !stageWin.isDestr
   stageWin = new BrowserWindow({
     width: 800,
     height: 500,
-    title: "VideoPsalm — Stage view",
+    title: "Perez TS — Stage view",
     webPreferences: { preload: distFile("preload.js"), contextIsolation: true, nodeIntegration: false },
   });
   secureWebContents(stageWin.webContents);
@@ -270,11 +271,20 @@ function registerIpc(): void {
     currentAgenda = createAgenda(title || "Untitled");
     return currentAgenda;
   });
-  function openAgendaFile(file: string): { path: string; agenda: Agenda } {
-    const text = fs.readFileSync(file, "utf8");
-    currentAgenda = parseAgenda(text);
-    library?.recordRecent(file);
-    return { path: file, agenda: currentAgenda };
+  function openAgendaFile(file: string): { ok: boolean; path?: string; agenda?: Agenda; error?: string } {
+    if (typeof file !== "string" || file.trim() === "" || file.includes("\0")) {
+      return { ok: false, error: `Not a readable agenda path: ${String(file).slice(0, 120)}` };
+    }
+    try {
+      const text = fs.readFileSync(file, "utf8");
+      currentAgenda = parseAgenda(text);
+      library?.recordRecent(file);
+      return { ok: true, path: file, agenda: currentAgenda };
+    } catch (e) {
+      // A missing/corrupt file must reject the invoke (renderer shows the
+      // message) rather than throw into an unhandled rejection.
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   }
   ipcMain.handle("vp:open-agenda", async () => {
     const res = await dialog.showOpenDialog({ filters: [{ name: "Agenda JSON", extensions: ["json", "vpsalm"] }], properties: ["openFile"] });
@@ -339,14 +349,23 @@ function registerIpc(): void {
   ipcMain.handle("vp:import-videopsalm-agenda", (_e, file: string) => importVideopsalmAgendaFile(file));
   ipcMain.handle("vp:save-agenda", async (_e, filePath?: string) => {
     let target = filePath;
-    if (!target) {
-      const res = await dialog.showSaveDialog({ filters: [{ name: "Agenda JSON", extensions: ["json"] }], defaultPath: "agenda.json" });
-      if (res.canceled || !res.filePath) return null;
-      target = res.filePath;
+    if (typeof target === "string" && (target.trim() === "" || target.includes("\0"))) {
+      throw new Error("Not a writable agenda path.");
     }
-    fs.writeFileSync(target, serializeAgenda(currentAgenda));
-    library?.recordRecent(target);
-    return target;
+    try {
+      if (!target) {
+        const res = await dialog.showSaveDialog({ filters: [{ name: "Agenda JSON", extensions: ["json"] }], defaultPath: "agenda.json" });
+        if (res.canceled || !res.filePath) return null;
+        target = res.filePath;
+      }
+      fs.writeFileSync(target, serializeAgenda(currentAgenda));
+      library?.recordRecent(target);
+      return target;
+    } catch (e) {
+      // Surface the message to the renderer's await instead of rejecting
+      // into an unhandled rejection on a fire-and-forget call.
+      throw new Error(e instanceof Error ? e.message : String(e));
+    }
   });
   // Export the agenda back to the native VideoPsalm plan shape (`.vpagd`):
   // a plain multi-entry ZIP the original opens with `Agenda.LoadFromFile`.
@@ -638,7 +657,12 @@ function setupApplicationMenu(): void {
       label: "Help",
       submenu: [
         {
-          label: "VideoPsalm Help",
+          label: "Check for Updates…",
+          click: () => checkForUpdatesNow(),
+        },
+        { type: "separator" },
+        {
+          label: "Perez TS Help",
           click: () => {
             controlWin?.webContents.send("vp:toggle-shortcuts");
           },
@@ -677,6 +701,9 @@ app.whenReady().then(() => {
   }
   setupApplicationMenu();
   registerIpc();
+  // Update wiring only — no network until the operator picks
+  // Help → Check for Updates… (offline-first: explicit consent).
+  initUpdater();
   createControlWindow();
   if (process.argv.includes("--control-only")) {
     // skip projector auto-open; control window only

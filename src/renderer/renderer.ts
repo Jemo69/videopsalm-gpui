@@ -111,7 +111,7 @@ import {
 // inlined SVG from icons.ts, byte-identical to assets/icons/*.svg.
 import { kindBadgeSvg, stripIconSvg } from "./icons";
 // B-07 hook: preview drag-resize writes normalized rects into the live style.
-import { attachPreviewResize, frameBoxCss, getStyleRect, setStyleRect, type FrameId } from "./preview-resize";
+import { attachPreviewResize, frameBoxCss, getStyleRect, getStyleValign, setStyleRect, valignJustify, type FrameId } from "./preview-resize";
 // DoD #6 hook: the style explorer tree (chains × levels × attributes).
 import { createExplorerState, inspectedFromStyleLevel, mountStyleExplorer, seedFromPrefs } from "./style-explorer";
 // B-32 galleries + transport: wiring only (UI in media-gallery.ts).
@@ -479,6 +479,56 @@ function mirrorBgFromFmt(): void {
 for (const id of ["fmt-bg-kind", "fmt-bg-color", "fmt-bg-file"]) {
   el<HTMLElement>(id).addEventListener("input", mirrorBgFromFmt);
 }
+
+
+async function browseBackground(): Promise<void> {
+  let res: {
+    ok?: boolean;
+    canceled?: boolean;
+    copied?: { path: string; kind: string }[];
+    errors?: string[];
+    folder?: string;
+  };
+  try {
+    res = (await bridge().importMedia(prefs.videopsalmFolder)) as typeof res;
+  } catch (e) {
+    setHint(`Background: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (!res || res.canceled || !(res.copied ?? []).length) {
+    if (res && res.errors && res.errors.length) setHint("Background: " + res.errors.join("; "));
+    return;
+  }
+  applyPickedBackground(res.copied as { path: string; kind: string }[]);
+  if (prefs.videopsalmFolder) {
+    try {
+      const scan = (await bridge().scanVideopsalmFolder(prefs.videopsalmFolder)) as VpFolderResult;
+      if (scan.folder) await applyVpFolderResult(scan, false);
+    } catch {
+      /* scan failure already hinted elsewhere */
+    }
+  }
+  const errs = res.errors ?? [];
+  setHint(
+    "Background set from " + (res.copied as { path: string }[])[0].path +
+    (errs.length ? " (" + errs.length + " skipped: " + errs.join("; ") + ")" : "")
+  );
+}
+
+export function applyPickedBackground(copied: { path: string; kind: string }[]): void {
+  const first = copied[0];
+  if (!first) return;
+  prefs.bgKind = first.kind === "video" ? "videoLoop" : "image";
+  prefs.bgFile = first.path;
+  savePrefs();
+  el<HTMLSelectElement>("bg-kind").value = prefs.bgKind;
+  el<HTMLInputElement>("bg-file").value = prefs.bgFile;
+  el<HTMLSelectElement>("fmt-bg-kind").value = prefs.bgKind;
+  el<HTMLInputElement>("fmt-bg-file").value = prefs.bgFile;
+  void refreshFilmstrip();
+}
+el<HTMLButtonElement>("bg-browse").addEventListener("click", () => void browseBackground());
+el<HTMLButtonElement>("fmt-bg-browse").addEventListener("click", () => void browseBackground());
 el<HTMLInputElement>("fmt-transpose").addEventListener("input", (e) => {
   el<HTMLInputElement>("transpose-steps").value = (e.target as HTMLInputElement).value;
   el<HTMLInputElement>("transpose-steps").dispatchEvent(new Event("input"));
@@ -901,7 +951,7 @@ function worshipSlide(title: string, bodyText: string, ref: string, bilingual: b
   };
   const head = prefs.headerOn ? `<div class="vp-header" style="${frameBoxCss(getStyleRect(agenda.settings, "header"), "header")}">${escapeHtml(formatTemplate(prefs.headerTemplate || "{title}", tmplCtx))}</div>` : "";
   const foot = prefs.footerOn ? `<div class="vp-footer" style="${frameBoxCss(getStyleRect(agenda.settings, "footer"), "footer")}">${escapeHtml(formatTemplate(prefs.footerTemplate || "{ref}", tmplCtx))}</div>` : "";
-  const body = `<div class="vp-body${bilingual ? " bilingual" : ""}" style="${frameBoxCss(getStyleRect(agenda.settings, "body"), "body")}">${bodyInner(bodyText, bilingual) || "<p>(empty slide)</p>"}</div>`;
+  const body = `<div class="vp-body${bilingual ? " bilingual" : ""}" style="${frameBoxCss(getStyleRect(agenda.settings, "body"), "body", valignJustify(getStyleValign(agenda.settings)))}">${bodyInner(bodyText, bilingual) || "<p>(empty slide)</p>"}</div>`;
   const hl = prefs.wordHighlight ? " word-hl" : "";
   const trans = prefs.transition && prefs.transition !== "none" ? ` data-transition="${escapeHtml(prefs.transition)}"` : "";
   return `<div class="vp-slide${hl}"${trans} style="${bg.css}font-family:${escapeHtml(font)};font-size:${escapeHtml(String(size))}px;color:${escapeHtml(color)};text-align:${escapeHtml(align)};font-weight:${weight};font-style:${slant};text-decoration:${decor};--hl:${escapeHtml(prefs.highlightColor)}">${bg.video}${head}${body}${foot}</div>`;
@@ -3372,6 +3422,8 @@ interface VpTestState {
   selectedItemId: string | null;
   liveItemTitle: string | null;
   theme: string;
+  bgKind: string;
+  bgFile: string;
 }
 
 function vpTestState(): VpTestState {
@@ -3383,6 +3435,8 @@ function vpTestState(): VpTestState {
       ? (agenda.items.find((it) => it.id === liveItemId)?.title ?? null)
       : null,
     theme: prefs.theme,
+    bgKind: prefs.bgKind ?? "theme",
+    bgFile: prefs.bgFile ?? "",
   };
 }
 

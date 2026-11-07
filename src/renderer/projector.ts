@@ -75,7 +75,7 @@ function fitAllSlides(root: ParentNode): { shrunk: boolean; factor: number } {
 
 function render(state: { slide: { title: string; html: string }; alert: { visible: boolean; text: string } }): void {
   const slide = document.getElementById("slide")!;
-  slide.innerHTML = state.slide.html || `<h1>VideoPsalm</h1><p>Nothing projected.</p>`;
+  slide.innerHTML = state.slide.html || `<h1>Perez</h1><p>Ready to project</p>`;
   // Full-bleed worship slides carry their own background: drop the vmin padding
   // so color/image/video covers the whole screen; plain slides keep padding.
   slide.classList.toggle("bleed", slide.querySelector(".vp-slide") !== null);

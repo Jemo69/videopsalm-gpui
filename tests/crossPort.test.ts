@@ -20,6 +20,7 @@ import {
   AGENDA_KINDS,
   ALIGNS,
   BACKGROUND_KINDS,
+  BGFITS,
   CHORD_NOTATION_ALIASES,
   CHORD_NOTATIONS,
   FLOW_TYPE_ALIASES,
@@ -29,12 +30,15 @@ import {
   RECT_FULL,
   TEXT_SIZE_SPACE,
   TRANSITIONS,
+  VALIGNS,
   VERSIFICATIONS,
+  bgFitFromLiteral,
   canonicalChordNotation,
   canonicalFlowType,
   isAgendaItemKind,
   isChordNotation,
   isFlowType,
+  isVAlign,
   type Agenda,
   type AgendaItem,
   type BibleRef,
@@ -60,7 +64,9 @@ interface Fixture {
     itemKinds: string[];
     versifications: string[];
     aligns: string[];
+    vAligns: string[];
     backgroundKinds: string[];
+    bgFits: string[];
     transitions: string[];
   };
   songs: Song[];
@@ -127,8 +133,18 @@ describe("cross-port schema fixture", () => {
     it("aligns", () => {
       assert.deepEqual([...ALIGNS], fixture.enums.aligns);
     });
+    it("vAligns", () => {
+      assert.deepEqual([...VALIGNS], fixture.enums.vAligns);
+    });
     it("background kinds", () => {
       assert.deepEqual([...BACKGROUND_KINDS], fixture.enums.backgroundKinds);
+    });
+    it("bgFits", () => {
+      assert.deepEqual([...BGFITS], fixture.enums.bgFits);
+      assert.equal(bgFitFromLiteral("cover"), "cover");
+      assert.equal(bgFitFromLiteral("contain"), "contain");
+      assert.equal(bgFitFromLiteral("stretch"), undefined);
+      assert.equal(bgFitFromLiteral(""), undefined);
     });
     it("transitions", () => {
       assert.deepEqual([...TRANSITIONS], fixture.enums.transitions);
@@ -192,7 +208,7 @@ describe("cross-port schema fixture", () => {
   });
 
   describe("styles", () => {
-    it("declares transition on every style and covers every align / background kind", () => {
+    it("declares transition on every style and covers every align / valign / background kind", () => {
       assert.equal(fixture.styles.length, 4);
       for (const style of fixture.styles) {
         assert.equal(typeof style.transition, "string", `${style.level} needs transition`);
@@ -202,9 +218,21 @@ describe("cross-port schema fixture", () => {
         );
       }
       const aligns = fixture.styles.map((s) => s.body.align);
+      const valigns = fixture.styles.map((s) => s.body.valign ?? "center");
       const kinds = fixture.styles.map((s) => s.background.kind);
       for (const a of fixture.enums.aligns) assert.ok(aligns.includes(a as never), `missing align ${a}`);
+      for (const v of fixture.enums.vAligns) assert.ok(valigns.includes(v as never), `missing valign ${v}`);
       for (const k of fixture.enums.backgroundKinds) assert.ok(kinds.includes(k as never), `missing kind ${k}`);
+      // Omitted valign must read as center (Rust skips the key on write when center).
+      for (const style of fixture.styles) {
+        const v = style.body.valign ?? "center";
+        assert.ok(isVAlign(v), `${style.level} has unknown valign ${v}`);
+      }
+      // Rust emits explicit null for unset image/videoLoop/autoAdvanceMs — the
+      // model must accept null as well as absent.
+      assert.equal(fixture.styles[0].background.image, null);
+      assert.equal(fixture.styles[0].background.videoLoop, null);
+      assert.equal(fixture.agenda.items[0].autoAdvanceMs ?? null, null);
     });
 
     it("the videoLoop key is spelled the Rust way", () => {

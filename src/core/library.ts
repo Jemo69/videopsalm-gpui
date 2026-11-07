@@ -1,6 +1,14 @@
 // SQLite-backed local library (songs, bibles metadata, agenda recents, settings).
-// Primary: better-sqlite3 when installed and loadable; fallback: sql.js (wasm);
-// last resort: in-memory + JSON file persistence. Offline-first, no network.
+// Primary: better-sqlite3 when installed and loadable; fallback: JSON-file
+// store in the user directory. Offline-first, no network.
+//
+// NOTE: an earlier revision carried a `createSqlJsBackend` (sql.js/wasm)
+// stub whose sync `all()`/`run()` threw ("async-only") — a crash on first
+// query whenever it was reached. It had no callers (`openLibrary` below
+// already fell through to the JSON store), so it was deleted outright rather
+// than fixed: one working fallback beats two half-wired ones. If a wasm
+// backend is ever wanted again it must implement the full sync `Library`
+// interface with a regression test, not a throwing stub.
 
 import * as fs from "fs";
 import * as path from "path";
@@ -9,55 +17,6 @@ import type { Song } from "./schemas";
 export interface LibraryCounts {
   songs: number;
   recents: number;
-}
-
-interface Backend {
-  kind: string;
-  exec(sql: string): void;
-  all<T>(sql: string, params?: unknown[]): T[];
-  run(sql: string, params?: unknown[]): void;
-  save?(): void;
-}
-
-function createSqlJsBackend(dbPath: string): Backend {
-  // Lazy require so typecheck/build do not fail when sql.js is absent.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const initSqlJs = require("sql.js") as any;
-  interface SqlJsApi {
-    Database: new (data?: Uint8Array) => {
-      exec(sql: string): void;
-      run(sql: string, params?: unknown[]): void;
-      prepare(sql: string): { bind(p: unknown[]): boolean; step(): boolean; getAsObject(): Record<string, unknown>; free(): void };
-      export(): Uint8Array;
-    };
-  }
-  let db: InstanceType<SqlJsApi["Database"]> | null = null;
-  const ready = (async () => {
-    const SQL = await initSqlJs();
-    const existing = fs.existsSync(dbPath) ? new Uint8Array(fs.readFileSync(dbPath)) : undefined;
-    db = new SQL.Database(existing);
-    return db;
-  })();
-  const persist = () => {
-    if (!db) return;
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    fs.writeFileSync(dbPath, Buffer.from(db.export()));
-  };
-  return {
-    kind: "sql.js",
-    exec(sql: string): void {
-      void ready.then((d) => {
-        if (d) d.exec(sql);
-      });
-    },
-    all<T>(sql: string, params: unknown[] = []): T[] {
-      throw new Error("sql.js backend is async-only; use initLibraryAsync for queries");
-    },
-    run(_sql: string, _params: unknown[] = []): void {
-      throw new Error("sql.js backend is async-only; use initLibraryAsync for writes");
-    },
-    save: persist,
-  };
 }
 
 export interface Library {
@@ -172,5 +131,3 @@ export function openLibrary(dir: string): Library {
     return createJsonLibrary(dir);
   }
 }
-
-export { createSqlJsBackend };

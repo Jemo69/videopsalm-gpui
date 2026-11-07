@@ -20,10 +20,12 @@ import {
   frameBoxCss,
   frameFractions,
   getStyleRect,
+  getStyleValign,
   handleAnchor,
   pointToNormalized,
   previewFit,
   setStyleRect,
+  valignJustify,
   type FrameId,
   type HandleId,
 } from "../src/renderer/preview-resize.js";
@@ -204,4 +206,25 @@ test("setStyleRect clamps garbage instead of storing it", () => {
   setStyleRect(agenda, "footer", { x: -50, y: 9_300, w: 99_999, h: 700 });
   const back = getStyleRect(agenda.settings, "footer");
   assert.ok(back.x >= 0 && back.w <= 10_000, JSON.stringify(back));
+});
+
+test("valign: Rust-authored top/bottom reaches the projected slide, center stays default", () => {
+  // Parity with gpui-app/app/src/projector_window.rs body_layout:
+  // Top→flex-start, Center→center, Bottom→flex-end. An omitted valign
+  // (Rust skips the key on write when center) reads as center.
+  assert.equal(getStyleValign(undefined), "center");
+  assert.equal(getStyleValign({}), "center");
+  assert.equal(getStyleValign({ style: { body: {} } }), "center");
+  assert.equal(getStyleValign({ style: { body: { valign: "top" } } }), "top");
+  assert.equal(getStyleValign({ style: { body: { valign: "bottom" } } }), "bottom");
+  assert.equal(getStyleValign({ style: { body: { valign: "sideways" } } }), "center");
+  assert.equal(valignJustify("top"), "flex-start");
+  assert.equal(valignJustify("center"), "center");
+  assert.equal(valignJustify("bottom"), "flex-end");
+  const body = { x: 0, y: 0, w: 10_000, h: 9_300 };
+  assert.match(frameBoxCss(body, "body"), /justify-content:center;/);
+  assert.match(frameBoxCss(body, "body", valignJustify("top")), /justify-content:flex-start;/);
+  assert.match(frameBoxCss(body, "body", valignJustify("bottom")), /justify-content:flex-end;/);
+  // Header/footer keep the historical centering.
+  assert.match(frameBoxCss(body, "header"), /justify-content:center;/);
 });

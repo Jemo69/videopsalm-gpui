@@ -4,13 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:; media-src 'self' file: data: blob:; font-src 'self' file: data:;" />
-<title>VideoPsalm Electron v1 — Control</title>
+<title>Perez TS — Control</title>
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body data-theme="dark">
 <!-- ══ Top bar: identity + global outputs + theme/lang ══ -->
 <header id="topbar">
-  <strong id="app-title">VideoPsalm (Electron v1)</strong>
+  <strong id="app-title">Perez TS</strong>
   <span class="style-level-badge" id="style-level-badge" title="Hierarchical style level: Song overrides Bible overrides Agenda default">Style: Song › Bible › Agenda</span>
   <span class="spacer"></span>
   <label>Lang <select id="lang"><option value="en">EN</option><option value="fr">FR</option></select></label>
@@ -179,6 +179,7 @@
       <select id="bg-kind"><option value="color">color</option><option value="image">image</option><option value="videoLoop">video loop</option></select>
       <input id="bg-color" type="color" value="#000000" title="Background color" />
       <input id="bg-file" size="22" placeholder="image/video file path…" title="Background image or looping video file" />
+      <button id="bg-browse" title="Pick a background file in the explorer — it is copied into your VideoPsalm folder">Browse…</button>
     </div>
     <div class="ribbon-group">
       <span class="ribbon-label">Chords</span>
@@ -288,6 +289,7 @@
       <select id="fmt-bg-kind"><option value="color">color</option><option value="image">image</option><option value="videoLoop">video loop</option></select>
       <input id="fmt-bg-color" type="color" value="#000000" title="Background color" />
       <input id="fmt-bg-file" size="30" placeholder="image/video file path…" title="Background image or looping video file" />
+        <button id="fmt-bg-browse" title="Pick a background file in the explorer — it is copied into your VideoPsalm folder">Browse…</button>
       <button id="bg-vp-folder" title="Load Images/, Videos/, and the background assigned by RootStyle.json from a VideoPsalm document folder">VideoPsalm folder…</button>
       <span id="bg-vp-info" class="hint"></span>
     </div>

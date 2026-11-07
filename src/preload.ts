@@ -55,6 +55,9 @@ const api = {
   /** The projector reports whether it had to shrink the text to fit. */
   reportFit: (info: unknown) => ipcRenderer.send("vp:fit", info),
   onFit: (cb: (info: unknown) => void) => ipcRenderer.on("vp:fit", (_e, info) => cb(info)),
+  /** Update status pushed by the main process (opt-in check only). */
+  onUpdateStatus: (cb: (s: { status: string; detail?: string }) => void) =>
+    ipcRenderer.on("vp:update-status", (_e, s) => cb(s as { status: string; detail?: string })),
 };
 
 contextBridge.exposeInMainWorld("vp", api);

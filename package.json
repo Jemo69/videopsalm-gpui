@@ -1,8 +1,8 @@
 {
-  "name": "videopsalm-electron",
-  "version": "1.0.0",
+  "name": "perez-ts",
+  "version": "0.1.27",
   "private": true,
-  "description": "VideoPsalm 1.29 clean-room reimplementation (Electron target). Offline-first worship presenter.",
+  "description": "Perez TS — clean-room worship presenter (Electron target). Offline-first.",
   "main": "dist/src/main.js",
   "scripts": {
     "install:app": "npm install",
@@ -14,8 +14,8 @@
     "start:control-only": "npm run build && dbus-run-session -- npx electron dist/src/main.js --control-only --disable-gpu --disable-software-rasterizer",
     "dev": "npm run build && dbus-run-session -- npx electron dist/src/main.js --dev --disable-gpu --disable-software-rasterizer",
     "bundle:renderer": "esbuild src/renderer/renderer.ts src/renderer/projector.ts src/renderer/stage.ts --bundle --outdir=dist/src/renderer --format=iife --target=chrome120 --log-level=warning",
-    "package": "npm run build && electron-packager . videopsalm --platform=linux --arch=x64 --out=release-pkg --overwrite --prune=true --ignore=\"^(src|tests|\\..*)\"",
-    "package:win": "npm run build && electron-packager . videopsalm --platform=win32 --arch=x64 --out=release-pkg --overwrite --prune=true --ignore=\"^(src|tests|\\..*)\""
+    "package": "npm run build && electron-packager . perez-ts --platform=linux --arch=x64 --out=release-pkg --overwrite --prune=true --icon=assets/icons/perez --ignore=\"^(src|tests|\\..*)\"",
+    "package:win": "npm run build && electron-packager . perez-ts --platform=win32 --arch=x64 --out=release-pkg --overwrite --prune=true --icon=assets/icons/perez --ignore=\"^(src|tests|\\..*)\""
   },
   "dependencies": {
     "sql.js": "^1.10.2"

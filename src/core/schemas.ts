@@ -233,8 +233,17 @@ export interface AgendaItem {
     text?: string;
   };
   flowType?: FlowType;
-  autoAdvanceMs?: number;
+  /** Rust emits explicit `null` when no auto-advance is set; accept it as well as absent. */
+  autoAdvanceMs?: number | null;
   overrides?: Record<string, unknown>;
+}
+
+/** A songbook the library can file songs under. Mirrors Rust `Songbook`. */
+export interface Songbook {
+  id: string;
+  name: string;
+  abbrev: string;
+  readOnly: boolean;
 }
 
 export interface Agenda {
@@ -245,6 +254,15 @@ export interface Agenda {
 }
 
 export type Align = "left" | "center" | "right";
+
+/** Vertical placement of the lyric block in its frame. Mirrors Rust `VAlign` (`top`/`center`/`bottom`, default `center`, key skipped on write when center). */
+export type VAlign = "top" | "center" | "bottom";
+
+export const VALIGNS: readonly VAlign[] = ["top", "center", "bottom"];
+
+export function isVAlign(s: string): s is VAlign {
+  return (VALIGNS as readonly string[]).includes(s);
+}
 
 export const ALIGNS: readonly Align[] = ["left", "center", "right"];
 
@@ -308,6 +326,13 @@ export interface StyleBody {
   size: number;
   color: string;
   align: Align;
+  /**
+   * Vertical placement of the lyric block in its frame. Mirrors Rust
+   * `BodyStyle.valign`: absent (or `center`) means centered, and Rust skips
+   * the key on write when it is center — so an omitted key here must be
+   * read as `center`, never as unaligned.
+   */
+  valign?: VAlign;
   margins: { top: number; right: number; bottom: number; left: number };
   /**
    * Normalized frame for the body text. Absent means "not authored at this
@@ -329,6 +354,22 @@ export interface StyleHeaderFooter {
 
 export type BackgroundKind = "color" | "image" | "videoLoop" | "camera";
 
+/**
+ * How a background image fills the screen. Mirrors Rust `BgFit`
+ * (`cover` = crop to fill, the vendor's only background mode; `contain` =
+ * whole image with bars, the vendor's slideshow mode). Model-only until
+ * per-background fit editing lands; declared so the literal table cannot
+ * drift between ports.
+ */
+export type BgFit = "cover" | "contain";
+
+export const BGFITS: readonly BgFit[] = ["cover", "contain"];
+
+/** Parse a wire/prefs literal; unknown (or empty) means the default. Mirrors Rust `BgFit::from_literal`. */
+export function bgFitFromLiteral(s: string): BgFit | undefined {
+  return (BGFITS as readonly string[]).includes(s) ? (s as BgFit) : undefined;
+}
+
 export const BACKGROUND_KINDS: readonly BackgroundKind[] = [
   "color",
   "image",
@@ -344,8 +385,10 @@ export interface Style {
   background: {
     kind: BackgroundKind;
     color: string;
-    image?: string;
-    videoLoop?: string;
+    /** Rust emits explicit `null` (no skip); accept it as well as absent. */
+    image?: string | null;
+    /** Rust emits explicit `null` (no skip); accept it as well as absent. */
+    videoLoop?: string | null;
     /**
      * Normalized frame for the background, absent = not authored at this level.
      *
