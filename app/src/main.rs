@@ -191,6 +191,10 @@ pub(crate) struct UI {
     selection: Rgba,
     /// Text colour guaranteed readable on `selection` backgrounds.
     selection_ink: Rgba,
+    /// The live/projecting cue: lime, on every skin (LIVE = lime only).
+    live: Rgba,
+    /// Text colour guaranteed readable on `live` backgrounds.
+    live_ink: Rgba,
     /// The orange used to mark an **engaged** command.
     ///
     /// UX-RESEARCH §6 (OBSERVATIONS): an engaged presentation command is drawn
@@ -212,12 +216,21 @@ const ENGAGED: Rgba = Rgba {
 /// polls at the same cadence; higher reads smoother but republishes more.
 const MOTION_FPS: u32 = 8;
 
-/// Blue, for the row that is currently projecting (UX-RESEARCH §10.3:
-/// "highlighted in blue" — since 1.2, and on every skin).
+/// Signal red: selected agenda item + primary buttons (perez-sheet.html
+/// brand layer; replaces the Office-blue SELECTION_BLUE on the control
+/// window. Projection-surface blue cue is unchanged).
 const SELECTION_BLUE: Rgba = Rgba {
-    r: 0.145,
-    g: 0.388,
-    b: 0.922,
+    r: 0xED as f32 / 255.0,
+    g: 0x12 as f32 / 255.0,
+    b: 0x16 as f32 / 255.0,
+    a: 1.0,
+};
+
+/// Lime: the ONLY live/projecting cue (perez-sheet.html LIVE = lime only).
+const LIVE_LIME: Rgba = Rgba {
+    r: 0xCC as f32 / 255.0,
+    g: 0xED as f32 / 255.0,
+    b: 0x12 as f32 / 255.0,
     a: 1.0,
 };
 
@@ -287,10 +300,13 @@ impl UI {
             accent,
             accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
-            // Skin-independent: the projected row is blue on every skin, and
-            // the engaged-command outline is orange on every skin.
+            // Skin-independent: the selected agenda item is signal red and
+            // the live/projecting row is lime, on every skin
+            // (perez-sheet.html brand layer).
             selection: SELECTION_BLUE,
             selection_ink: ink_on(SELECTION_BLUE),
+            live: LIVE_LIME,
+            live_ink: ink_on(LIVE_LIME),
             engaged: ENGAGED,
         }
     }
@@ -5897,8 +5913,8 @@ pub(crate) fn btn(
         ui.border
     };
     let mut d = div()
-        .px_2()
-        .py(px(2.))
+        .px(px(crate::ux::RIBBON_BTN_PX))
+        .py(px(crate::ux::RIBBON_BTN_PY))
         .rounded_sm()
         .bg(if shield { SHIELD_ARMED } else { ui.panel })
         .text_color(if shield { ink_on(SHIELD_ARMED) } else { ui.fg })
@@ -5974,8 +5990,8 @@ pub(crate) fn btn_tip(
 /// No click handler, default cursor.
 pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
     div()
-        .px_2()
-        .py(px(3.))
+        .px(px(crate::ux::RIBBON_BTN_PX))
+        .py(px(crate::ux::RIBBON_BTN_PY))
         .rounded_sm()
         .bg(ui.panel)
         .text_color(ui.border)
@@ -6036,8 +6052,8 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
         .flex()
         .flex_col()
         .gap(px(1.))
-        .px(px(6.))
-        .py(px(2.))
+        .px(px(4.))
+        .py(px(1.))
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
@@ -6047,7 +6063,7 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .gap_1()
+                .gap(px(2.))
                 .items_center()
                 .children(kids),
         )
@@ -6072,14 +6088,14 @@ fn swatch(
 ) -> Div {
     let ink = hex(color_hex);
     div()
-        .px_2()
-        .py(px(3.))
+        .px(px(crate::ux::RIBBON_BTN_PX))
+        .py(px(crate::ux::RIBBON_BTN_PY))
         .rounded_sm()
         .border_1()
         .border_color(if active { ui.fg } else { ui.border })
         .bg(if active { ui.panel } else { ui.bg })
         .cursor_pointer()
-        .text_size(px(16.))
+        .text_size(px(13.))
         .text_color(ink)
         .child("A".to_string())
         .on_mouse_up(MouseButton::Left, cx.listener(f))
@@ -6707,8 +6723,8 @@ impl Root {
                     (ribbon_blue, rgb(0xFFFFFF), rgb(0x5AA0E8))
                 };
                 div()
-                    .px_2()
-                    .py(px(2.))
+                    .px(px(1.))
+                    .py(px(crate::ux::RIBBON_TAB_PY))
                     .rounded_sm()
                     .border_1()
                     .border_color(tab_border)
@@ -6736,9 +6752,10 @@ impl Root {
         div()
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .px(px(6.))
-            .py(px(4.))
+            .gap(px(crate::ux::RIBBON_BAND_GAP))
+            .px(px(4.))
+            .py(px(crate::ux::RIBBON_OUTER_PY))
+            .text_size(px(crate::ux::RIBBON_TEXT_PX))
             .bg(rgb(0x1E6CC8))
             .border_b_1()
             .border_color(rgb(0x155AAD))
@@ -7326,7 +7343,7 @@ impl Root {
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_2()
+            .gap(px(crate::ux::RIBBON_WRAP_GAP))
             .items_start()
             .child(
                 div()
@@ -7488,22 +7505,15 @@ impl Root {
                 cx.notify();
             }));
         }
+        // Style Explorer launcher ends the preset row (not a third line of
+        // the group) — same handler; the tree still opens over whichever tab
+        // is active (UX-RESEARCH §5.3).
+        presets.push(btn(ui, cx, "Style explorer", self.show_style_explorer, |this, _, _, cx| {
+            this.show_style_explorer = !this.show_style_explorer;
+            this.persist_layout_quiet();
+            cx.notify();
+        }));
         style_kids.push(row(presets));
-        // Style Explorer launcher, bottom-right of the Styles group (UX-RESEARCH
-        // §5.3: "the little launcher button at the bottom-right of the Styles
-        // ribbon group"). It is NOT a fifth ribbon tab and does not belong on
-        // Text or Edit — the tree opens over whatever tab is active.
-        style_kids.push(btn(
-            ui,
-            cx,
-            "Style explorer",
-            self.show_style_explorer,
-            |this, _, _, cx| {
-                this.show_style_explorer = !this.show_style_explorer;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
         // Font group: family + B/I/U + alignment + chord notation.
         // Font dropdown (WI-029): every installed family, searchable — eight
         // quick buttons could never cover a real laptop's font list. The
@@ -7742,7 +7752,7 @@ impl Root {
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_2()
+            .gap(px(crate::ux::RIBBON_WRAP_GAP))
             .items_start()
             .min_w_0()
             .overflow_hidden()
@@ -8266,8 +8276,8 @@ impl Root {
                     .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(if live { ui.selection } else { ui.panel })
-                    .text_color(if live { ui.selection_ink } else { ui.fg })
+                    .bg(if live { ui.live } else { ui.panel })
+                    .text_color(if live { ui.live_ink } else { ui.fg })
                     .cursor_pointer()
                     .child(title_cell)
                     .child(status_dot)
@@ -10599,6 +10609,8 @@ impl Root {
                 selection: ui.selection,
                 selection_ink: ui.selection_ink,
                 engaged: ui.engaged,
+                live: ui.live,
+                live_ink: ui.live_ink,
             };
             let button = Self::round_command(ui, &strip, cx, icon, active, armed, action, i);
             // Dropdown affordance under the commands that have one.

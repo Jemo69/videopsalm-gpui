@@ -1,0 +1,1 @@
+2026-11-08	wrap-caption	251/252→252/252	A trailing-space in wrap_line; B join(" ") in test; C wrap_caption new fn	wrap_caption + hard-cut fallback from A	A/B broke verse pipeline + hard-split pieces	python3 tools/hillclimb_metrics.py; cargo test -p vp-core --offline

@@ -115,6 +115,44 @@ pub fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
     out
 }
 
+/// Char-preserving wrap for captions/URLs (file paths, links): every char of
+/// the input appears in the output, so `lines.concat() == line`. Breaks after
+/// the last space or `/` within the cap, keeping the separator at the end of
+/// the line; hard-cuts only when no separator fits. Unlike [`wrap_line`] the
+/// whitespace is never normalised, so this must NOT feed the verse pipeline
+/// (`fix_orphan_word` re-joins with single spaces).
+pub fn wrap_caption(line: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + max_chars).min(chars.len());
+        if end == chars.len() {
+            out.push(chars[start..].iter().collect());
+            break;
+        }
+        // Prefer breaking after a space or '/' inside the window.
+        let mut cut = end;
+        let mut found = false;
+        for i in (start..end).rev() {
+            if chars[i] == ' ' || chars[i] == '/' {
+                cut = i + 1;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            cut = end; // hard cut inside a long run
+        }
+        out.push(chars[start..cut].iter().collect());
+        start = cut;
+    }
+    out
+}
 /// Move words down so the last line is never a lone word (when avoidable
 /// without breaking the char cap the wrapper just enforced).
 fn fix_orphan_word(lines: &mut Vec<String>, max_chars: usize) {
