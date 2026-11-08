@@ -1,1 +1,2 @@
 2026-11-08	wrap-caption	251/252→252/252	A trailing-space in wrap_line; B join(" ") in test; C wrap_caption new fn	wrap_caption + hard-cut fallback from A	A/B broke verse pipeline + hard-split pieces	python3 tools/hillclimb_metrics.py; cargo test -p vp-core --offline
+2026-11-08	full-suite	metric 100/100	app 190/190 + vp-core 252/252 + misc 5/5 green; 1 warning RIBBON_GROUP_PX in uncommitted ux.rs (not this agent)	prove-it: cargo test --offline all ok; python3 tools/hillclimb_metrics.py 10/10
