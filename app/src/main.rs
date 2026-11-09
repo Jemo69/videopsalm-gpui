@@ -5839,17 +5839,11 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             return;
         }
         // While a text field has focus only the non-character shortcuts work,
-        // so on-the-fly lyric edits are never interrupted.
+        // so on-the-fly lyric edits are never interrupted. F5 (start) is
+        // explicitly whitelisted: it never types, and "F5 start" is on the
+        // status bar as a global promise.
         let typing = self.editing(window, cx);
-        if typing
-            && !matches!(
-                key,
-                PresKey::RangeExtendEnd
-                    | PresKey::RangeShrinkEnd
-                    | PresKey::ToggleRibbon
-                    | PresKey::KeyTips
-            )
-        {
+        if typing && !pres_key_passes_while_editing(key) {
             return;
         }
         match key {
@@ -6400,6 +6394,22 @@ fn focus_slides_target(current: Mode) -> Mode {
     }
 }
 
+/// Keys that keep working while a text field has focus (pure, tested):
+/// range extend/shrink, ribbon toggle, KeyTips — and F5 (start), which
+/// never types and is promised globally on the status bar. Everything
+/// else (slide vocabulary, letters, Enter) stays local to the field so
+/// lyric edits are never interrupted.
+fn pres_key_passes_while_editing(key: PresKey) -> bool {
+    matches!(
+        key,
+        PresKey::RangeExtendEnd
+            | PresKey::RangeShrinkEnd
+            | PresKey::ToggleRibbon
+            | PresKey::KeyTips
+            | PresKey::StartPres
+    )
+}
+
 /// Cold-Enter target (pure, tested): nothing is projecting yet, so Enter
 /// projects the operator's current context — agenda cursor first, then the
 /// item holding the clicked verse, else the first item. Empty agenda
@@ -6563,6 +6573,7 @@ impl Render for Root {
             // utility toolbar. Keep those actions reachable from Message (the
             // stage/live workspace) instead of adding a non-original row above
             // the ribbon.
+            root = root.child(self.title_strip(&ui, cx));
             root = root.child(self.menu_row(&ui, cx));
             // Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/
             // View menu row sits at position 2 — directly below the title
@@ -6772,6 +6783,28 @@ impl Root {
     // (File|Agenda|Songs|Bibles|Media|Style|View) as a tab bar + grouped
     // action buttons. All buttons reuse the same handlers as the panels.
 
+    /// Slim signal-red title strip (position 1): brand + agenda name on
+    /// red, paper strips below. The old full-red ribbon band read as one
+    /// oversized block next to the sheet's paper strips (R3).
+    fn title_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py(px(1.))
+            .bg(rgb(0xED1216))
+            .text_color(rgb(0xFFFFFF))
+            .text_size(px(12.))
+            .font_weight(FontWeight::BOLD)
+            .child(format!("♪ Perez — {}", self.agenda.title))
+            .child(div().flex_1())
+            .child(btn(ui, cx, "⛶ Go live", false, |this, _, _, cx| {
+                this.go_live(cx);
+            }))
+    }
+
     /// Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/View
     /// menu row. Each item drives existing workspace state (ribbon tab,
     /// browser tab, disclosures, viewer mode) — no dead wires.
@@ -6949,11 +6982,12 @@ impl Root {
             .px(px(4.))
             .py(px(crate::ux::RIBBON_OUTER_PY))
             .text_size(px(crate::ux::RIBBON_TEXT_PX))
-            // Signal Room brand: the title strip is signal red (sheet
-            // header), not Office blue. White/bold title text on it.
-            .bg(rgb(0xED1216))
+            // Sheet paper strips: the ribbon band is a paper card, not a
+            // red block. Red lives on the slim title strip above, primary
+            // buttons, selected rows and the lime-only live cue.
+            .bg(ui.panel)
             .border_b_1()
-            .border_color(rgb(0x8E0B0D))
+            .border_color(ui.border)
             .child(
                 div()
                     .flex()
@@ -10593,15 +10627,18 @@ impl Root {
                     ),
             )
         } else {
-            // The projector render itself, in an output-ratio box: the
-            // preview cannot disagree with the projector by construction
-            // (WI-028). "current" follows the window glass; a set preset
+            // The projector render itself, in an output-ratio box sized to
+            // the panel: the box used to be a fixed 548px, which overflowed
+            // the ~300px right column and cropped lyric lines at both edges
+            // (R3 worst surface). It now tracks the column so the preview
+            // cannot disagree with the projector by construction (WI-028)
+            // AND fits. "current" follows the window glass; a set preset
             // letterboxes exactly like the projector does.
-            const PREVIEW_W: f32 = 548.0;
+            let panel_w = (self.right_w.min((win_w * 0.32).max(220.0)) - 12.0).max(120.0);
             let aspect = AspectRatio::from_label(&self.aspect_ratio)
                 .map(|r| r.aspect() as f32)
                 .unwrap_or((win_w / win_h.max(1.0)).clamp(0.5, 4.0));
-            let bh = PREVIEW_W / aspect;
+            let bh = panel_w / aspect;
             div()
                 .flex()
                 .flex_col()
@@ -10609,8 +10646,8 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .bg(rgb(0x000000))
-                .child(div().w(px(PREVIEW_W)).h(px(bh)).overflow_hidden().child(
-                    projector_window::render_snapshot(snap.danger, &snap, PREVIEW_W, bh, None),
+                .child(div().w(px(panel_w)).h(px(bh)).overflow_hidden().child(
+                    projector_window::render_snapshot(snap.danger, &snap, panel_w, bh, None),
                 ))
         };
         let count = if n == 0 {
@@ -12347,6 +12384,17 @@ mod tests {
     #[test]
     fn boot_size_keeps_default_on_large_display() {
         assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn f5_passes_while_editing_but_lyrics_keys_do_not() {
+        // "F5 start" is a global promise (status bar): it must survive
+        // field focus. Slide vocabulary must not leak into lyric edits.
+        assert!(pres_key_passes_while_editing(PresKey::StartPres));
+        assert!(pres_key_passes_while_editing(PresKey::KeyTips));
+        assert!(!pres_key_passes_while_editing(PresKey::Next));
+        assert!(!pres_key_passes_while_editing(PresKey::Digit(1)));
+        assert!(!pres_key_passes_while_editing(PresKey::Section('V')));
     }
 
     #[test]

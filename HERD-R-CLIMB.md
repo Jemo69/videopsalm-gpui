@@ -37,3 +37,14 @@ Evidence: `shots/review-2026-11-08/rust-control.png` (STALE binary — see order
 Suite: app 194 + vp-core 252 + misc 5, zero warnings. Branch split-gpui @ `b1b787e6`.
 Method note: headless X focus sits on a 1px slice — `xdotool windowfocus <GPUI id>` before keys; clicks need true root coords. Second projector window does not open under Xvfb (env-blocked, not a code path failure).
 Gaps: F6-as-focus-slides vs F6-as-mode-toggle overload (chose round-trip per doc comment); gray/blue skins uncaptured.
+
+---
+
+## 2026-11-09 · Round 3 done (4 orders, pending push)
+
+1. Preview fit: preview box tracks the right column (`panel_w`) instead of fixed 548px — no more edge-cropped lyric lines. Needs re-shoot.
+2. Enter-to-project sequence (for r-review's harness): (a) X focus MUST be on the GPUI window — headless X parks focus on a 1px slice, so `xdotool windowfocus <id from xdotool search --name Perez>` first; without it all keys are lost. (b) Cold boot focus sits in the lyrics document: Return there is a newline (spec), F1 toggles help + blurs to root. (c) Clicking any slide/agenda row calls `focus_root` (blurs editor) AND slide-row clicks project immediately via `goto_item_slide` (single-click projects, no mode flip) — so click-then-Return advances an already-live show. (d) Cold Return with nothing live now projects the cursor/verse/first-item via tested `cold_start_index` (main flips to single-screen projector view; F6 returns to control with live intact). (e) F5 (StartPres) now passes the typing gate from any field focus (tested `pres_key_passes_while_editing`).
+3. Red band trimmed: ribbon is a paper card; new slim red title strip (brand + agenda + Go-live) at position 1, menu at 2. Gray/blue shots still owed.
+4. Xvfb 2nd-window marker stands (env-blocked, needs human hardware).
+
+Suite: app 195 + vp-core 252 + misc 5, zero warnings.
