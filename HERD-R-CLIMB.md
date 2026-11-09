@@ -57,3 +57,10 @@ Suite: app 195 + vp-core 252 + misc 5, zero warnings.
 - F5 whitelisted while editing (tested); Enter sequence documented for reviewer harness (windowfocus on GPUI id first; slide clicks project in place; F6-back to control).
 - slop-media uploads on PR #15: demo mp4 + before(blue,R2)/after(live-fit,dark-live,editor) PNGs; body rewritten with img/video lines.
 - Suite: app 195 + vp-core 252 + misc 5, zero warnings. Branch @ 0967c9a5.
+
+---
+
+## 2026-11-09 · Round 4 done (2 Rust orders, pushed `d5c0a1ec` + body updates)
+1. Center verse-toolbar row: V1/V2 verse chips insert `\nID\n` blocks, [chord] inserts `[]`, split inserts blank line; B(`**`)/I(`*`)/U(`__`)/S(`~~`) wrap selection, H1/H2/list prefix line (idempotent), A+/A− zoom DocField.text_px 10..24. Pure cores tested (`apply_wrap`, `apply_line_prefix`). Visible in control center AND editor page.
+2. Gray + blue captured on current binary (toolbar visible in both); uploaded to slop-media PR15; PR body rewritten via REST (gh GraphQL mutations fail exit-1 from Projects-classic sunset — use `gh api .../pulls/15 PATCH`).
+Suite: app 197 + vp-core 252 + misc 5, zero warnings.
