@@ -74,3 +74,11 @@ Suite: app 197 + vp-core 252 + misc 5, zero warnings.
 - Open DESIGN-vs-sheet questions for review (did NOT change): night #300306 vs #140203, active tab red-underline vs ink fill, live-deep on dark. Implemented the unambiguous wins only.
 - STRUCTURALLY DONE on the Rust side: all 5 rounds' orders shipped, suite app 197 + vp-core 252 + misc 5 green, zero warnings, metric 10/10, evidence on PR #15 with demo video. Branch split-gpui @ current push.
 - Headless notes: X focus parks on a 1px slice (windowfocus GPUI id first); stray projector/overlay windows swallow clicks (windowkill by id); second projector window blocked under Xvfb (env).
+
+---
+
+## 2026-11-09 · Onyx black-and-gray dark mode added (user order)
+- 5th skin `onyx`: #000000 window, #1C1C1F panels, #F5F5F4 ink, signal-red accent, lime live, neutral gray #3F3F46 borders (never red-tinted). DESIGN.md takes precedence for look; VideoPsalm functionality untouched (pure token addition, shared serde schemas unchanged).
+- Theme pickers (ribbon + settings) now iterate `builtin_themes()` — Onyx appears everywhere, future skins free. Dark-toggle flips dark<->light as before.
+- Verified light: vp-core theme tests 3/3, app 197/197 via test binary, cargo check clean (JOBS=1, memory-light per instruction; no full cargo build storm).
+- Evidence: `shots/review-2026-11-09/rust-onyx-live.png` (lime + ● LIVE), uploaded to slop-media PR15, PR body appended. Branch split-gpui.
