@@ -6535,6 +6535,17 @@ pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
         .child(text.to_string())
 }
 
+/// The live cue tag (DESIGN.md signature component): the word LIVE in bold
+/// on the lime row — color plus label, never color alone. The row behind it
+/// already carries the lime fill; the tag itself is transparent.
+pub(crate) fn live_tag(ui: &UI) -> Div {
+    div()
+        .text_size(px(10.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(ui.live_ink)
+        .child("● LIVE".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
@@ -8527,6 +8538,7 @@ impl Root {
                     })
                     .cursor_pointer()
                     .child(title_cell)
+                    .when(live, |d| d.child(live_tag(ui)))
                     .child(status_dot)
                     // Lime (live) and red (selected) fills never read as one
                     // state; the engaged outline marks the keyboard cursor.
@@ -10172,6 +10184,9 @@ impl Root {
                             .text_color(if live_now { row_ink } else { ui.accent })
                             .child(badge),
                     )
+                    // DESIGN.md signature: the live cue is lime PLUS the
+                    // word LIVE — never color alone.
+                    .when(live_now, |d| d.child(live_tag(ui)))
                     .child(
                         div()
                             .flex_1()
@@ -10335,6 +10350,9 @@ impl Root {
                             .text_color(if live_now { row_ink } else { ui.accent })
                             .child(badge),
                     )
+                    // DESIGN.md signature: the live cue is lime PLUS the
+                    // word LIVE — never color alone.
+                    .when(live_now, |d| d.child(live_tag(ui)))
                     // The slide text, wrapped over 2–3 lines as in the
                     // screenshot — never truncated (R-6). min_w_0 is
                     // load-bearing: without it the flex default keeps the
