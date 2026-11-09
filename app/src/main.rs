@@ -281,11 +281,12 @@ impl UI {
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
         // Signal Room chrome: paper/night window, thin line-token borders.
-        let border = if t.id == "light" {
-            // Signal Room line token (sheet --line), not steel blue.
-            rgb(0xE4B3B7)
-        } else {
-            hex(t.accent)
+        // Each skin uses its sheet `--line`: light paper #E4B3B7, dark night
+        // #5B2327; gray/blue keep the signal-red accent edge.
+        let border = match t.id {
+            "light" => rgb(0xE4B3B7),
+            "dark" => rgb(0x5B2327),
+            _ => hex(t.accent),
         };
         UI {
             bg: hex(t.bg),
