@@ -621,6 +621,10 @@ pub(crate) struct Root {
     /// Shut by default: the control center is the lyrics document, and the
     /// metadata rows live one click away on the song-editor surface.
     song_details_open: bool,
+    /// Separate song-editor page (sheet PAGE 02). False = control center:
+    /// pure lyrics (title + document + details). True = full editor surface:
+    /// Tabs + Number/Title + document + metadata, always visible.
+    editor_page: bool,
     scroll_verse_order: ScrollHandle,
     bible_sec_trans: bool,
     bible_sec_import: bool,
@@ -804,6 +808,17 @@ pub(crate) fn clamp_col_width(w: f32) -> f32 {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct RowSplit(u8);
 
+/// Control-view column math, shared by the layout and the dominance test so
+/// the two cannot drift: fixed side columns, flexible dominant center.
+/// Sheet page 01 pins the center at 1.55fr — wider than either side at the
+/// default widths on a 1280px window (12px view padding + four 8px gaps +
+/// two 14px dividers + the 44px tool strip beside a 4px gap = 120px chrome).
+pub(crate) fn center_width(vw: f32, left_w: f32, right_w: f32) -> f32 {
+    let left = left_w.min((vw * 0.32).max(180.0));
+    let right = right_w.min((vw * 0.32).max(220.0));
+    vw - left - right - 120.0
+}
+
 /// Adjustable section heights, clamped so neither pane can vanish nor push
 /// its sibling off the window. 0 splits agenda/browser (100..520 px),
 /// 1 splits slides/preview (160..560 px). Pure so the drag math is
@@ -895,7 +910,7 @@ impl Root {
     /// missed press is visible instead of silent. Double-click resets.
     fn divider(&mut self, ui: &UI, cx: &mut Context<Self>, col: u8) -> impl gpui::IntoElement {
         let ghost = self.drag_ghost.clone();
-        let default_w = if col == 0 { 360.0 } else { 560.0 };
+        let default_w = if col == 0 { 320.0 } else { 300.0 };
         let grabbed = self.col_drag.is_some_and(|(c, _, _)| c == col);
         let strip = div()
             .w(px(14.))
@@ -1292,8 +1307,8 @@ impl Root {
             frame_sel: FrameId::Body,
             frame_drag: None,
             drag_ghost: drag_ghost.clone(),
-            left_w: 360.0,
-            right_w: 560.0,
+            left_w: 320.0,
+            right_w: 300.0,
             col_drag: None,
             agenda_h: None,
             preview_h: None,
@@ -1347,6 +1362,7 @@ impl Root {
             scroll_bible_browser: ScrollHandle::new(),
             verse_order_open: false,
             song_details_open: false,
+            editor_page: false,
             scroll_verse_order: ScrollHandle::new(),
             bible_sec_trans: true,
             bible_sec_import: false,
@@ -4570,6 +4586,31 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// agenda item at the ends — the original's behavior at the end of a song
     /// is to continue with the following item.
     fn step_slide(&mut self, dir: i32, cx: &mut Context<Self>) {
+        if self.live_item.is_none() {
+            // Cold Enter: nothing is projecting yet — project the operator's
+            // current context instead of no-op'ing. Agenda cursor first, then
+            // the item holding the clicked verse, else the first item; the
+            // clicked verse wins its slide via `goto_song_verse` (slide-0
+            // fallback). Empty agenda stays a status message, never a panic.
+            let mut idx = self.sel_item;
+            if idx.is_none() {
+                if let Some(want) = self.sel_block.clone() {
+                    idx = (0..self.agenda.items.len()).find(|&i| {
+                        self.item_slides(i).iter().any(|s| {
+                            slide_verse_id(&s.header).as_deref() == Some(want.as_str())
+                        })
+                    });
+                }
+            }
+            match idx.or_else(|| (!self.agenda.items.is_empty()).then_some(0)) {
+                Some(i) => match self.sel_block.clone() {
+                    Some(vid) => self.goto_song_verse(cx, i, &vid),
+                    None => self.show_live(cx, i),
+                },
+                None => self.set_status(cx, "Enter: agenda is empty — add an item first."),
+            }
+            return;
+        }
         let n = self.live_slides().len();
         if n == 0 {
             return;
@@ -5910,9 +5951,9 @@ pub(crate) fn btn(
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
     let shield = active && ui.accent == SHIELD_ARMED;
-    // The outline only thickens when a control is actually engaged — a 2px
-    // border on every button at rest turns the whole ribbon into a grid of
-    // boxes and reads as noise.
+    // Sheet chips: an ON control is filled signal red with readable ink;
+    // the orange 2px edge stays so engagement still reads at a glance.
+    // The shield keeps its own armed-red fill with ink to match.
     let border = if shield {
         SHIELD_ARMED
     } else if active {
@@ -5926,8 +5967,20 @@ pub(crate) fn btn(
         // One 11px control row never collapses below its line box.
         .min_h(px(crate::ux::RIBBON_LINE_PX))
         .rounded_sm()
-        .bg(if shield { SHIELD_ARMED } else { ui.panel })
-        .text_color(if shield { ink_on(SHIELD_ARMED) } else { ui.fg })
+        .bg(if shield {
+            SHIELD_ARMED
+        } else if active {
+            ui.selection
+        } else {
+            ui.panel
+        })
+        .text_color(if shield {
+            ink_on(SHIELD_ARMED)
+        } else if active {
+            ui.selection_ink
+        } else {
+            ui.fg
+        })
         .cursor_pointer()
         .child(label.to_string());
     d = if active {
@@ -6011,8 +6064,8 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 }
 
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
-    // Signal Room panel chrome (perez-sheet.html): paper card, thin line
-    // border, bold signal-red title bar — no blue bars anywhere.
+    // Signal Room cards (sheet section 1): white card, bold ink title.
+    // Red is reserved for the title strip, primary buttons, selected rows.
     let header_bg = rgb(0xED1216);
     let header_ink = rgb(0xFFFFFF);
     let mut col = div()
@@ -6249,8 +6302,8 @@ fn section_scrolled_with_rail(
                 .px(px(6.))
                 .py(px(3.))
                 .rounded_sm()
-                .bg(rgb(0xED1216))
-                .text_color(rgb(0xFFFFFF))
+                .bg(ui.panel)
+                .text_color(ui.fg)
                 .text_size(px(13.))
                 .font_weight(FontWeight::BOLD)
                 .child(title.to_string()),
@@ -6457,11 +6510,12 @@ impl Render for Root {
             // utility toolbar. Keep those actions reachable from Message (the
             // stage/live workspace) instead of adding a non-original row above
             // the ribbon.
-            root = root.child(self.ribbon_bar(&ui, cx));
-            // Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/
-            // View menu row between the title strip and the workspace. Every
-            // item drives existing state — no dead wires.
             root = root.child(self.menu_row(&ui, cx));
+            // Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/
+            // View menu row sits at position 2 — directly below the title
+            // strip, above all ribbon strips. Every item drives existing
+            // state — no dead wires.
+            root = root.child(self.ribbon_bar(&ui, cx));
         }
         // KeyTips overlay (bare Alt): control mode with chrome only, never
         // over the projector or stage screens — and never over a chromeless
@@ -8207,12 +8261,14 @@ impl Root {
             // bearing: without it the flex default (min-width:auto) lets
             // long slide/editor rows push the right column — and the
             // command strip — off the window edge (fidelity loop R2).
+            // min_w pins the sheet 1.55fr dominance floor (`center_width`).
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w_0()
+                    .min_w(px(center_width(vw, self.left_w, self.right_w).max(0.0)))
                     .min_h_0()
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
@@ -10538,8 +10594,8 @@ impl Root {
                     .px(px(6.))
                     .py(px(3.))
                     .rounded_sm()
-                    .bg(rgb(0xED1216))
-                    .text_color(rgb(0xFFFFFF))
+                    .bg(ui.panel)
+                    .text_color(ui.fg)
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
                     .child(format!(
@@ -10924,22 +10980,38 @@ impl Root {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap_2()
                     .px(px(6.))
                     .py(px(3.))
                     .rounded_sm()
-                    .bg(rgb(0xED1216))
-                    .text_color(rgb(0xFFFFFF))
+                    .bg(ui.panel)
+                    .text_color(ui.fg)
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
-                    .child(format!(
+                    .child(div().flex_1().child(format!(
                         "♪ {}{}",
                         if self.song_dirty { "*" } else { "" },
                         song.title
+                    )))
+                    .child(btn(
+                        ui,
+                        cx,
+                        if self.editor_page {
+                            "‹ Lyrics"
+                        } else {
+                            "Song editor ›"
+                        },
+                        self.editor_page,
+                        |this, _, _, cx| {
+                            this.editor_page = !this.editor_page;
+                            cx.notify();
+                        },
                     )),
             )
             // `Paroles | Divers` — Divers holds transposition, capo and CCLI.
-            .child(row(vec![
-                // Four document tabs, not two. `Lyrics | Files | Chords | Miscellaneous`
+            .when(self.editor_page, |d| {
+                d.child(row(vec![
+                // Four document tabs, not two (song-editor page only). `Lyrics | Files | Chords | Miscellaneous`
                 // per the 1.29 screenshot — `Files` is for the attached MP3/video,
                 // `Chords` for the chord view, `Miscellaneous` for
                 // transposition/Capo/CCLI.
@@ -10967,7 +11039,7 @@ impl Root {
                     this.song_misc = !this.song_misc;
                     cx.notify();
                 }),
-            ]))
+            ]))})
             // Save. `Ctrl+S` since 1.27 — `Alt+S` is Songbooks, NOT save. The
             // original gives the agenda save the same icon and warns they must
             // not be confused, so this one is worded explicitly.
@@ -10976,7 +11048,8 @@ impl Root {
             // editor keeps this row for Number/Title only.
             // Song metadata (Number/Title/References/…) sits behind a
             // disclosure: the control center is the lyrics document.
-            .child(row(vec![btn(
+            .when(!self.editor_page, |d| {
+                d.child(row(vec![btn(
                 ui,
                 cx,
                 if self.song_details_open {
@@ -10989,9 +11062,9 @@ impl Root {
                     this.song_details_open = !this.song_details_open;
                     cx.notify();
                 },
-            )]))
+            )]))})
             // Canonical 1.29 metadata row: editable Number and Title fields.
-            .when(self.song_details_open, |d| {
+            .when(self.song_details_open || self.editor_page, |d| {
                 d.child(row(vec![
                     label(ui, "Number:", 12.),
                     div().w(px(90.)).child(self.number_field.clone()),
@@ -11005,7 +11078,7 @@ impl Root {
             // right. Verse order is LIVE: the agenda item's override when one
             // exists, otherwise the song's own verse sequence. `×` clears a
             // custom order back to the song default; `⌃`/`⌄` rotate it.
-            .when(self.song_details_open, |d| {
+            .when(self.song_details_open || self.editor_page, |d| {
                 d.child({
                     let song_id = song.id.clone();
                 let default_order: Vec<String> =
@@ -11163,7 +11236,7 @@ impl Root {
                     ])
                 })
             })
-            .when(self.song_details_open, |d| {
+            .when(self.song_details_open || self.editor_page, |d| {
                 d.child(row_wrap(vec![
                     label(ui, "Author:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.author_field.clone()),
@@ -12221,6 +12294,16 @@ mod tests {
     #[test]
     fn boot_size_keeps_default_on_large_display() {
         assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn center_column_holds_1_55fr_over_both_sides() {
+        // Sheet page 01: the lyrics center dominates. Defaults must keep it
+        // at least 1.55x wider than either side on a 1280px window.
+        let (left, right) = (320.0, 300.0);
+        let center = center_width(1280.0, left, right);
+        assert!(center / left >= 1.55, "center {center} vs left {left}");
+        assert!(center / right >= 1.55, "center {center} vs right {right}");
     }
 
     #[test]
