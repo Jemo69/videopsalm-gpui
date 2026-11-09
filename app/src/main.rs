@@ -181,13 +181,13 @@ pub(crate) struct UI {
     /// (sky/amber/yellow) and is nearly invisible.
     accent_ink: Rgba,
     danger: Rgba,
-    /// The **selection** colour: the row currently projecting is highlighted
-    /// blue, always.
+    /// The **selection** colour: selected agenda item, selected slide row,
+    /// active buttons — always signal red, on every skin.
     ///
     /// This must NOT be `accent`. Two of the four themes use a yellow or amber
-    /// accent, so painting "the live slide" with the theme accent made the
-    /// most important cue in the app come out yellow. The original's cue is
-    /// blue regardless of skin, so it gets its own token.
+    /// accent, so painting selection with the theme accent made the cue come
+    /// out yellow. The projecting row is NOT this token — that is `live`
+    /// (lime-only rule).
     selection: Rgba,
     /// Text colour guaranteed readable on `selection` backgrounds.
     selection_ink: Rgba,
@@ -217,9 +217,8 @@ const ENGAGED: Rgba = Rgba {
 const MOTION_FPS: u32 = 8;
 
 /// Signal red: selected agenda item + primary buttons (perez-sheet.html
-/// brand layer; replaces the Office-blue SELECTION_BLUE on the control
-/// window. Projection-surface blue cue is unchanged).
-const SELECTION_BLUE: Rgba = Rgba {
+/// brand layer). Projection-surface blue cue is unchanged).
+const SELECTION_RED: Rgba = Rgba {
     r: 0xED as f32 / 255.0,
     g: 0x12 as f32 / 255.0,
     b: 0x16 as f32 / 255.0,
@@ -281,14 +280,10 @@ impl UI {
             .and_then(themes::parse_hex)
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
-        // VideoPsalm chrome: panels are white on a light-blue window with
-        // thin steel-blue borders (#7F9DB9, the Office 2007 edge). Painting
-        // every border with the accent (#2E74B5) made the whole control
-        // window read as a grid of bright-blue boxes next to the original's
-        // soft gray-blue chrome (viewer-mode.png). The border is its own
-        // token on light; other skins keep the accent edge.
+        // Signal Room chrome: paper/night window, thin line-token borders.
         let border = if t.id == "light" {
-            rgb(0x7F9DB9)
+            // Signal Room line token (sheet --line), not steel blue.
+            rgb(0xE4B3B7)
         } else {
             hex(t.accent)
         };
@@ -303,8 +298,8 @@ impl UI {
             // Skin-independent: the selected agenda item is signal red and
             // the live/projecting row is lime, on every skin
             // (perez-sheet.html brand layer).
-            selection: SELECTION_BLUE,
-            selection_ink: ink_on(SELECTION_BLUE),
+            selection: SELECTION_RED,
+            selection_ink: ink_on(SELECTION_RED),
             live: LIVE_LIME,
             live_ink: ink_on(LIVE_LIME),
             engaged: ENGAGED,
@@ -5915,6 +5910,8 @@ pub(crate) fn btn(
     let mut d = div()
         .px(px(crate::ux::RIBBON_BTN_PX))
         .py(px(crate::ux::RIBBON_BTN_PY))
+        // One 11px control row never collapses below its line box.
+        .min_h(px(crate::ux::RIBBON_LINE_PX))
         .rounded_sm()
         .bg(if shield { SHIELD_ARMED } else { ui.panel })
         .text_color(if shield { ink_on(SHIELD_ARMED) } else { ui.fg })
@@ -6001,12 +5998,10 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 }
 
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
-    // VideoPsalm panel chrome (agenda-panel.png / slides-panel.png): a light-
-    // blue header bar with dark-blue bold text sits on a white panel with a
-    // thin steel border. The old plain 13px label on a transparent panel with
-    // a bright-blue edge read as a wireframe next to the original.
-    let header_bg = rgb(0xC9DDF3);
-    let header_ink = rgb(0x1E3A5F);
+    // Signal Room panel chrome (perez-sheet.html): paper card, thin line
+    // border, bold signal-red title bar — no blue bars anywhere.
+    let header_bg = rgb(0xED1216);
+    let header_ink = rgb(0xFFFFFF);
     let mut col = div()
         .flex()
         .flex_col()
@@ -6044,16 +6039,14 @@ pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
 /// Compact ribbon group box: wrapped controls + small caption BELOW.
 ///
 /// 1.29 lays group names UNDER their controls (SCREENSHOT-1.29-LAYOUT.md
-/// §Ribbon: `caption` labels BELOW the controls). The old caption-on-top
-/// with accent color read as a second tab row next to the original's soft
-/// gray captions under light-blue groups.
+/// §Ribbon: `caption` labels BELOW the controls).
 fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(1.))
-        .px(px(4.))
-        .py(px(1.))
+        .gap(px(crate::ux::RIBBON_GROUP_PY))
+        .px(px(crate::ux::RIBBON_GROUP_PX))
+        .py(px(crate::ux::RIBBON_GROUP_PY))
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
@@ -6071,7 +6064,7 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
             div()
                 .w_full()
                 .text_center()
-                .text_size(px(11.))
+                .text_size(px(crate::ux::RIBBON_TEXT_PX))
                 .text_color(rgb(0x5B6B82))
                 .child(caption.to_string()),
         )
@@ -6243,8 +6236,8 @@ fn section_scrolled_with_rail(
                 .px(px(6.))
                 .py(px(3.))
                 .rounded_sm()
-                .bg(rgb(0xC9DDF3))
-                .text_color(rgb(0x1E3A5F))
+                .bg(rgb(0xED1216))
+                .text_color(rgb(0xFFFFFF))
                 .text_size(px(13.))
                 .font_weight(FontWeight::BOLD)
                 .child(title.to_string()),
@@ -6711,16 +6704,13 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                // 1.29 Background tab (Screenshot 2026-10-30 111820): solid
-                // VideoPsalm-blue ribbon with the active tab WHITE and
-                // inactive tabs blue with white text. The old white ribbon
-                // with an orange active tab read as a different app next
-                // to the original's blue chrome.
-                let ribbon_blue = rgb(0x1E6CC8);
+                // Signal Room tabs (perez-sheet.html): paper tabs, the
+                // active tab filled ink. Primary actions are signal red
+                // buttons, not tabs — tabs never compete with them.
                 let (tab_bg, tab_ink, tab_border) = if active {
-                    (rgb(0xFFFFFF), rgb(0x1E3A5F), rgb(0xFFFFFF))
+                    (ui.fg, ui.bg, ui.fg)
                 } else {
-                    (ribbon_blue, rgb(0xFFFFFF), rgb(0x5AA0E8))
+                    (ui.panel, ui.fg, ui.border)
                 };
                 div()
                     .px(px(1.))
@@ -6756,9 +6746,11 @@ impl Root {
             .px(px(4.))
             .py(px(crate::ux::RIBBON_OUTER_PY))
             .text_size(px(crate::ux::RIBBON_TEXT_PX))
-            .bg(rgb(0x1E6CC8))
+            // Signal Room brand: the title strip is signal red (sheet
+            // header), not Office blue. White/bold title text on it.
+            .bg(rgb(0xED1216))
             .border_b_1()
-            .border_color(rgb(0x155AAD))
+            .border_color(rgb(0x8E0B0D))
             .child(
                 div()
                     .flex()
@@ -8205,8 +8197,8 @@ impl Root {
             // drawn mark; use that alone.
             //
             // Two states, as in `agenda-panel.png`: the **live** row is the one
-            // currently projecting and is filled blue; the **selected** row is
-            // the keyboard cursor and only gets a blue left edge. Collapsing
+            // currently projecting and is filled lime; the **selected** row is
+            // the keyboard cursor and is filled signal red. Collapsing
             // them loses the distinction that makes the list readable mid-service.
             // Row shape per agenda-panel.png / LAYOUT.md: kind glyph, songbook
             // ABBREV, song NUMBER, title — then the status dot. `show_abbrev`
@@ -8241,8 +8233,8 @@ impl Root {
                 _ => format!("{} {}", kind_badge(item.kind), item.title),
             };
             let title = row_title;
-            // A filled blue dot at the right edge of every row is the per-item
-            // status indicator the original shows.
+            // A filled signal-red dot at the right edge of every row is the
+            // per-item status indicator the original shows.
             let status_dot = div()
                 .flex_none()
                 .w(px(8.))
@@ -8276,16 +8268,26 @@ impl Root {
                     .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(if live { ui.live } else { ui.panel })
-                    .text_color(if live { ui.live_ink } else { ui.fg })
+                    .bg(if live {
+                        ui.live
+                    } else if selected {
+                        ui.selection
+                    } else {
+                        ui.panel
+                    })
+                    .text_color(if live {
+                        ui.live_ink
+                    } else if selected {
+                        ui.selection_ink
+                    } else {
+                        ui.fg
+                    })
                     .cursor_pointer()
                     .child(title_cell)
                     .child(status_dot)
-                    // The selected-but-not-live row is marked by an edge, not a
-                    // fill, so the two never read as one state.
-                    .when(!live && selected, |d| {
-                        d.border_l_2().border_color(ui.selection)
-                    })
+                    // Lime (live) and red (selected) fills never read as one
+                    // state; the engaged outline marks the keyboard cursor.
+                    .when(selected, |d| d.border_1().border_color(ui.engaged))
                     // A single click respects the shield; a **double-click
                     // renames the row in place** (UX-RESEARCH §3.1: items are
                     // renamable meaningful names) and still punches through
@@ -9870,12 +9872,26 @@ impl Root {
             let preview: String = slide.lines.join(" / ");
             let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
-            let row_bg = if live_now { ui.selection } else { ui.panel };
-            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
-            let border_c = if selected {
-                ui.engaged
-            } else if live_now {
+            // Brand layer: the projecting row is lime, the keyboard
+            // cursor row is signal red, everything else is the panel.
+            // Lime wins when a row is both (mid-service the cursor often
+            // sits on the live slide).
+            let row_bg = if live_now {
+                ui.live
+            } else if selected {
                 ui.selection
+            } else {
+                ui.panel
+            };
+            let row_ink = if live_now {
+                ui.live_ink
+            } else if selected {
+                ui.selection_ink
+            } else {
+                ui.fg
+            };
+            let border_c = if selected && !live_now {
+                ui.engaged
             } else {
                 row_bg
             };
@@ -10013,19 +10029,29 @@ impl Root {
             // that makes the panel readable mid-service.
             let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
-            // The row currently projecting is highlighted **blue**, always
-            // (UX-RESEARCH 10.3 — "the displayed slide is now highlighted in
-            // blue", since 1.2, on every skin). Using `ui.accent` here made
-            // that cue yellow on two of the four themes. `selected` is the
-            // keyboard cursor and stays subtler so the two never read as one.
-            // White rows on the blue window = the original's white lists
-            // (slides-panel.png); the old window-gray rows read as disabled.
-            let row_bg = if live_now { ui.selection } else { ui.panel };
-            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
-            let border_c = if selected {
-                ui.engaged
-            } else if live_now {
+            // The row currently projecting is filled lime, always (sheet
+            // LIVE = lime only, on every skin). The selected row is filled
+            // signal red so the two never read as one.
+            // Brand layer: the projecting row is lime, the keyboard
+            // cursor row is signal red, everything else is the panel.
+            // Lime wins when a row is both (mid-service the cursor often
+            // sits on the live slide).
+            let row_bg = if live_now {
+                ui.live
+            } else if selected {
                 ui.selection
+            } else {
+                ui.panel
+            };
+            let row_ink = if live_now {
+                ui.live_ink
+            } else if selected {
+                ui.selection_ink
+            } else {
+                ui.fg
+            };
+            let border_c = if selected && !live_now {
+                ui.engaged
             } else {
                 row_bg
             };
@@ -10143,13 +10169,27 @@ impl Root {
                     .all(|v| self.is_hidden(&item_id, &v.to_string()));
             let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(badge.as_str());
-            // White rows on the blue window = the original's white lists.
-            let row_bg = if live_now { ui.selection } else { ui.panel };
-            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
-            let border_c = if selected {
-                ui.engaged
-            } else if live_now {
+            // Plain panel rows; color carries state, not chrome.
+            // Brand layer: the projecting row is lime, the keyboard
+            // cursor row is signal red, everything else is the panel.
+            // Lime wins when a row is both (mid-service the cursor often
+            // sits on the live slide).
+            let row_bg = if live_now {
+                ui.live
+            } else if selected {
                 ui.selection
+            } else {
+                ui.panel
+            };
+            let row_ink = if live_now {
+                ui.live_ink
+            } else if selected {
+                ui.selection_ink
+            } else {
+                ui.fg
+            };
+            let border_c = if selected && !live_now {
+                ui.engaged
             } else {
                 row_bg
             };
@@ -10402,8 +10442,8 @@ impl Root {
                     .px(px(6.))
                     .py(px(3.))
                     .rounded_sm()
-                    .bg(rgb(0xC9DDF3))
-                    .text_color(rgb(0x1E3A5F))
+                    .bg(rgb(0xED1216))
+                    .text_color(rgb(0xFFFFFF))
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
                     .child(format!(
@@ -10791,8 +10831,8 @@ impl Root {
                     .px(px(6.))
                     .py(px(3.))
                     .rounded_sm()
-                    .bg(rgb(0xC9DDF3))
-                    .text_color(rgb(0x1E3A5F))
+                    .bg(rgb(0xED1216))
+                    .text_color(rgb(0xFFFFFF))
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
                     .child(format!(
@@ -12045,6 +12085,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_ui_theme_carries_the_brand_tokens() {
+        // E0063 regression: every builtin skin must build a complete `UI`
+        // (all fields, including `live`/`live_ink`), with the sheet brand
+        // layer intact — selection is signal red, live is lime, on all 4.
+        for t in vp_core::themes::builtin_themes() {
+            let ui = UI::from_theme(&t, None);
+            assert_eq!(ui.selection, SELECTION_RED, "skin {}", t.id);
+            assert_eq!(ui.selection_ink, ink_on(SELECTION_RED), "skin {}", t.id);
+            assert_eq!(ui.live, LIVE_LIME, "skin {}", t.id);
+            assert_eq!(ui.live_ink, ink_on(LIVE_LIME), "skin {}", t.id);
+            assert_ne!(ui.selection, ui.live, "skin {}", t.id);
+        }
+    }
 
     #[test]
     fn boot_size_keeps_default_on_large_display() {

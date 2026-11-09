@@ -1264,9 +1264,58 @@ impl LayoutPrefs {
 /// tasks, no repaint scheduling — window animation frames repaint.
 pub const CARET_BLINK_MS: u128 = 530;
 
+/// Compact-ribbon metrics (VP1.29 density): single source of truth shared by
+/// the ribbon layout code in `main.rs` and the chrome-budget test below, so
+/// inflating any band fails the test instead of silently taxing the editor
+/// height. All values are pixels.
+pub const RIBBON_TEXT_PX: f32 = 11.0;
+pub const RIBBON_BTN_PY: f32 = 1.0;
+pub const RIBBON_BTN_PX: f32 = 1.0;
+pub const RIBBON_TAB_PY: f32 = 1.0;
+pub const RIBBON_OUTER_PY: f32 = 1.0;
+pub const RIBBON_BAND_GAP: f32 = 1.0;
+pub const RIBBON_GROUP_PY: f32 = 1.0;
+pub const RIBBON_GROUP_PX: f32 = 4.0;
+pub const RIBBON_WRAP_GAP: f32 = 4.0;
+/// Line box of an 11px control row, borders included (11px text ≈ 14px box).
+pub const RIBBON_LINE_PX: f32 = 14.0;
+
+/// Estimated height of one ribbon: the tab band plus one wrapped band of
+/// groups whose tallest column holds `control_lines` control rows of
+/// buttons and a caption line. Wide windows keep groups on one band; a
+/// narrow window wraps a second band, which costs another `band` (the
+/// budget covers the one-band case, which the screenshots pin).
+/// Test-side pin for the density budget (see the test below); the layout
+/// itself reads the `RIBBON_*` constants directly.
+#[cfg(test)]
+pub fn ribbon_chrome_budget(control_lines: f32) -> f32 {
+    let tabs = 2.0 * RIBBON_OUTER_PY + (2.0 * RIBBON_TAB_PY + RIBBON_LINE_PX + 2.0);
+    let band = 2.0 * RIBBON_GROUP_PY
+        + control_lines * (2.0 * RIBBON_BTN_PY + RIBBON_LINE_PX + 2.0)
+        + 1.0
+        + RIBBON_LINE_PX;
+    tabs + RIBBON_BAND_GAP + band
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ribbon_chrome_stays_inside_the_density_budget() {
+        // VP1.29 density: 11px controls, one wrapped groups band ≈ 100-124px
+        // of total chrome. The budget must hold for the worst planned group
+        // shape (2 stacked control rows per group: dropdown row + preset row
+        // after the explorer launcher folds inline), one band.
+        assert_eq!(RIBBON_TEXT_PX, 11.0);
+        assert!(RIBBON_BTN_PY <= 1.0);
+        assert!(RIBBON_TAB_PY <= 1.0);
+        let total = ribbon_chrome_budget(2.0);
+        assert!(
+            total <= 110.0,
+            "chrome budget {total}px over the 1.29 target band"
+        );
+    }
 
     #[test]
     fn ribbon_tabs_round_trip() {

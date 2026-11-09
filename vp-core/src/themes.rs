@@ -6,6 +6,18 @@
 
 use crate::schema::{Background, BackgroundKind, BodyStyle, Style};
 
+/// Signal Room brand tokens (perez-sheet.html position contract).
+/// Light and dark are the position-faithful skins; gray/blue keep the same
+/// signal red + lime live so LIVE stays lime-only on every skin.
+pub const SIGNAL_RED: &str = "#ED1216";
+pub const SIGNAL_DEEP: &str = "#8E0B0D";
+pub const LIVE_LIME: &str = "#CCED12";
+pub const LIVE_INK: &str = "#180204";
+pub const PAPER: &str = "#FDE7E9";
+pub const PAPER_INK: &str = "#180204";
+pub const NIGHT: &str = "#140203";
+pub const NIGHT_INK: &str = "#FDE7EA";
+
 /// A UI + projection theme. Colors are `#RRGGBB` strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Theme {
@@ -23,6 +35,11 @@ pub struct Theme {
     pub projection_bg: &'static str,
     /// Projection lyric color.
     pub projection_fg: &'static str,
+    /// Brand signal red (primary buttons, selected agenda item).
+    /// Always `SIGNAL_RED`; kept per-theme so skins stay self-describing.
+    pub signal: &'static str,
+    /// Live/projecting cue. Always `LIVE_LIME` (lime-only rule).
+    pub live: &'static str,
 }
 
 /// The 4 built-in open themes.
@@ -31,47 +48,52 @@ pub fn builtin_themes() -> [Theme; 4] {
         Theme {
             id: "light",
             name: "Light",
-            // VideoPsalm 1.29 window: light blue-gray glass (Office 2007
-            // blue) with white panels, steel-blue borders, VideoPsalm blue
-            // accent. The old flat gray (#F4F4F5 / #D4D4D8 / #2563EB)
-            // read as a generic web app next to the original's blue chrome
-            // (viewer-mode.png / edit-mode.png).
-            bg: "#D9E2F1",
-            fg: "#1E3A5F",
-            accent: "#2E74B5",
+            // Signal Room paper skin (perez-sheet.html): paper window,
+            // ink text, signal-red accent, lime live.
+            bg: PAPER,
+            fg: PAPER_INK,
+            accent: SIGNAL_RED,
             muted: "#FFFFFF",
             projection_bg: "#000000",
             projection_fg: "#FFFFFF",
+            signal: SIGNAL_RED,
+            live: LIVE_LIME,
         },
         Theme {
             id: "dark",
             name: "Dark",
-            bg: "#18181B",
-            fg: "#FAFAF9",
-            accent: "#38BDF8",
-            muted: "#3F3F46",
+            bg: NIGHT,
+            fg: NIGHT_INK,
+            accent: SIGNAL_RED,
+            muted: "#1F0607",
             projection_bg: "#000000",
             projection_fg: "#FFFFFF",
+            signal: SIGNAL_RED,
+            live: LIVE_LIME,
         },
         Theme {
             id: "gray",
             name: "Gray",
             bg: "#52525B",
             fg: "#FAFAF9",
-            accent: "#FACC15",
+            accent: SIGNAL_RED,
             muted: "#71717A",
             projection_bg: "#27272A",
             projection_fg: "#FAFAF9",
+            signal: SIGNAL_RED,
+            live: LIVE_LIME,
         },
         Theme {
             id: "blue",
             name: "Blue",
             bg: "#1E3A8A",
             fg: "#EFF6FF",
-            accent: "#FBBF24",
+            accent: SIGNAL_RED,
             muted: "#3B82F6",
             projection_bg: "#0B1E4B",
             projection_fg: "#FFFFFF",
+            signal: SIGNAL_RED,
+            live: LIVE_LIME,
         },
     ]
 }

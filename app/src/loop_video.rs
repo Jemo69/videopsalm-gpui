@@ -156,6 +156,9 @@ pub struct RgbFrame {
 
 /// One projector-ready frame: opaque BGRA pixels shared by clone.
 /// BGRA (not RGBA) is what `RenderImage` carries on every backend.
+/// Test-only helper (pinned by `bg_frame_swaps_to_opaque_bgra`): the live
+/// loop path ships JPEG bytes through `frame_to_jpeg` instead.
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub struct BgFrame {
     pub width: u32,
@@ -183,7 +186,8 @@ pub fn frame_to_jpeg(frame: &RgbFrame) -> Option<std::sync::Arc<Vec<u8>>> {
 }
 
 /// Convert a decoded frame to projector pixels (opaque alpha).
-/// Pure: pinned headlessly.
+/// Pure, pinned headlessly. Test-only (see `BgFrame`).
+#[cfg(test)]
 pub fn to_bg_frame(f: &RgbFrame) -> BgFrame {
     let mut bgra = Vec::with_capacity(f.rgb.len() / 3 * 4);
     for px in f.rgb.chunks_exact(3) {
