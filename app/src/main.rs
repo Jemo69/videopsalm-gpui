@@ -282,10 +282,12 @@ impl UI {
             .unwrap_or_else(|| hex(t.accent));
         // Signal Room chrome: paper/night window, thin line-token borders.
         // Each skin uses its sheet `--line`: light paper #E4B3B7, dark night
-        // #5B2327; gray/blue keep the signal-red accent edge.
+        // #5B2327, onyx neutral gray (true black, never red-tinted);
+        // gray/blue keep the signal-red accent edge.
         let border = match t.id {
             "light" => rgb(0xE4B3B7),
             "dark" => rgb(0x5B2327),
+            "onyx" => rgb(0x3F3F46),
             _ => hex(t.accent),
         };
         UI {
@@ -6705,56 +6707,7 @@ impl Root {
                     cx.notify();
                 },
             ))
-            .child(btn(
-                ui,
-                cx,
-                "Light",
-                self.theme_id == "light",
-                |this, _, _, cx| {
-                    this.theme_id = "light".into();
-                    this.persist_layout_quiet();
-                    // Theme drives the wall's projection colors: publish.
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "Dark",
-                self.theme_id == "dark",
-                |this, _, _, cx| {
-                    this.theme_id = "dark".into();
-                    this.persist_layout_quiet();
-                    // Theme drives the wall's projection colors: publish.
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "Gray",
-                self.theme_id == "gray",
-                |this, _, _, cx| {
-                    this.theme_id = "gray".into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "Blue",
-                self.theme_id == "blue",
-                |this, _, _, cx| {
-                    this.theme_id = "blue".into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
+            .children(self.theme_choice_buttons(ui, cx))
             .child(btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
                 this.lang = "en".into();
                 this.persist_layout_quiet();
@@ -7277,7 +7230,11 @@ impl Root {
                         this.close_projector(cx);
                     }),
                 ]))
-            .child(row(vec![
+            .child(row({
+                // Workspace switcher, all five skins, language, edit mode —
+                // the theme buttons come from the helper so new skins
+                // appear here with no further edits.
+                let mut kids = vec![
                     label(ui, "workspace:", 12.),
                     btn(ui, cx, "Control", self.mode == Mode::Control, |this, _, _, cx| {
                         this.ui_go(Mode::Control, cx);
@@ -7286,30 +7243,21 @@ impl Root {
                         this.ui_go(Mode::Projector, cx);
                     }),
                     label(ui, "theme:", 12.),
-                    btn(ui, cx, "Light", self.theme_id == "light", |this, _, _, cx| {
-                        this.theme_id = "light".into();
-                        this.persist_layout_quiet();
-                        this.republish(cx);
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "Dark", self.theme_id == "dark", |this, _, _, cx| {
-                        this.theme_id = "dark".into();
-                        this.persist_layout_quiet();
-                        this.republish(cx);
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
-                        this.lang = "en".into();
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
-                        this.lang = "fr".into();
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
-                        this.toggle_viewer_mode(cx);
-                    }),
-                ]))
+                ];
+                kids.extend(self.theme_choice_buttons(ui, cx));
+                kids.push(btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
+                    this.lang = "en".into();
+                    cx.notify();
+                }));
+                kids.push(btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
+                    this.lang = "fr".into();
+                    cx.notify();
+                }));
+                kids.push(btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
+                    this.toggle_viewer_mode(cx);
+                }));
+                kids
+            }))
             .child(row(vec![
                     label(ui, "default font size:", 12.),
                     btn(ui, cx, "A-", false, |this, _, _, cx| {
@@ -11100,6 +11048,27 @@ impl Root {
             cx.notify();
         }));
         row_wrap(kids)
+    }
+
+    /// Theme picker buttons, one per built-in skin (Light/Dark/Gray/Blue/
+    /// Onyx) — driven by `vp_core::themes::builtin_themes` so a new skin
+    /// appears in every picker with no further edits. Each button applies
+    /// the skin and republishes projection colors.
+    fn theme_choice_buttons(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
+        vp_core::themes::builtin_themes()
+            .into_iter()
+            .map(|t| {
+                let active = self.theme_id == t.id;
+                let id = t.id.to_string();
+                btn(ui, cx, t.name, active, move |this, _, _, cx| {
+                    this.theme_id = id.clone();
+                    this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
+                    cx.notify();
+                })
+            })
+            .collect()
     }
 
     /// The centre panel: **one WYSIWYG document for the whole song**.

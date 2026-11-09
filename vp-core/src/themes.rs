@@ -42,8 +42,9 @@ pub struct Theme {
     pub live: &'static str,
 }
 
-/// The 4 built-in open themes.
-pub fn builtin_themes() -> [Theme; 4] {
+/// The 5 built-in open themes: Signal Room paper/night plus gray, blue,
+/// and a true-black Onyx (black window, gray panels) for dark rooms.
+pub fn builtin_themes() -> [Theme; 5] {
     [
         Theme {
             id: "light",
@@ -91,6 +92,20 @@ pub fn builtin_themes() -> [Theme; 4] {
             accent: SIGNAL_RED,
             muted: "#3B82F6",
             projection_bg: "#0B1E4B",
+            projection_fg: "#FFFFFF",
+            signal: SIGNAL_RED,
+            live: LIVE_LIME,
+        },
+        Theme {
+            id: "onyx",
+            name: "Onyx",
+            // True-black dark mode: black window, gray panels and ink,
+            // signal-red accent, lime live. No red tint anywhere.
+            bg: "#000000",
+            fg: "#F5F5F4",
+            accent: SIGNAL_RED,
+            muted: "#1C1C1F",
+            projection_bg: "#000000",
             projection_fg: "#FFFFFF",
             signal: SIGNAL_RED,
             live: LIVE_LIME,
@@ -165,13 +180,13 @@ mod tests {
     }
 
     #[test]
-    fn four_builtin_themes_with_distinct_ids() {
+    fn builtin_themes_have_distinct_ids() {
         let themes = builtin_themes();
-        assert_eq!(themes.len(), 4);
+        assert_eq!(themes.len(), 5);
         let mut ids: Vec<&str> = themes.iter().map(|t| t.id).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 5);
         for t in &themes {
             assert!(parse_hex(t.bg).is_some(), "bad bg {}", t.bg);
             assert!(parse_hex(t.accent).is_some());
