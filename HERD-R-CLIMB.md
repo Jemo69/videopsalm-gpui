@@ -48,3 +48,12 @@ Gaps: F6-as-focus-slides vs F6-as-mode-toggle overload (chose round-trip per doc
 4. Xvfb 2nd-window marker stands (env-blocked, needs human hardware).
 
 Suite: app 195 + vp-core 252 + misc 5, zero warnings.
+
+---
+
+## 2026-11-09 · Round 3 done + PR evidence via slop-media
+- Preview width-fit in shared renderer (`projector_window.rs`): longest line fits frame width; verified V1+V2 full lines light + dark.
+- Slim red title strip (brand + Go-live) at position 1, menu at 2, paper ribbon band.
+- F5 whitelisted while editing (tested); Enter sequence documented for reviewer harness (windowfocus on GPUI id first; slide clicks project in place; F6-back to control).
+- slop-media uploads on PR #15: demo mp4 + before(blue,R2)/after(live-fit,dark-live,editor) PNGs; body rewritten with img/video lines.
+- Suite: app 195 + vp-core 252 + misc 5, zero warnings. Branch @ 0967c9a5.
