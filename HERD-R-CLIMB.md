@@ -23,3 +23,17 @@ Evidence: `shots/review-2026-11-08/rust-control.png` (STALE binary — see order
    → DONE 2026-11-09: document min_h 340px; metadata rows behind shut-by-default Song details disclosure; center is flex-absorbing (dominant). Gap: literal 1.55fr not pinned (side cols are fixed-px + 32vw clamp).
 5. Status bar shortcut hints (`Enter` projects, `F5` start, `X` next, `F6` slides, `Ctrl+S` save, `?` shortcuts). Keep `cargo test` green, commit small, push. I re-score on your next push.
    → DONE 2026-11-09: status line carries all six hints; `?` routed to Help (test-pinned). Suite: app 191 + core 252 + misc 5, metric 10/10, branch split-gpui pushed (27295e5d).
+
+---
+
+## 2026-11-09 · Round 2 done (all 5 orders, pushed `b1b787e6`)
+
+1. Separate song-editor page: `editor_page` flag; control center is pure lyrics (title + document + details disclosure); full editor (‹ Lyrics back, Lyrics/Files/Chords/Misc tabs, Number/Title, metadata) one click away. Ev: `shots/review-2026-11-09/rust-editor-page.png`.
+2. De-redded: cards white/night with ink titles; red reserved for title strip, primary buttons (active fill), selected rows. Per-skin `--line` (light #E4B3B7, dark #5B2327). Ev: rust-control-r2.png, rust-dark.png.
+3. Menu row at position 2 (below title bar, above all strips). Ev: same shots.
+4. Live path proven: cold-Enter projects via tested `cold_start_index` (cursor → clicked verse → first item; empty agenda stays a message); slide clicks project without leaving control; F6 round-trips the single-screen projector (was a trap: Esc blocked, no way back). Lime-only live rows in control. Ev: rust-enter-projects.png, rust-live-lime.png, rust-dark-live.png. Tests: `cold_enter_projects_the_click_context_first`, `f6_round_trips_the_single_screen_projector`.
+5. Dark theme captured (rust-dark.png); center dominance pinned (`center_width` floor + `center_column_holds_1_55fr_over_both_sides`, defaults 320/300).
+
+Suite: app 194 + vp-core 252 + misc 5, zero warnings. Branch split-gpui @ `b1b787e6`.
+Method note: headless X focus sits on a 1px slice — `xdotool windowfocus <GPUI id>` before keys; clicks need true root coords. Second projector window does not open under Xvfb (env-blocked, not a code path failure).
+Gaps: F6-as-focus-slides vs F6-as-mode-toggle overload (chose round-trip per doc comment); gray/blue skins uncaptured.
