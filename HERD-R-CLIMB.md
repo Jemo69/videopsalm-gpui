@@ -64,3 +64,13 @@ Suite: app 195 + vp-core 252 + misc 5, zero warnings.
 1. Center verse-toolbar row: V1/V2 verse chips insert `\nID\n` blocks, [chord] inserts `[]`, split inserts blank line; B(`**`)/I(`*`)/U(`__`)/S(`~~`) wrap selection, H1/H2/list prefix line (idempotent), A+/A− zoom DocField.text_px 10..24. Pure cores tested (`apply_wrap`, `apply_line_prefix`). Visible in control center AND editor page.
 2. Gray + blue captured on current binary (toolbar visible in both); uploaded to slop-media PR15; PR body rewritten via REST (gh GraphQL mutations fail exit-1 from Projects-classic sunset — use `gh api .../pulls/15 PATCH`).
 Suite: app 197 + vp-core 252 + misc 5, zero warnings.
+
+---
+
+## 2026-11-09 · Round 5 done — Rust structurally complete
+- Final polish: ● LIVE word tags on agenda + both slide-list live rows (DESIGN.md signature component; PRODUCT.md no-color-only-cues). Wired into 3 row sites, suite green.
+- Editor page re-shot on current binary (`rust-editor-page.png`): tabs, Number/Title, toolbar, doc, metadata, live preview with fitted lines + lime rows — uploaded to slop-media PR15, PR body updated via REST (gh GraphQL mutations broken repo-wide).
+- Residual minors (non-blocking): gray/blue re-shoots already current; dark borders now --line; toolbar A± zoom session-only; Files/Chords tabs still show the doc (no attachments model in schema).
+- Open DESIGN-vs-sheet questions for review (did NOT change): night #300306 vs #140203, active tab red-underline vs ink fill, live-deep on dark. Implemented the unambiguous wins only.
+- STRUCTURALLY DONE on the Rust side: all 5 rounds' orders shipped, suite app 197 + vp-core 252 + misc 5 green, zero warnings, metric 10/10, evidence on PR #15 with demo video. Branch split-gpui @ current push.
+- Headless notes: X focus parks on a 1px slice (windowfocus GPUI id first); stray projector/overlay windows swallow clicks (windowkill by id); second projector window blocked under Xvfb (env).
