@@ -454,7 +454,22 @@ pub(crate) fn render_snapshot(
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
         let fit =
             vp_core::media::fit_text_factor(snap.lines.len(), snap.font_size * scale, fh * bh);
-        let size = snap.font_size * scale * fit;
+        let mut size = snap.font_size * scale * fit;
+        // Width fit (R3 worst surface): the height fit above lets long
+        // lyric lines overflow the frame sideways, cropping them at the
+        // preview (and room) edges. Shrink so the longest line fits the
+        // frame width too — 0.6em mean glyph width is conservative for
+        // bold lyric faces; wider faces only shrink further (safe).
+        let max_chars = snap
+            .lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(1) as f32;
+        if max_chars > 0.0 && size > 0.0 {
+            let width_fit = ((fw * target_w) / (max_chars * size * 0.6)).clamp(0.2, 1.0);
+            size *= width_fit;
+        }
         let mut lines: Vec<Div> = snap
             .lines
             .iter()
