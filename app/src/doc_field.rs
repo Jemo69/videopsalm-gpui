@@ -97,6 +97,9 @@ pub struct DocChanged {
 
 pub struct DocField {
     focus_handle: FocusHandle,
+    /// Editor text size in px (verse-toolbar A+/A-). Rendered everywhere
+    /// the document paints; defaults to the long-standing 15px.
+    pub text_px: f32,
     content: SharedString,
     placeholder: SharedString,
     sel: Range<usize>,
@@ -113,6 +116,7 @@ impl DocField {
     pub fn new(cx: &mut Context<Self>) -> Self {
         DocField {
             focus_handle: cx.focus_handle(),
+            text_px: 15.0,
             content: "".into(),
             placeholder: "Type the lyrics. Leave a blank line between verses..".into(),
             sel: 0..0,
@@ -368,6 +372,66 @@ impl DocField {
         self.sel = at..at;
     }
 
+    /// Wrap the live selection (or the cursor point, when nothing is
+    /// selected) in `before`/`after` — the verse-toolbar B I U S keys.
+    /// Pure text surgery on the same `content`/`sel` the key path edits,
+    /// so markers land exactly where typing would put them.
+    pub fn wrap_selection(&mut self, before: &str, after: &str, cx: &mut Context<Self>) {
+        apply_wrap(&mut self.content, &mut self.sel, before, after);
+        self.emit(cx);
+        cx.notify();
+    }
+
+    /// Insert `text` at the cursor, collapsing any selection — the
+    /// verse-toolbar verse/chord/split keys.
+    pub fn insert_at_cursor(&mut self, text: &str, cx: &mut Context<Self>) {
+        let sel = self.sel.clone();
+        self.replace(sel, text);
+        self.emit(cx);
+        cx.notify();
+    }
+
+    /// Prefix the cursor's line with `prefix` (`# `, `## `, `- `) — the
+    /// verse-toolbar H1/H2/list keys. Idempotent: a line already carrying
+    /// the prefix is left alone.
+    pub fn prefix_current_line(&mut self, prefix: &str, cx: &mut Context<Self>) {
+        if apply_line_prefix(&mut self.content, &mut self.sel, prefix) {
+            self.emit(cx);
+            cx.notify();
+        }
+    }
+}
+
+/// Pure core of [`DocField::wrap_selection`]: wrap `sel` in the markers,
+/// collapsing to the cursor point when empty. Tested below; the method
+/// itself just adds emit/notify.
+fn apply_wrap(content: &mut SharedString, sel: &mut Range<usize>, before: &str, after: &str) {
+    let text = content[sel.clone()].to_string();
+    let at = sel.start + before.len() + text.len() + after.len();
+    *content =
+        (content[0..sel.start].to_owned() + before + &text + after + &content[sel.end..]).into();
+    *sel = at..at;
+}
+
+/// Pure core of [`DocField::prefix_current_line`]: prefix the line holding
+/// the selection end (the cursor), shifting `sel` right when the prefix
+/// lands at or before it. Returns false (no-op) when the line already
+/// carries the prefix. Offsets must sit on char boundaries (the editor
+/// invariant).
+fn apply_line_prefix(content: &mut SharedString, sel: &mut Range<usize>, prefix: &str) -> bool {
+    let at = sel.end.min(content.len());
+    let start = content[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    if content[start..].starts_with(prefix) {
+        return false;
+    }
+    let shift = (start <= sel.start) as usize * prefix.len();
+    let shift_end = (start <= sel.end) as usize * prefix.len();
+    *content = (content[..start].to_owned() + prefix + &content[start..]).into();
+    *sel = (sel.start + shift)..(sel.end + shift_end);
+    true
+}
+
+impl DocField {
     fn move_to(&mut self, offset: usize, extend: bool, cx: &mut Context<Self>) {
         if extend {
             let anchor = if self.selection_reversed {
@@ -849,7 +913,7 @@ impl Render for DocField {
             // theme, so inheriting the theme foreground would put near-white
             // text on white.
             .text_color(rgb(0x18181B))
-            .text_size(px(15.))
+            .text_size(px(self.text_px))
             .line_height(px(20.))
             .id("lyrics-document")
             .overflow_y_scroll()
@@ -866,7 +930,7 @@ impl Render for DocField {
                         .items_center()
                         .child(
                             div()
-                                .text_size(px(15.))
+                                .text_size(px(self.text_px))
                                 .child("|")
                                 .with_animation(
                                     ElementId::Name("lyrics-caret-empty".into()),
@@ -957,7 +1021,7 @@ impl Render for DocField {
                                     .child(StyledText::new(before))
                                     .child(
                                         div()
-                                            .text_size(px(15.))
+                                            .text_size(px(self.text_px))
                                             .child("|")
                                             .with_animation(
                                                 ElementId::Name(
@@ -1135,6 +1199,32 @@ impl Focusable for DocField {
 mod tests {
     use super::*;
     use crate::lyrics_doc;
+
+    #[test]
+    fn toolbar_wrap_marks_the_selection() {
+        // Verse-toolbar B I U S: wrap selection in markers.
+        let mut c: SharedString = "hello world".into();
+        let mut sel = 6..11;
+        apply_wrap(&mut c, &mut sel, "**", "**");
+        assert_eq!(c.as_str(), "hello **world**");
+        assert_eq!(sel, 15..15, "cursor collapses past the wrapped text");
+        // Empty selection: bare markers at the cursor.
+        let mut c2: SharedString = "ab".into();
+        let mut sel2 = 1..1;
+        apply_wrap(&mut c2, &mut sel2, "*", "*");
+        assert_eq!(c2.as_str(), "a**b");
+    }
+
+    #[test]
+    fn toolbar_headings_prefix_the_cursor_line_once() {
+        // H1/H2/list: prefix the line, shift the cursor, no double-ups.
+        let mut c: SharedString = "one\ntwo".into();
+        let mut sel = 5..5;
+        assert!(apply_line_prefix(&mut c, &mut sel, "# "));
+        assert_eq!(c.as_str(), "one\n# two");
+        assert_eq!(sel, 7..7);
+        assert!(!apply_line_prefix(&mut c, &mut sel, "# "), "idempotent");
+    }
 
     /// `line_start`/`line_end` are the primitives cursor movement is built on,
     /// so they are tested against a document rather than through a window.

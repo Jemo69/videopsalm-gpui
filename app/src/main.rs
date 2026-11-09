@@ -515,6 +515,9 @@ pub(crate) struct Root {
     collapsed_at: Option<std::time::Instant>,
     /// The current song has unsaved lyrics.
     song_dirty: bool,
+    /// Center lyrics-document text size in px (verse-toolbar A+/A-,
+    /// session-only, clamped 10..24). The DocField paints this size.
+    lyrics_text_size: f32,
     /// Lyrics-editor sub-tab: `0` = Lyrics, `1` = Files, `2` = Chords.
     song_tab: u8,
     /// `Miscellaneous` tab selected. Kept separate because it is the only
@@ -1316,6 +1319,7 @@ impl Root {
             row_drag: None,
             collapsed_at: None,
             song_dirty: false,
+            lyrics_text_size: 15.0,
             song_tab: 0,
             song_misc: false,
             frozen_slide: None,
@@ -11019,6 +11023,67 @@ impl Root {
         }
     }
 
+    /// Verse/format toolbar (sheet §Center): verse chips (V1 C B …) that
+    /// start a new labelled verse block at the cursor, `chord` (`[]`)
+    /// and `split` (blank line = slide boundary) inserters, then live
+    /// B I U S H1 H2 list wrappers on the selection and A+/A− editor zoom.
+    /// Every key edits the same document the typing path edits — no dead
+    /// wires. Session-only size, clamped 10..24px.
+    fn verse_toolbar(&mut self, ui: &UI, cx: &mut Context<Root>, verse_ids: Vec<String>) -> Div {
+        let mut kids: Vec<Div> = Vec::new();
+        for id in verse_ids {
+            let tag = format!("\n{id}\n");
+            kids.push(btn(ui, cx, &id, false, move |this, _, _, cx| {
+                let doc = this.lyrics_doc.clone();
+                doc.update(cx, |d, cx| d.insert_at_cursor(&tag, cx));
+            }));
+        }
+        kids.push(btn(ui, cx, "[chord]", false, |this, _, _, cx| {
+            let doc = this.lyrics_doc.clone();
+            doc.update(cx, |d, cx| d.insert_at_cursor("[]", cx));
+        }));
+        kids.push(btn(ui, cx, "split", false, |this, _, _, cx| {
+            let doc = this.lyrics_doc.clone();
+            doc.update(cx, |d, cx| d.insert_at_cursor("\n\n", cx));
+        }));
+        for (label, before, after) in [
+            ("B", "**", "**"),
+            ("I", "*", "*"),
+            ("U", "__", "__"),
+            ("S", "~~", "~~"),
+        ] {
+            kids.push(btn(ui, cx, label, false, move |this, _, _, cx| {
+                let doc = this.lyrics_doc.clone();
+                doc.update(cx, |d, cx| d.wrap_selection(before, after, cx));
+            }));
+        }
+        for (label, prefix) in [("H1", "# "), ("H2", "## "), ("list", "- ")] {
+            kids.push(btn(ui, cx, label, false, move |this, _, _, cx| {
+                let doc = this.lyrics_doc.clone();
+                doc.update(cx, |d, cx| d.prefix_current_line(prefix, cx));
+            }));
+        }
+        kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
+            this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
+            let size = this.lyrics_text_size;
+            this.lyrics_doc.update(cx, |d, cx| {
+                d.text_px = size;
+                cx.notify();
+            });
+            cx.notify();
+        }));
+        kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
+            this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
+            let size = this.lyrics_text_size;
+            this.lyrics_doc.update(cx, |d, cx| {
+                d.text_px = size;
+                cx.notify();
+            });
+            cx.notify();
+        }));
+        row_wrap(kids)
+    }
+
     /// The centre panel: **one WYSIWYG document for the whole song**.
     ///
     /// Not a verse form. The original's centre panel is *"a WYSIWYG word
@@ -11098,6 +11163,17 @@ impl Root {
                         },
                     )),
             )
+            .child({
+                // Verse/format toolbar (sheet center strip): verse chips +
+                // chord/split inserters + live B I U S H1 H2 list + A± zoom.
+                // Visible in control center AND on the editor page.
+                let ids: Vec<String> = song
+                    .ordered_verses()
+                    .into_iter()
+                    .map(|v| v.id.clone())
+                    .collect();
+                self.verse_toolbar(ui, cx, ids)
+            })
             // `Paroles | Divers` — Divers holds transposition, capo and CCLI.
             .when(self.editor_page, |d| {
                 d.child(row(vec![
