@@ -82,3 +82,15 @@ Suite: app 197 + vp-core 252 + misc 5, zero warnings.
 - Theme pickers (ribbon + settings) now iterate `builtin_themes()` — Onyx appears everywhere, future skins free. Dark-toggle flips dark<->light as before.
 - Verified light: vp-core theme tests 3/3, app 197/197 via test binary, cargo check clean (JOBS=1, memory-light per instruction; no full cargo build storm).
 - Evidence: `shots/review-2026-11-09/rust-onyx-live.png` (lime + ● LIVE), uploaded to slop-media PR15, PR body appended. Branch split-gpui.
+
+---
+
+## 2026-11-09 · 10/10 push (font/iconography/placement/settings audit)
+- Menu strip right cluster per sheet: Lang/Theme/Monitor/Ratio value-buttons (click cycles) + primary Projector, Stage view toggle, Stop (= end_presentation, same guard as Esc). All drive existing state.
+- Control center Title input restored (sheet center contract); Number stays editor-only.
+- Agenda rows: meta sublines (verses/slides counts, Bible header, file kind/ext, link host, text preview); pure helpers tested.
+- Status bar: bordered kbd chips (sheet `.kbd`).
+- Font: Verdana default (projection + picker), UI falls back to system/DejaVu — sheet-tolerated (dropdown lists system-ui first).
+- Iconography: kind badges + round tool rail verified in evidence; no changes needed.
+- Settings audit: modal = rare knobs (workspace, monitor/display, theme, font defaults, alert/clock designs, stage); ribbon = frequent ops; menu cluster mirrors settings values per sheet position contract. Nothing misplaced; no dead wires.
+- Suite app 198 + vp-core 252, zero warnings. Evidence: rust-r10-control.png + rust-r10-live.png on slop-media PR15 + body section.
