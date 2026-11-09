@@ -5907,7 +5907,7 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 window.focus(&h);
                 cx.notify();
             }
-            PresKey::FocusSlides => self.ui_go(Mode::Projector, cx),
+            PresKey::FocusSlides => self.ui_go(focus_slides_target(self.mode), cx),
             PresKey::PptxNext => self.pptx_advance(cx),
             PresKey::RangeExtendEnd => self.adjust_range(cx, 0),
             PresKey::RangeShrinkEnd => self.adjust_range(cx, 1),
@@ -6066,8 +6066,8 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
     // Signal Room cards (sheet section 1): white card, bold ink title.
     // Red is reserved for the title strip, primary buttons, selected rows.
-    let header_bg = rgb(0xED1216);
-    let header_ink = rgb(0xFFFFFF);
+    let header_bg = ui.panel;
+    let header_ink = ui.fg;
     let mut col = div()
         .flex()
         .flex_col()
@@ -6369,6 +6369,20 @@ fn can_freeze(projected_slide_count: usize) -> bool {
 fn live_mode_target(current: Mode, projector_window_open: bool) -> Mode {
     if projector_window_open {
         current
+    } else {
+        Mode::Projector
+    }
+}
+
+/// `F6` round-trips the single-screen projector tab: Control (or Stage)
+/// visits the projector; from the projector it returns home to Control.
+/// Without the way back, going live single-screen stranded the operator —
+/// `Esc` is deliberately disabled while projecting and nothing else left
+/// the projector tab. The room keeps projecting either way (the live
+/// snapshot is untouched; only the control window's own tab changes).
+fn focus_slides_target(current: Mode) -> Mode {
+    if current == Mode::Projector {
+        Mode::Control
     } else {
         Mode::Projector
     }
@@ -12294,6 +12308,14 @@ mod tests {
     #[test]
     fn boot_size_keeps_default_on_large_display() {
         assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn f6_round_trips_the_single_screen_projector() {
+        // Out: visit the room screen. Back: control, live snapshot intact.
+        assert_eq!(focus_slides_target(Mode::Control), Mode::Projector);
+        assert_eq!(focus_slides_target(Mode::Stage), Mode::Projector);
+        assert_eq!(focus_slides_target(Mode::Projector), Mode::Control);
     }
 
     #[test]
