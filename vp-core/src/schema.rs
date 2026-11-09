@@ -230,6 +230,11 @@ pub struct Song {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
+    /// Attached files (MP3, video, sheet music): absolute or library-
+    /// relative paths. Additive + omitted when empty, so existing library
+    /// files round-trip byte-identically (same rule as the other metadata).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 impl Song {
@@ -1129,6 +1134,21 @@ mod tests {
         assert_eq!(song.chords.overlays[0].chord, "G");
         let back = serde_json::to_value(&song).unwrap();
         assert_eq!(back, json);
+    }
+
+    #[test]
+    fn song_attachments_round_trip_and_default_empty() {
+        // Additive field: old library files without `files` load with an
+        // empty list, and attached paths survive the round trip.
+        let legacy = serde_json::json!({"id": "s1", "title": "T"});
+        let song: Song = serde_json::from_value(legacy).unwrap();
+        assert!(song.files.is_empty());
+        let mut with_files = song;
+        with_files.files.push("/music/loop.mp3".into());
+        let back = serde_json::to_value(&with_files).unwrap();
+        assert_eq!(back["files"], serde_json::json!(["/music/loop.mp3"]));
+        let again: Song = serde_json::from_value(back).unwrap();
+        assert_eq!(again.files, vec!["/music/loop.mp3".to_string()]);
     }
 
     #[test]

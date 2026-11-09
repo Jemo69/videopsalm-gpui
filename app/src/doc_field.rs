@@ -126,6 +126,11 @@ impl DocField {
         }
     }
 
+    /// Current document text (used by the Chords tab detector and tests).
+    pub fn text(&self) -> String {
+        self.content.to_string()
+    }
+
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         // Unlike the single-line `TextField`, newlines are **kept**: this is a
         // document, and the blank lines are the slide boundaries.

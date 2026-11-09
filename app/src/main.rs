@@ -6096,6 +6096,36 @@ fn url_host(url: &str) -> &str {
     url.split('/').nth(2).unwrap_or("")
 }
 
+/// Chord symbols used in lyrics (`[C]`, `[Am7]`), in first-appearance
+/// order, duplicates removed. Pure; tested below. Powers the Chords tab:
+/// the tab is a real derived view, not a second copy of the document.
+fn lyric_chords(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            if let Some(end) = text[i..].find(']') {
+                let inner = text[i + 1..i + end].trim();
+                let mut chars = inner.chars();
+                let head_ok = matches!(chars.next(), Some('A'..='G'));
+                let rest_ok = inner.chars().skip(1).all(|c| {
+                    c.is_ascii_alphanumeric() || "+-#bmaj7susdim".contains(c)
+                });
+                if head_ok && rest_ok && !inner.is_empty() && inner.len() <= 12 {
+                    if !out.iter().any(|s| s == inner) {
+                        out.push(inner.to_string());
+                    }
+                }
+                i += end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Sheet `.kbd` key chip: bordered key name on paper. Used by the status
 /// bar shortcut hints — keys read as keys, not prose.
 pub(crate) fn kbd(ui: &UI, key: &str) -> Div {
@@ -8355,6 +8385,7 @@ impl Root {
             // window was two rows tall). A short agenda fits content; a long
             // one scrolls inside the cap. Dragging the divider below pins a
             // fixed height instead (`agenda_h`), persisted like the widths.
+            .child(self.agenda_file_strip(ui, cx))
             .child(self.agenda_wrap(ui, cx))
             .child(self.hdivider(ui, cx, 0))
             .child(
@@ -8525,6 +8556,198 @@ impl Root {
                 }
             }
         }
+    }
+
+    /// Open a file path with the OS handler (best effort, offline).
+    /// Same xdg-open/open/start dispatch the app already uses for URLs.
+    fn open_path_with_os(&mut self, path: &str, cx: &mut Context<Self>) {
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        match cmd.arg(path).spawn() {
+            Ok(_) => self.set_status(cx, format!("Opening {path}.")),
+            Err(e) => self.set_status(cx, format!("Cannot open {path}: {e}")),
+        }
+    }
+
+    /// Load the bundled sample agenda (sheet strip: Load sample agenda,
+    /// primary). Replaces the working agenda; selection and live reset.
+    fn load_sample_agenda(&mut self, cx: &mut Context<Self>) {
+        match Agenda::from_json(AGENDA_SAMPLE) {
+            Ok(a) => {
+                self.agenda = a;
+                self.sel_item = None;
+                self.live_item = None;
+                self.agenda_dirty = true;
+                self.set_status(cx, "Sample agenda loaded.");
+            }
+            Err(e) => self.set_status(cx, format!("Sample agenda is corrupt: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Center document area per tab: Lyrics edits the WYSIWYG document;
+    /// Files lists the song's attached files with Attach/Open/remove;
+    /// Chords lists the chord symbols detected in the lyrics plus the hint
+    /// to add `[C]` markers (the toolbar `[chord]` key inserts one).
+    /// Attachments persist on the song via the normal Save (Ctrl+S).
+    fn song_document_area(
+        &mut self,
+        ui: &UI,
+        cx: &mut Context<Root>,
+        document: gpui::Entity<DocField>,
+    ) -> Div {
+        if self.song_tab == 1 {
+            return self.song_files_panel(ui, cx);
+        }
+        if self.song_tab == 2 {
+            let text = document.read(cx).text();
+            let chords = lyric_chords(&text);
+            let mut body = if chords.is_empty() {
+                "No [chord] markers in these lyrics yet.".to_string()
+            } else {
+                format!("Chords in these lyrics: {}", chords.join(" – "))
+            };
+            body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar [chord] key inserts one at the cursor); transpose lives with the song chords.");
+            return div()
+                .flex_1()
+                .min_h(px(340.))
+                .min_h_0()
+                .overflow_hidden()
+                .p(px(10.))
+                .text_size(px(12.5))
+                .text_color(ui.fg)
+                .child(body);
+        }
+        document_wrap(document)
+    }
+
+    /// Song Files tab: attached MP3/video/sheet paths with Attach, Open
+    /// (OS handler) and remove. Stored on `song.files`, saved with the
+    /// song — never a dead list.
+    fn song_files_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let Some(si) = self.sel_song else {
+            return section(ui, &self.t("files"), vec![label(ui, "(no song)", 13.)]);
+        };
+        let files = self
+            .songs
+            .get(si)
+            .map(|s| s.files.clone())
+            .unwrap_or_default();
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p(px(6.))
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .min_h(px(340.))
+            .child(row(vec![btn(
+                ui,
+                cx,
+                "Attach…",
+                false,
+                |this, _, _, cx| {
+                    if let Some(p) =
+                        crate::file_picker::pick_file("Attach file", &[("All files", &["*"])])
+                    {
+                        if let Some(si) = this.sel_song {
+                            if let Some(song) = this.songs.get_mut(si) {
+                                song.files.push(p.to_string_lossy().into_owned());
+                                this.song_dirty = true;
+                                this.set_status(cx, "File attached — Save the song (Ctrl+S).");
+                            }
+                        }
+                        cx.notify();
+                    }
+                },
+            )]));
+        for path in files {
+            let open_path = path.clone();
+            let drop_path = path.clone();
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(path.clone());
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(12.))
+                            .text_color(ui.fg)
+                            .child(name),
+                    )
+                    .child(btn(ui, cx, "Open", false, move |this, _, _, cx| {
+                        this.open_path_with_os(&open_path, cx);
+                    }))
+                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
+                        if let Some(si) = this.sel_song {
+                            if let Some(song) = this.songs.get_mut(si) {
+                                song.files.retain(|f| f != &drop_path);
+                                this.song_dirty = true;
+                            }
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        col.child(
+            div()
+                .p(px(2.))
+                .text_size(px(11.))
+                .text_color(ui.fg)
+                .child(
+                    "Attached files save with the song (Ctrl+S). Open shells to the OS handler."
+                        .to_string(),
+                ),
+        )
+    }
+
+    /// Agenda-file strip (sheet position 5): New · Open… · Save ·
+    /// Load sample agenda (primary) · Print booklet. The File `▾`
+    /// disclosure inside the agenda panel keeps the paths/recents/file
+    /// rows; the strip is the always-visible quick row.
+    fn agenda_file_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        row_wrap(vec![
+            btn(ui, cx, "New", false, |this, _, _, cx| {
+                this.agenda = Agenda::new("New agenda");
+                this.sel_item = None;
+                this.live_item = None;
+                cx.notify();
+            }),
+            btn(ui, cx, "Open…", false, |this, _, _, cx| {
+                this.open_agenda(cx)
+            }),
+            btn(ui, cx, "Save", false, |this, _, _, cx| {
+                this.save_agenda(cx)
+            }),
+            btn(
+                ui,
+                cx,
+                "Load sample agenda",
+                true,
+                |this, _, _, cx| {
+                    this.load_sample_agenda(cx)
+                },
+            ),
+            btn(ui, cx, "Print booklet", false, |this, _, _, cx| {
+                this.print_booklet(cx)
+            }),
+        ])
     }
 
     /// Agenda wrapper: automatic (content up to the 360 px cap) until the
@@ -11407,7 +11630,7 @@ impl Root {
                     div().w(px(90.)).child(self.number_field.clone()),
                 ]))
             })
-            .child(document_wrap(document))
+            .child(self.song_document_area(ui, cx, document))
             // English 1.29 uses five editable footer fields: References and
             // Author/Composer on the left; Verse order and Copyright on the
             // right. Verse order is LIVE: the agenda item's override when one
@@ -12651,6 +12874,14 @@ mod tests {
         assert_eq!(file_kind_label("xyz"), "file");
         assert_eq!(url_host("https://example.com/live"), "example.com");
         assert_eq!(url_host("notaurl"), "");
+    }
+
+    #[test]
+    fn lyric_chord_detector_reads_bracket_markers_in_order() {
+        assert_eq!(lyric_chords("[C] hello [G] world [C]"), vec!["C", "G"]);
+        assert_eq!(lyric_chords("[Am7] x [F#m]"), vec!["Am7", "F#m"]);
+        assert!(lyric_chords("no markers here").is_empty());
+        assert!(lyric_chords("[not a chord!] x").is_empty());
     }
 
     #[test]
