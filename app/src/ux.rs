@@ -673,6 +673,8 @@ pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
         "ctrl-8" => Some(PresKey::AddResult(8)),
         "ctrl-9" => Some(PresKey::AddResult(9)),
         "f1" => Some(PresKey::Help),
+        // `?` opens the same contextual help (status-bar hint).
+        "?" => Some(PresKey::Help),
         "ctrl-q" => Some(PresKey::Quit),
         "ctrl-*" => Some(PresKey::RangeExtendEnd),
         "ctrl-/" => Some(PresKey::RangeShrinkEnd),
@@ -1970,6 +1972,8 @@ mod tests {
         }
         // F1 is contextual help in the original (1.7), and it now routes.
         assert_eq!(route_pres_key("f1"), Some(PresKey::Help));
+        // `?` (status-bar hint) opens the same help.
+        assert_eq!(route_pres_key("?"), Some(PresKey::Help));
     }
 
     #[test]

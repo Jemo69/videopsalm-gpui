@@ -617,6 +617,10 @@ pub(crate) struct Root {
     /// Collapsible Bibles-browser sections (translations / import / picker).
     /// Session-only disclosure state, like `agenda_file_open`.
     verse_order_open: bool,
+    /// Song metadata disclosure (Number/Title/References/Author/Copyright).
+    /// Shut by default: the control center is the lyrics document, and the
+    /// metadata rows live one click away on the song-editor surface.
+    song_details_open: bool,
     scroll_verse_order: ScrollHandle,
     bible_sec_trans: bool,
     bible_sec_import: bool,
@@ -1342,6 +1346,7 @@ impl Root {
             scroll_bible_hits: ScrollHandle::new(),
             scroll_bible_browser: ScrollHandle::new(),
             verse_order_open: false,
+            song_details_open: false,
             scroll_verse_order: ScrollHandle::new(),
             bible_sec_trans: true,
             bible_sec_import: false,
@@ -4847,6 +4852,14 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         );
     }
 
+    /// Return to the full control workspace (menu row): viewer off, layout
+    /// persisted, repaint. Every menu item except View routes through here.
+    fn show_control(&mut self, cx: &mut Context<Self>) {
+        self.viewer_mode = false;
+        self.persist_layout_quiet();
+        cx.notify();
+    }
+
     /// `Ctrl+E`: Viewer ↔ Edit mode. Viewer hides the ribbon and editors so a
     /// jump-starter is not distracted by editing commands.
     fn toggle_viewer_mode(&mut self, cx: &mut Context<Self>) {
@@ -6376,7 +6389,14 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 /// document scrolls internally. Without `min_h_0` a tall wrapped footer
 /// pushes the Save row beneath the panel fold with no way to reach it.
 fn document_wrap(doc: gpui::Entity<DocField>) -> Div {
-    div().flex_1().min_h_0().overflow_hidden().child(doc)
+    // The lyrics document is the visual anchor of the control window
+    // (sheet page 01): never shorter than 340px, even on short windows.
+    div()
+        .flex_1()
+        .min_h(px(340.))
+        .min_h_0()
+        .overflow_hidden()
+        .child(doc)
 }
 /// past a fixed-width panel (the 360px agenda column plus Browse buttons
 /// overflowed and clipped button labels — WI-024).
@@ -6438,6 +6458,10 @@ impl Render for Root {
             // stage/live workspace) instead of adding a non-original row above
             // the ribbon.
             root = root.child(self.ribbon_bar(&ui, cx));
+            // Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/
+            // View menu row between the title strip and the workspace. Every
+            // item drives existing state — no dead wires.
+            root = root.child(self.menu_row(&ui, cx));
         }
         // KeyTips overlay (bare Alt): control mode with chrome only, never
         // over the projector or stage screens — and never over a chromeless
@@ -6455,7 +6479,11 @@ impl Render for Root {
                 .px_2()
                 .py(px(2.))
                 .border_color(ui.border)
-                .child(format!("{} {}", self.t("status"), self.status)),
+                .child(format!(
+                    "{} {}   |   Enter project · F5 start · X next · F6 slides · Ctrl+S save · ? shortcuts",
+                    self.t("status"),
+                    self.status
+                )),
         )
         // Settings modal paints last: topmost, over ribbon, panels and
         // the status line.
@@ -6636,6 +6664,74 @@ impl Root {
     // Toolbar strip mirroring the original ribbon tabs
     // (File|Agenda|Songs|Bibles|Media|Style|View) as a tab bar + grouped
     // action buttons. All buttons reuse the same handlers as the panels.
+
+    /// Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/View
+    /// menu row. Each item drives existing workspace state (ribbon tab,
+    /// browser tab, disclosures, viewer mode) — no dead wires.
+    fn menu_row(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_1()
+            .items_center()
+            .px_2()
+            .py(px(2.))
+            .bg(ui.panel)
+            .border_b_1()
+            .border_color(ui.border)
+            .child(btn(ui, cx, "File", self.agenda_file_open, |this, _, _, cx| {
+                this.agenda_file_open = !this.agenda_file_open;
+                this.show_control(cx);
+            }))
+            .child(btn(ui, cx, "Agenda", false, |this, _, _, cx| {
+                this.show_control(cx);
+                this.set_status(cx, "Agenda.");
+            }))
+            .child(btn(
+                ui,
+                cx,
+                "Songs",
+                self.left_tab == LeftTab::Songs,
+                |this, _, _, cx| {
+                    this.left_tab = LeftTab::Songs;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Bibles",
+                self.left_tab == LeftTab::Bibles,
+                |this, _, _, cx| {
+                    this.left_tab = LeftTab::Bibles;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Media",
+                self.ribbon == RibbonTab::Background,
+                |this, _, _, cx| {
+                    this.ribbon = RibbonTab::Background;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Style",
+                self.show_style_explorer,
+                |this, _, _, cx| {
+                    this.show_style_explorer = !this.show_style_explorer;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(ui, cx, "View", self.viewer_mode, |this, _, _, cx| {
+                this.toggle_viewer_mode(cx);
+            }))
+    }
 
     /// The ribbon: four tabs, then the active tab's groups.
     ///
@@ -10878,21 +10974,40 @@ impl Root {
             // Save lives in the Song ribbon group and on Ctrl+S; transpose and
             // notation live in the Chords tab and the Font group — the 1.29
             // editor keeps this row for Number/Title only.
+            // Song metadata (Number/Title/References/…) sits behind a
+            // disclosure: the control center is the lyrics document.
+            .child(row(vec![btn(
+                ui,
+                cx,
+                if self.song_details_open {
+                    "Song details ▾"
+                } else {
+                    "Song details ▸"
+                },
+                self.song_details_open,
+                |this, _, _, cx| {
+                    this.song_details_open = !this.song_details_open;
+                    cx.notify();
+                },
+            )]))
             // Canonical 1.29 metadata row: editable Number and Title fields.
-            .child(row(vec![
-                label(ui, "Number:", 12.),
-                div().w(px(90.)).child(self.number_field.clone()),
-                label(ui, "Title:", 12.),
-                div().flex_1().child(self.song_title_field.clone()),
-            ]))
+            .when(self.song_details_open, |d| {
+                d.child(row(vec![
+                    label(ui, "Number:", 12.),
+                    div().w(px(90.)).child(self.number_field.clone()),
+                    label(ui, "Title:", 12.),
+                    div().flex_1().child(self.song_title_field.clone()),
+                ]))
+            })
             .child(document_wrap(document))
             // English 1.29 uses five editable footer fields: References and
             // Author/Composer on the left; Verse order and Copyright on the
             // right. Verse order is LIVE: the agenda item's override when one
             // exists, otherwise the song's own verse sequence. `×` clears a
             // custom order back to the song default; `⌃`/`⌄` rotate it.
-            .child({
-                let song_id = song.id.clone();
+            .when(self.song_details_open, |d| {
+                d.child({
+                    let song_id = song.id.clone();
                 let default_order: Vec<String> =
                     song.ordered_verses().into_iter().map(|v| v.id.clone()).collect();
                 let owner = self.agenda.items.iter().find_map(|it| match &it.reference {
@@ -11045,10 +11160,12 @@ impl Root {
                             }
                         }
                     }),
-                ])
+                    ])
+                })
             })
-            .child(row_wrap(vec![
-                label(ui, "Author:", 12.),
+            .when(self.song_details_open, |d| {
+                d.child(row_wrap(vec![
+                    label(ui, "Author:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.author_field.clone()),
                 label(ui, "Copyright:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.copyright_field.clone()),
@@ -11069,11 +11186,11 @@ impl Root {
                         "Save song"
                     },
                     self.song_dirty,
-                    |this, _, _, cx| {
-                        this.save_song_document(cx);
-                    },
-                ),
-            ]))
+                        |this, _, _, cx| {
+                            this.save_song_document(cx);
+                        },
+                    ),
+                ]))})
     }
 
     #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
