@@ -6075,6 +6075,40 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
         .child(label.to_string())
 }
 
+/// File-kind word for an agenda file row (sheet meta sublines:
+/// "Video · muted", "Image · Cover"). Pure; tested below.
+fn file_kind_label(ext: &str) -> &'static str {
+    match ext {
+        "mp4" | "mov" | "avi" | "mkv" | "webm" => "video",
+        "mp3" | "wav" | "ogg" | "flac" | "m4a" => "audio",
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" => "image",
+        "pdf" => "document",
+        "ppt" | "pptx" | "odp" => "slides",
+        "doc" | "docx" | "odt" => "document",
+        "xls" | "xlsx" | "ods" | "csv" => "sheet",
+        _ => "file",
+    }
+}
+
+/// Host of a URL row ("link · youtube.com"), empty when unparseable.
+/// Pure; tested below.
+fn url_host(url: &str) -> &str {
+    url.split('/').nth(2).unwrap_or("")
+}
+
+/// Sheet `.kbd` key chip: bordered key name on paper. Used by the status
+/// bar shortcut hints — keys read as keys, not prose.
+pub(crate) fn kbd(ui: &UI, key: &str) -> Div {
+    div()
+        .border_1()
+        .border_color(ui.border)
+        .rounded_sm()
+        .px(px(5.))
+        .text_size(px(10.))
+        .bg(ui.panel)
+        .child(key.to_string())
+}
+
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
     // Signal Room cards (sheet section 1): white card, bold ink title.
     // Red is reserved for the title strip, primary buttons, selected rows.
@@ -6613,12 +6647,26 @@ impl Render for Root {
             div()
                 .px_2()
                 .py(px(2.))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_1()
+                .items_center()
                 .border_color(ui.border)
-                .child(format!(
-                    "{} {}   |   Enter project · F5 start · X next · F6 slides · Ctrl+S save · ? shortcuts",
-                    self.t("status"),
-                    self.status
-                )),
+                .child(format!("{} {}", self.t("status"), self.status))
+                .child(div().text_size(px(10.5)).child("|".to_string()))
+                .child(kbd(&ui, "Enter"))
+                .child(div().text_size(px(10.5)).child("project".to_string()))
+                .child(kbd(&ui, "F5"))
+                .child(div().text_size(px(10.5)).child("start".to_string()))
+                .child(kbd(&ui, "X"))
+                .child(div().text_size(px(10.5)).child("next".to_string()))
+                .child(kbd(&ui, "F6"))
+                .child(div().text_size(px(10.5)).child("slides".to_string()))
+                .child(kbd(&ui, "Ctrl+S"))
+                .child(div().text_size(px(10.5)).child("save".to_string()))
+                .child(kbd(&ui, "?"))
+                .child(div().text_size(px(10.5)).child("shortcuts".to_string())),
         )
         // Settings modal paints last: topmost, over ribbon, panels and
         // the status line.
@@ -6838,6 +6886,88 @@ impl Root {
             ))
             .child(btn(ui, cx, "View", self.viewer_mode, |this, _, _, cx| {
                 this.toggle_viewer_mode(cx);
+            }))
+            .child(div().w(px(8.)))
+            // Sheet menu-strip right cluster: Lang · Theme · Monitor · Ratio
+            // indicators (each one cycles on click) plus the primary
+            // Projector button, Stage view and Stop. All drive existing
+            // state — the same actions as the ribbon/settings, surfaced
+            // where the operator's hand already is.
+            .child({
+                let label = format!("Lang: {}", self.lang.to_uppercase());
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    this.lang = if this.lang == "fr" { "en".into() } else { "fr".into() };
+                    this.persist_layout_quiet();
+                    cx.notify();
+                })
+            })
+            .child({
+                // Current values ride in the label; the button cycles.
+                let label = format!(
+                    "{}: {}",
+                    "Theme",
+                    vp_core::themes::theme_by_id(&self.theme_id)
+                        .map(|t| t.name)
+                        .unwrap_or("Light")
+                );
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    let ids: Vec<&str> = vp_core::themes::builtin_themes()
+                        .iter()
+                        .map(|t| t.id)
+                        .collect();
+                    let next = ids
+                        .iter()
+                        .position(|id| **id == this.theme_id)
+                        .map(|i| ids[(i + 1) % ids.len()])
+                        .unwrap_or("light");
+                    this.theme_id = next.into();
+                    this.persist_layout_quiet();
+                    this.republish(cx);
+                    cx.notify();
+                })
+            })
+            .child({
+                let label = format!("Monitor {}", self.projector_display + 1);
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    this.set_projector_display(cx, (this.projector_display + 1) % 3);
+                    cx.notify();
+                })
+            })
+            .child({
+                let label = format!("Ratio {}", self.aspect_ratio);
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    const RATIOS: [&str; 6] =
+                        ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"];
+                    let i = RATIOS
+                        .iter()
+                        .position(|r| *r == this.aspect_ratio)
+                        .map(|i| (i + 1) % RATIOS.len())
+                        .unwrap_or(0);
+                    this.aspect_ratio = RATIOS[i].into();
+                    this.persist_layout_quiet();
+                    this.republish(cx);
+                    cx.notify();
+                })
+            })
+            .child(div().w(px(8.)))
+            .child(btn(ui, cx, "Projector", self.projector_window.is_some(), |this, _, _, cx| {
+                this.toggle_projector(cx);
+            }))
+            .child(btn(
+                ui,
+                cx,
+                "Stage view",
+                self.mode == Mode::Stage,
+                |this, _, _, cx| {
+                    if this.mode == Mode::Stage {
+                        this.ui_go(Mode::Control, cx);
+                    } else {
+                        this.ui_go(Mode::Stage, cx);
+                    }
+                },
+            ))
+            .child(btn(ui, cx, "Stop", false, |this, _, _, cx| {
+                this.end_presentation(cx);
             }))
     }
 
@@ -8359,6 +8489,44 @@ impl Root {
         root
     }
 
+    /// Agenda row meta subline (sheet rows carry a small detail line:
+    /// "4 verses · key G", "Image · Cover", "Video · muted"). Pure:
+    /// song verse/slide counts, Bible header, file extension kind, URL
+    /// host, else the kind label. Never empty, never panics.
+    fn agenda_meta(&self, item: &AgendaItem, idx: usize) -> String {
+        match &item.reference {
+            ItemRef::Song { song_id } => match self.songs.iter().find(|s| &s.id == song_id) {
+                Some(song) => {
+                    let verses = song.ordered_verses().len();
+                    let slides = self.item_slides(idx).len();
+                    format!("{verses} verses · {slides} slides")
+                }
+                None => "Song · missing from library".to_string(),
+            },
+            ItemRef::Bible { bible_ref } => format_header(bible_ref),
+            ItemRef::File { file } => {
+                let ext = file.rsplit('.').next().unwrap_or("").to_lowercase();
+                format!("{} · {ext}", file_kind_label(ext.as_str()))
+            }
+            ItemRef::Url { url } => {
+                let host = url_host(url);
+                if host.is_empty() {
+                    "web link".to_string()
+                } else {
+                    format!("link · {host}")
+                }
+            }
+            ItemRef::Text { text } => {
+                let preview: String = text.chars().take(28).collect();
+                if preview.is_empty() {
+                    format!("{:?}", item.kind)
+                } else {
+                    preview
+                }
+            }
+        }
+    }
+
     /// Agenda wrapper: automatic (content up to the 360 px cap) until the
     /// operator drags the divider below it, then the pinned height.
     fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
@@ -8460,7 +8628,16 @@ impl Root {
                         this.cancel_agenda_rename(cx);
                     }))
             } else {
-                div().flex_1().child(title)
+                // Sheet rows pair the title with a small meta line
+                // ("4 verses · key G", "Image · Cover"). It inherits
+                // the row ink, so live/selected coloring still reads.
+                let meta = self.agenda_meta(item, idx);
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(title)
+                    .child(div().text_size(px(10.5)).child(meta))
             };
             rows.push(
                 div()
@@ -11150,6 +11327,13 @@ impl Root {
                         },
                     )),
             )
+            // Sheet center contract: the song title is an always-visible
+            // input above the toolbar; Number and the rest stay behind the
+            // details disclosure / on the editor page.
+            .child(row(vec![
+                label(ui, "Title:", 12.),
+                div().flex_1().min_w(px(120.)).child(self.song_title_field.clone()),
+            ]))
             .child({
                 // Verse/format toolbar (sheet center strip): verse chips +
                 // chord/split inserters + live B I U S H1 H2 list + A± zoom.
@@ -11221,8 +11405,6 @@ impl Root {
                 d.child(row(vec![
                     label(ui, "Number:", 12.),
                     div().w(px(90.)).child(self.number_field.clone()),
-                    label(ui, "Title:", 12.),
-                    div().flex_1().child(self.song_title_field.clone()),
                 ]))
             })
             .child(document_wrap(document))
@@ -12458,6 +12640,17 @@ mod tests {
         assert!(!pres_key_passes_while_editing(PresKey::Next));
         assert!(!pres_key_passes_while_editing(PresKey::Digit(1)));
         assert!(!pres_key_passes_while_editing(PresKey::Section('V')));
+    }
+
+    #[test]
+    fn agenda_file_and_url_metas_stay_readable() {
+        // Sheet meta sublines: kind word + extension / host.
+        assert_eq!(file_kind_label("mp4"), "video");
+        assert_eq!(file_kind_label("MP3".to_lowercase().as_str()), "audio");
+        assert_eq!(file_kind_label("pptx"), "slides");
+        assert_eq!(file_kind_label("xyz"), "file");
+        assert_eq!(url_host("https://example.com/live"), "example.com");
+        assert_eq!(url_host("notaurl"), "");
     }
 
     #[test]
