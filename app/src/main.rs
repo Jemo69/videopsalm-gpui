@@ -4592,18 +4592,29 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             // the item holding the clicked verse, else the first item; the
             // clicked verse wins its slide via `goto_song_verse` (slide-0
             // fallback). Empty agenda stays a status message, never a panic.
-            let mut idx = self.sel_item;
-            if idx.is_none() {
-                if let Some(want) = self.sel_block.clone() {
-                    idx = (0..self.agenda.items.len()).find(|&i| {
-                        self.item_slides(i).iter().any(|s| {
-                            slide_verse_id(&s.header).as_deref() == Some(want.as_str())
-                        })
-                    });
-                }
-            }
-            match idx.or_else(|| (!self.agenda.items.is_empty()).then_some(0)) {
-                Some(i) => match self.sel_block.clone() {
+            let owned: Vec<(usize, Vec<String>)> = (0..self.agenda.items.len())
+                .map(|i| {
+                    let headers = self
+                        .item_slides(i)
+                        .iter()
+                        .filter_map(|s| slide_verse_id(&s.header))
+                        .collect();
+                    (i, headers)
+                })
+                .collect();
+            let want = self.sel_block.clone();
+            match cold_start_index(
+                self.sel_item,
+                want.as_deref(),
+                self.agenda.items.len(),
+                &|vid| {
+                    owned
+                        .iter()
+                        .find(|(_, hs)| hs.iter().any(|h| h == vid))
+                        .map(|(i, _)| *i)
+                },
+            ) {
+                Some(i) => match want {
                     Some(vid) => self.goto_song_verse(cx, i, &vid),
                     None => self.show_live(cx, i),
                 },
@@ -6386,6 +6397,33 @@ fn focus_slides_target(current: Mode) -> Mode {
     } else {
         Mode::Projector
     }
+}
+
+/// Cold-Enter target (pure, tested): nothing is projecting yet, so Enter
+/// projects the operator's current context — agenda cursor first, then the
+/// item holding the clicked verse, else the first item. Empty agenda
+/// yields `None` (the caller keeps a status message, never a panic).
+fn cold_start_index(
+    sel_item: Option<usize>,
+    sel_block: Option<&str>,
+    agenda_len: usize,
+    verse_owner: &dyn Fn(&str) -> Option<usize>,
+) -> Option<usize> {
+    if agenda_len == 0 {
+        return None;
+    }
+    if let Some(i) = sel_item {
+        return Some(i);
+    }
+    if let Some(want) = sel_block {
+        if let Some(i) = verse_owner(want) {
+            return Some(i);
+        }
+    }
+    if agenda_len > 0 {
+        return Some(0);
+    }
+    None
 }
 
 /// Pick the bilingual second translation (pure, tested): the operator's
@@ -12308,6 +12346,25 @@ mod tests {
     #[test]
     fn boot_size_keeps_default_on_large_display() {
         assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn cold_enter_projects_the_click_context_first() {
+        let owner = |vid: &str| match vid {
+            "V2" => Some(2),
+            _ => None,
+        };
+        // Agenda cursor wins.
+        assert_eq!(cold_start_index(Some(1), Some("V2"), 3, &owner), Some(1));
+        // Clicked verse's item when no cursor.
+        assert_eq!(cold_start_index(None, Some("V2"), 3, &owner), Some(2));
+        // Unknown verse falls back to the first item.
+        assert_eq!(cold_start_index(None, Some("V9"), 3, &owner), Some(0));
+        // No context falls back to the first item.
+        assert_eq!(cold_start_index(None, None, 3, &owner), Some(0));
+        // Empty agenda stays a status message, never a panic.
+        assert_eq!(cold_start_index(None, None, 0, &owner), None);
+        assert_eq!(cold_start_index(None, Some("V2"), 0, &owner), None);
     }
 
     #[test]
