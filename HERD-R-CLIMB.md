@@ -107,3 +107,11 @@ Suite: app 197 + vp-core 252 + misc 5, zero warnings.
 ## 2026-11-09 · Round 9 done (exact 10/10 path)
 - Agenda strip full-width at position 5 (title > menu > strip > ribbon); VP plan buttons wired to existing import/export; empty-[] hint per reviewer note.
 - Evidence rust-r9-strip.png on slop-media PR15 + body section. Suite app 199 + vp-core 253, zero warnings.
+
+---
+
+## 2026-11-09 · Round 10 done — last Rust 10/10 blocker cleared
+- Removed the unicode kind glyphs (♪ ✝ ▣ ▶ ♫) from agenda rows: sheet rows carry no icons, the meta subline carries the kind. `kind_badge` is now `#[cfg(test)]` (tests still pin distinctness), so no production reference and zero warnings.
+- Evidence on current binary: rows are icon-free with lime + ● LIVE + meta ("2 verses · 2 slides"); full-width agenda strip at position 5 with all 7 buttons; fitted preview. Uploaded to slop-media PR15 (`app-210` rows crop + `rust-r10-final` full frame), PR body section added.
+- Suite: app 199 + vp-core 253 + misc 5, zero warnings. Branch split-gpui @ de5e9715.
+- Rust side: every ordered surface now at par; remaining markers are needs-human-hardware only (OS file chooser, 2nd projector window under Xvfb).
