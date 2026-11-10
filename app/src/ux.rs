@@ -114,6 +114,9 @@ pub fn verse_shortcut_target(verse_ids: &[&str], key: char) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 /// One-glyph text badge per agenda kind. Original glyphs only.
+/// Test-only since R10: sheet rows carry no icons (the meta subline carries
+/// the kind), so production rendering must not reference these.
+#[cfg(test)]
 pub fn kind_badge(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Song => "♪",

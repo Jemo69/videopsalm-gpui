@@ -94,7 +94,7 @@ use ux::{
     agenda_rail_buttons, apply_verse_grid_click, bible_hit_rows, bible_slide_badge,
     bible_slide_verses, chapter_count, clamp_verses_to_chapter, default_verse_count,
     digit_slide_index, filmstrip_label,
-    font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
+    font_families, is_slide_vocabulary_key, presentation_end_blocked,
     presentation_start_index, rail_menu_items, route_pres_key, save_target, section_name,
     shortcut_help, slide_verse_id, style_dropdown_label, style_levels, style_override_dot,
     style_preset_levels, tool_strip, transitions, valid_rename_title, verse_shortcut_target,
@@ -8810,16 +8810,17 @@ impl Root {
             let live = self.live_item == Some(idx);
             // `item.kind` is an enum, and `{:?}` on it renders the Rust variant
             // name — the operator would read "BibleVerses" or
-            // "PowerPointSlide" in the agenda. `kind_badge` returns a short
-            // drawn mark; use that alone.
+            // "PowerPointSlide" in the agenda. No kind glyph: sheet rows
+            // carry no icons (R10: unicode glyphs removed as an addition
+            // beyond the sheet) — the meta subline carries the kind.
             //
             // Two states, as in `agenda-panel.png`: the **live** row is the one
             // currently projecting and is filled lime; the **selected** row is
             // the keyboard cursor and is filled signal red. Collapsing
             // them loses the distinction that makes the list readable mid-service.
-            // Row shape per agenda-panel.png / LAYOUT.md: kind glyph, songbook
-            // ABBREV, song NUMBER, title — then the status dot. `show_abbrev`
-            // / `show_number` (1.27b toggles) hide their column.
+            // Row shape: songbook ABBREV, song NUMBER, title — then the
+            // status dot. `show_abbrev` / `show_number` (1.27b toggles)
+            // hide their column.
             let row_title = match &item.reference {
                 ItemRef::Song { song_id } => {
                     let song = self.songs.iter().find(|s| &s.id == song_id);
@@ -8845,9 +8846,11 @@ impl Root {
                     } else {
                         String::new()
                     };
-                    format!("{}{} {}", kind_badge(item.kind), ab, format!("{num} {}", item.title).trim_start())
+                    format!("{}{}", ab, format!("{num} {}", item.title).trim_start())
+                        .trim_start()
+                        .to_string()
                 }
-                _ => format!("{} {}", kind_badge(item.kind), item.title),
+                _ => item.title.clone(),
             };
             let title = row_title;
             // A filled signal-red dot at the right edge of every row is the
