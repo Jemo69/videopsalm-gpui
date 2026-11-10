@@ -142,3 +142,11 @@ Root cause found and fixed structurally:
 - Suite: app **201** + vp-core **253**, zero warnings.
 
 Honest limitation (declared, not papered over): partway through this task my box's synthetic input degraded — even `F1` stopped registering in **Control** mode, so I could not re-verify the OFF click or the Esc/F6 paths with pixels here. Evidence attached is limited to what the frames actually show: the Stage view with STAGE captions + the Back button, and the chrome-compression set. The OFF path is pinned by the round-trip test and the structural change (control tree stays mounted); please re-verify the click/key paths on the r-review harness.
+
+## 2026-11-11 (cont.) · Font-size stepper (conductor-flagged)
+`A 44` + `A-` + `A+` → **`A− | 44 | A+`**: fixed-width (26px) centred readout between the two keys, same strip position, same handlers, sheet-compatible. Frame: `out/hillclimb/font-stepper/stepper-zoom.png` (+ slop-media PR15).
+
+Status of the still-open R-Compression items:
+- **Stage overlay + pure round-trip toggle + Esc-before-gate + F6→Control + Back button + bounded stage panel + STAGE captions + wrap_note**: all implemented, app 201 + vp-core 253 green, zero warnings.
+- Pixel proofs held: chrome compression (157px / panes y188), font stepper, STAGE / STAGE — NEXT captions with the Back button visible.
+- **Not pixel-proven here**: Stage ON/OFF click, Esc/F6 from Stage, no-song centre. My box's synthetic input became intermittent mid-task (F1, New-agenda and Stage clicks stop registering on some rows while keys/clicks on other rows work), so the remaining proofs are blocked on input, not on code. r-review is re-verifying on their harness (conductor's own ON-click attempt also missed, which matches an input/coordinate issue rather than a dead handler).
