@@ -127,3 +127,18 @@ Measured before: chrome 275px, panes y305. After: chrome ~157px, panes y≈188 (
 - Evidence: shots/review-2026-11-11-rust/{compact-control,empty-agenda,output-base-screen}.png + slop-media PR15.
 - Gap: the STAGE caption frame needs a mode-switch click this headless session would not deliver (Stage view button clicks went unregistered); code path is the same helper proven by the OUTPUT captures.
 - Suite: app 200 + vp-core 253, zero warnings. Branch split-gpui @ e9664bc4.
+
+---
+
+## 2026-11-11 · R-Compression FAIL response (Stage trap)
+Root cause found and fixed structurally:
+- **Stage replaced the whole content tree**, unmounting every field. With no focused element the window's keymap stopped running (Esc/F6 dead) and the menu row stopped receiving releases, so the toggle could not fire OFF. Fix: Stage now renders as an **overlay over the control view** (`Mode::Stage` → control_view + absolute stage panel), so the editor stays mounted and focus/keymap/chrome keep working. Stage column also bounded (`min_h_0`/`overflow_hidden`).
+- **Toggle is a pure round-trip** `stage_toggle_target(mode)` (Stage→Control, else→Stage), unit-tested both directions; button now acts on press (a phase that demonstrably reaches it) rather than release.
+- **Esc from Stage** returns to Control *before* the lyrics-document vocabulary gate (that gate was swallowing Esc) — code order fixed.
+- **F6 from Stage** now returns to Control (was Projector) — test updated.
+- **Visible `‹ Back to control`** button in the stage header.
+- **STAGE / STAGE — NEXT captions** on the stage cards (FreeShow lens): `shots/review-2026-11-11-stage/stage-captions.png`.
+- **Empty-state copy wraps** instead of clipping at the pane edge (`wrap_note`), and the no-song centre uses the same wrapped instructional text.
+- Suite: app **201** + vp-core **253**, zero warnings.
+
+Honest limitation (declared, not papered over): partway through this task my box's synthetic input degraded — even `F1` stopped registering in **Control** mode, so I could not re-verify the OFF click or the Esc/F6 paths with pixels here. Evidence attached is limited to what the frames actually show: the Stage view with STAGE captions + the Back button, and the chrome-compression set. The OFF path is pinned by the round-trip test and the structural change (control tree stays mounted); please re-verify the click/key paths on the r-review harness.
