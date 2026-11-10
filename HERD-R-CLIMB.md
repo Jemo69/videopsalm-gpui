@@ -101,3 +101,9 @@ Suite: app 197 + vp-core 252 + misc 5, zero warnings.
 - Order 1 (agenda-file strip pos 5): surfaced New/Open…/Save/Load sample agenda(primary)/Print booklet; evidenced on current binary (rust-r10 shots) + slop-media PR15. Review R6 sheet position honored.
 - Order 2 (Files/Chords): implemented — additive Song.files schema, Attach/Open/Remove wired, Chords detector tab; unit tests green (schema round-trip, lyric_chords). Interactive proof blocked: OOM kills + OS file dialogs undrivable headless. Ruling requested in HERD-INBOX.md (accept code+tests, or name proof + quiet window).
 - Suite app 199 + vp-core 253, zero warnings (JOBS=1 builds only, per memory instruction).
+
+---
+
+## 2026-11-09 · Round 9 done (exact 10/10 path)
+- Agenda strip full-width at position 5 (title > menu > strip > ribbon); VP plan buttons wired to existing import/export; empty-[] hint per reviewer note.
+- Evidence rust-r9-strip.png on slop-media PR15 + body section. Suite app 199 + vp-core 253, zero warnings.
