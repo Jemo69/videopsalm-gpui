@@ -6126,6 +6126,21 @@ fn lyric_chords(text: &str) -> Vec<String> {
     out
 }
 
+/// FreeShow-style output caption for a control-window picture card: a tiny
+/// uppercase label in the card's top-left corner. Visual only — drawn on the
+/// control window's own div, never inside the projector snapshot, so the room
+/// and the real projector window are untouched.
+pub(crate) fn card_caption(text: &str) -> Div {
+    div()
+        .absolute()
+        .top(px(4.))
+        .left(px(6.))
+        .text_size(px(9.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(rgb(0xBBBBBB))
+        .child(text.to_string())
+}
+
 /// Sheet `.kbd` key chip: bordered key name on paper. Used by the status
 /// bar shortcut hints — keys read as keys, not prose.
 pub(crate) fn kbd(ui: &UI, key: &str) -> Div {
@@ -6700,7 +6715,17 @@ impl Render for Root {
                 .child(kbd(&ui, "Ctrl+S"))
                 .child(div().text_size(px(10.5)).child("save".to_string()))
                 .child(kbd(&ui, "?"))
-                .child(div().text_size(px(10.5)).child("shortcuts".to_string())),
+                .child(div().text_size(px(10.5)).child("shortcuts".to_string()))
+                .child(div().flex_1())
+                // FreeShow shows the time prominently; VP1.29 keeps it in the
+                // status area. Read-only view of the app's own clock widget
+                // (elapsed / countdown / stopwatch per clock mode).
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(ui.fg)
+                        .child(format!("◷ {}", self.clock_display())),
+                ),
         )
         // Settings modal paints last: topmost, over ribbon, panels and
         // the status line.
@@ -8943,7 +8968,8 @@ impl Root {
             // (`SCREENSHOT-1.29-LAYOUT.md`).
             for line in [
                 "The agenda is empty.",
-                "Open one or drag songs and Bible verses here to add them to the agenda.",
+                "Open one or drag songs and Bible verses here to add them to the agenda,",
+                "or press Load sample agenda in the strip above to start from a bundled service.",
                 "Drag documents from your desktop:",
                 "Slideshow images, standalone videos, Audio files, PDFs,",
                 "PowerPoints, MS-Words, MS-Excels, Open Office documents,",
@@ -11043,9 +11069,17 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .bg(rgb(0x000000))
-                .child(div().w(px(panel_w)).h(px(bh)).overflow_hidden().child(
-                    projector_window::render_snapshot(snap.danger, &snap, panel_w, bh, None),
-                ))
+                .child(
+                    div()
+                        .w(px(panel_w))
+                        .h(px(bh))
+                        .overflow_hidden()
+                        .relative()
+                        .child(projector_window::render_snapshot(
+                            snap.danger, &snap, panel_w, bh, None,
+                        ))
+                        .child(card_caption("OUTPUT")),
+                )
         };
         let count = if n == 0 {
             "0/0".to_string()
@@ -11512,12 +11546,50 @@ impl Root {
     /// The boundary rule the document implements — **Enter is a line break,
     /// a blank line is the slide boundary** — lives in [`lyrics_doc`], pure and
     /// separately tested.
+    /// Empty centre state: no song selected. Instructional, in the sheet's
+    /// plain-label voice — names the two ways to get a song into the editor
+    /// (browser click, or the sample agenda) instead of a bare "(no song)".
+    /// Visual only: the document and every action stay untouched.
+    fn no_song_panel(&self, ui: &UI) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p(px(6.))
+            .min_h_0()
+            .flex_1()
+            .overflow_hidden()
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel)
+            .child(label(ui, &self.t("lyrics"), 13.))
+            .child(div().h(px(6.)))
+            .child(label(ui, "No song is open in the editor.", 13.))
+            .child(label(
+                ui,
+                "Pick a song in the Songs browser on the left to edit it here,",
+                12.,
+            ))
+            .child(label(
+                ui,
+                "or press Load sample agenda in the strip above to open the bundled service.",
+                12.,
+            ))
+            .child(div().h(px(6.)))
+            .child(label(
+                ui,
+                "Typing goes straight into the open song's lyrics; a blank line starts a new slide.",
+                12.,
+            ))
+    }
+
     fn editor_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let Some(si) = self.sel_song else {
-            return section(ui, &self.t("lyrics"), vec![label(ui, "(no song)", 13.)]);
+            return self.no_song_panel(ui);
         };
         let Some(song) = self.songs.get(si).cloned() else {
-            return section(ui, &self.t("lyrics"), vec![label(ui, "(no song)", 13.)]);
+            return self.no_song_panel(ui);
         };
         // The document itself: one scrolling white area, `Paroles` tab selected.
         // A vertical scrollbar on the right, uniform line height, no gridlines,
@@ -12719,7 +12791,20 @@ impl Root {
                     ),
             );
         } else if let Some(s) = current {
-            kids.push(self.slide_view(ui, &s, false, rgb(0x000000), rgb(0xFFFFFF), false, None));
+            kids.push(
+                div()
+                    .relative()
+                    .child(self.slide_view(
+                        ui,
+                        &s,
+                        false,
+                        rgb(0x000000),
+                        rgb(0xFFFFFF),
+                        false,
+                        None,
+                    ))
+                    .child(card_caption("STAGE")),
+            );
         }
         kids.push(label(
             ui,
@@ -12731,7 +12816,20 @@ impl Root {
             15.,
         ));
         if let Some(s) = next {
-            kids.push(self.slide_view(ui, &s, false, rgb(0x000000), rgb(0xFFFFFF), false, None));
+            kids.push(
+                div()
+                    .relative()
+                    .child(self.slide_view(
+                        ui,
+                        &s,
+                        false,
+                        rgb(0x000000),
+                        rgb(0xFFFFFF),
+                        false,
+                        None,
+                    ))
+                    .child(card_caption("STAGE — NEXT")),
+            );
         }
         kids.push(
             div()
