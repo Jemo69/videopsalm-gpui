@@ -6656,6 +6656,10 @@ impl Render for Root {
             // the ribbon.
             root = root.child(self.title_strip(&ui, cx));
             root = root.child(self.menu_row(&ui, cx));
+            // Sheet position 5: the agenda-file strip runs full width here,
+            // between the menu row and the ribbon — not inside the left
+            // column (R9: sheet-faithful placement).
+            root = root.child(self.agenda_file_strip(&ui, cx));
             // Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/
             // View menu row sits at position 2 — directly below the title
             // strip, above all ribbon strips. Every item drives existing
@@ -8385,7 +8389,6 @@ impl Root {
             // window was two rows tall). A short agenda fits content; a long
             // one scrolls inside the cap. Dragging the divider below pins a
             // fixed height instead (`agenda_h`), persisted like the widths.
-            .child(self.agenda_file_strip(ui, cx))
             .child(self.agenda_wrap(ui, cx))
             .child(self.hdivider(ui, cx, 0))
             .child(
@@ -8616,6 +8619,9 @@ impl Root {
                 format!("Chords in these lyrics: {}", chords.join(" – "))
             };
             body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar [chord] key inserts one at the cursor); transpose lives with the song chords.");
+            if text.contains("[]") {
+                body.push_str("\nEmpty [] markers are ignored until a chord letter is typed inside them.");
+            }
             return div()
                 .flex_1()
                 .min_h(px(340.))
@@ -8718,11 +8724,23 @@ impl Root {
     }
 
     /// Agenda-file strip (sheet position 5): New · Open… · Save ·
-    /// Load sample agenda (primary) · Print booklet. The File `▾`
-    /// disclosure inside the agenda panel keeps the paths/recents/file
-    /// rows; the strip is the always-visible quick row.
+    /// Open VP plan… · Save VP plan… · Load sample agenda (primary) ·
+    /// Print booklet. Full width between the menu row and the ribbon —
+    /// the File `▾` disclosure inside the agenda panel keeps the
+    /// paths/recents rows; the strip is the always-visible quick row.
     fn agenda_file_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
-        row_wrap(vec![
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_1()
+            .items_center()
+            .px_2()
+            .py(px(2.))
+            .bg(ui.panel)
+            .border_b_1()
+            .border_color(ui.border)
+            .child(row_wrap(vec![
             btn(ui, cx, "New", false, |this, _, _, cx| {
                 this.agenda = Agenda::new("New agenda");
                 this.sel_item = None;
@@ -8734,6 +8752,12 @@ impl Root {
             }),
             btn(ui, cx, "Save", false, |this, _, _, cx| {
                 this.save_agenda(cx)
+            }),
+            btn(ui, cx, "Open VP plan…", false, |this, _, _, cx| {
+                this.import_native_plan(cx)
+            }),
+            btn(ui, cx, "Save VP plan…", false, |this, _, _, cx| {
+                this.export_native_plan(cx)
             }),
             btn(
                 ui,
@@ -8747,7 +8771,7 @@ impl Root {
             btn(ui, cx, "Print booklet", false, |this, _, _, cx| {
                 this.print_booklet(cx)
             }),
-        ])
+        ]))
     }
 
     /// Agenda wrapper: automatic (content up to the 360 px cap) until the
