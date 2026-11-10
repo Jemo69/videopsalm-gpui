@@ -6086,6 +6086,21 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 
 /// File-kind word for an agenda file row (sheet meta sublines:
 /// "Video · muted", "Image · Cover"). Pure; tested below.
+/// Live value between the A− / A+ stepper keys: fixed-width, centred, so the
+/// number never drifts as digits change and reads as the control's value
+/// rather than a caption beside it.
+fn font_size_readout(ui: &UI, value: i32) -> Div {
+    div()
+        .w(px(26.))
+        .min_h(px(crate::ux::RIBBON_LINE_PX))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .text_color(ui.fg)
+        .child(value.to_string())
+}
+
 /// Wrapped instructional sentence for the empty states: full width, wraps,
 /// never clipped at a pane edge.
 fn wrap_note(ui: &UI, text: &str) -> Div {
@@ -8020,12 +8035,11 @@ impl Root {
         // to 40 rows of font names down the ribbon.
         // Projector lyric size (WI-026): step the base size; everything
         // projected scales from it (preview proportionally).
-        font_kids.push(label(
-            ui,
-            &format!("A {}", self.font_size.round() as i32),
-            12.,
-        ));
-        font_kids.push(btn(ui, cx, "A-", false, |this, _, _, cx| {
+        // Stepper: A− | value | A+ — the live size sits BETWEEN the two
+        // steps (it read as a static caption hanging off the left before).
+        // Same strip position, same handlers.
+        let size_value = self.font_size.round() as i32;
+        font_kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
             this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
             let sz = this.font_size;
@@ -8033,6 +8047,7 @@ impl Root {
                 v.size = Some(sz);
             });
         }));
+        font_kids.push(font_size_readout(ui, size_value));
         font_kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
             this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
