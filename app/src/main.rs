@@ -6868,10 +6868,10 @@ impl Root {
             .items_center()
             .gap_2()
             .px_2()
-            .py(px(1.))
+            .py(px(0.))
             .bg(rgb(0xED1216))
             .text_color(rgb(0xFFFFFF))
-            .text_size(px(12.))
+            .text_size(px(10.))
             .font_weight(FontWeight::BOLD)
             .child(format!("♪ Perez — {}", self.agenda.title))
             .child(div().flex_1())
@@ -6891,7 +6891,8 @@ impl Root {
             .gap_1()
             .items_center()
             .px_2()
-            .py(px(2.))
+            .py(px(0.))
+            .text_size(px(11.))
             .bg(ui.panel)
             .border_b_1()
             .border_color(ui.border)
@@ -7145,21 +7146,35 @@ impl Root {
             .bg(ui.panel)
             .border_b_1()
             .border_color(ui.border)
+            // Tabs, Hide and the active tab's groups share ONE wrapping band
+            // (sheet strip 3: tabs | Styles | Font on a single row). This is
+            // what takes the ribbon from three stacked rows to two.
+            // Tabs sit LEFT of the groups; the groups wrap inside the
+            // remaining width. Two bands total (VP1.29 density), no row is
+            // spent on tabs alone.
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .children(tabs)
-                    // VJSM parity: an explicit Hide button. Double-click
-                    // and Ctrl+F1 already collapsed, but neither is
-                    // discoverable — the original has a visible Hide affordance.
-                    .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
-                        this.set_ribbon_collapsed(cx, true);
-                    })),
+                    .gap(px(crate::ux::RIBBON_WRAP_GAP))
+                    .items_start()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_1()
+                            .items_center()
+                            .flex_none()
+                            .children(tabs)
+                            .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
+                                this.set_ribbon_collapsed(cx, true);
+                            })),
+                    )
+                    .child(div().flex_1().min_w_0().child(self.format_ribbon(ui, cx))),
             )
-            .child(self.format_ribbon(ui, cx))
             // The `Message` tab mirrors 1.29: Alert message | Clock |
             // Countdown | Stage view | Display ribbon groups with captions
             // below. Rarely-changed knobs (alert styling, clock designs,
@@ -7972,10 +7987,12 @@ impl Root {
                 v.underline = Some(on);
             });
         }));
+        // Glyph-only: the operator reads the alignment from the icon and the
+        // hover tip names it (ribbon width is the chrome budget's currency).
         for (glyph, want) in [
-            ("≡", Align::Left),
-            ("≣", Align::Center),
-            ("≡ ", Align::Right),
+            ("⇤", Align::Left),
+            ("⇔", Align::Center),
+            ("⇥", Align::Right),
         ] {
             let active = self.align == want;
             let label = match want {
@@ -7983,14 +8000,24 @@ impl Root {
                 Align::Center => "Center",
                 Align::Right => "Right",
             };
-            let text = format!("{glyph} {label}");
-            font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
-                this.align = want;
-                this.mirror_font_to_style();
-                this.write_style_attr(cx, &format!("Align {}", label.to_lowercase()), move |v| {
-                    v.align = Some(want.literal().to_string());
-                });
-            }));
+            font_kids.push(btn_tip(
+                ui,
+                cx,
+                glyph,
+                match want {
+                    Align::Left => "Align left",
+                    Align::Center => "Center",
+                    Align::Right => "Align right",
+                },
+                active,
+                move |this, _, _, cx| {
+                    this.align = want;
+                    this.mirror_font_to_style();
+                    this.write_style_attr(cx, &format!("Align {}", label.to_lowercase()), move |v| {
+                        v.align = Some(want.literal().to_string());
+                    });
+                },
+            ));
         }
         // Vertical placement of the lyric block in its frame (WI-021):
         // top / center / bottom, same global-setting shape as horizontal.
@@ -8000,19 +8027,28 @@ impl Root {
             ("↓", VAlign::Bottom),
         ] {
             let active = self.valign == want;
-            let label = match want {
-                VAlign::Top => "Top",
-                VAlign::Center => "Middle",
-                VAlign::Bottom => "Bottom",
-            };
-            let text = format!("{glyph} {label}");
-            font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
-                this.valign = want;
-                this.mirror_font_to_style();
-                this.write_style_attr(cx, &format!("Vertical align {}", want.literal()), move |v| {
-                    v.v_align = Some(want.literal().to_string());
-                });
-            }));
+            font_kids.push(btn_tip(
+                ui,
+                cx,
+                glyph,
+                match want {
+                    VAlign::Top => "Top",
+                    VAlign::Center => "Middle",
+                    VAlign::Bottom => "Bottom",
+                },
+                active,
+                move |this, _, _, cx| {
+                    this.valign = want;
+                    this.mirror_font_to_style();
+                    this.write_style_attr(
+                        cx,
+                        &format!("Vertical align {}", want.literal()),
+                        move |v| {
+                            v.v_align = Some(want.literal().to_string());
+                        },
+                    );
+                },
+            ));
         }
         // Lyric text color (WI-024): preset swatches + Auto (theme). The
         // Colors group next door drives the accent; this one drives the
@@ -8108,7 +8144,7 @@ impl Root {
         // splitter's two knobs. They used to live as steppers under the slide
         // list; the original puts them in the ribbon, beside Colors.
         let layout_kids: Vec<Div> = vec![
-            label(ui, &format!("Max lines [{}]", self.max_lines), 12.),
+            label(ui, &format!("Lines {}", self.max_lines), 11.),
             btn(ui, cx, "L-", false, |this, _, _, cx| {
                 this.max_lines = this.max_lines.saturating_sub(1).max(1);
                 cx.notify();
@@ -8117,7 +8153,7 @@ impl Root {
                 this.max_lines = (this.max_lines + 1).min(8);
                 cx.notify();
             }),
-            label(ui, &format!("Max chars [{}]", self.max_chars), 12.),
+            label(ui, &format!("Chars {}", self.max_chars), 11.),
             btn(ui, cx, "C-", false, |this, _, _, cx| {
                 this.max_chars = this.max_chars.saturating_sub(5).max(10);
                 cx.notify();
@@ -8761,7 +8797,8 @@ impl Root {
             .gap_1()
             .items_center()
             .px_2()
-            .py(px(2.))
+            .py(px(0.))
+            .text_size(px(10.))
             .bg(ui.panel)
             .border_b_1()
             .border_color(ui.border)
@@ -13037,6 +13074,26 @@ mod tests {
         assert_eq!(focus_slides_target(Mode::Control), Mode::Projector);
         assert_eq!(focus_slides_target(Mode::Stage), Mode::Projector);
         assert_eq!(focus_slides_target(Mode::Projector), Mode::Control);
+    }
+
+    #[test]
+    fn control_window_chrome_stays_under_160px() {
+        // Conductor order: panes start at <= y190 on an 800px window, i.e.
+        // chrome (title strip + menu row + file strip + ribbon) <= 160px,
+        // without dropping controls or reordering the position contract.
+        const TITLE_STRIP: f32 = 19.0; // 11px text, zero padding
+        const MENU_ROW: f32 = 22.0; // one 13px control row + border
+        const FILE_STRIP: f32 = 22.0; // one 13px control row + border
+        // Ribbon: one merged tab+groups band, at most two group rows on a
+        // 1280px window, each row RIBBON_LINE_PX plus the group's 9px
+        // caption and 1px borders.
+        let group_row = crate::ux::RIBBON_LINE_PX + 2.0 + 11.0;
+        let ribbon = 2.0 * crate::ux::RIBBON_OUTER_PY + 2.0 * group_row;
+        let chrome = TITLE_STRIP + MENU_ROW + FILE_STRIP + ribbon;
+        assert!(
+            chrome <= 160.0,
+            "chrome {chrome}px over the 160px budget (panes must start <= y190)"
+        );
     }
 
     #[test]
