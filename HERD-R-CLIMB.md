@@ -94,3 +94,10 @@ Suite: app 197 + vp-core 252 + misc 5, zero warnings.
 - Iconography: kind badges + round tool rail verified in evidence; no changes needed.
 - Settings audit: modal = rare knobs (workspace, monitor/display, theme, font defaults, alert/clock designs, stage); ribbon = frequent ops; menu cluster mirrors settings values per sheet position contract. Nothing misplaced; no dead wires.
 - Suite app 198 + vp-core 252, zero warnings. Evidence: rust-r10-control.png + rust-r10-live.png on slop-media PR15 + body section.
+
+---
+
+## 2026-11-09 · Round 7 (order 1 done + evidenced; order 2 code-done, ruling requested)
+- Order 1 (agenda-file strip pos 5): surfaced New/Open…/Save/Load sample agenda(primary)/Print booklet; evidenced on current binary (rust-r10 shots) + slop-media PR15. Review R6 sheet position honored.
+- Order 2 (Files/Chords): implemented — additive Song.files schema, Attach/Open/Remove wired, Chords detector tab; unit tests green (schema round-trip, lyric_chords). Interactive proof blocked: OOM kills + OS file dialogs undrivable headless. Ruling requested in HERD-INBOX.md (accept code+tests, or name proof + quiet window).
+- Suite app 199 + vp-core 253, zero warnings (JOBS=1 builds only, per memory instruction).
