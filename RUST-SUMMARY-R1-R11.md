@@ -12,7 +12,7 @@ Branch `split-gpui` → `main`, PR #15. Reviewed per-surface each round by r-rev
 - **Placement**: title strip → menu row (File/Agenda/Songs/Bibles/Media/Style/View,
   plus Lang/Theme/Monitor/Ratio value buttons and Projector/Stage/Stop) → full-width
   agenda-file strip (New, Open…, Save, Open VP plan…, Save VP plan…, Load sample
-  agenda, Print booklet) → ribbon. The `/view` menu bar now sits above the strips.
+  agenda, Print booklet) → ribbon. The menu row sits above all ribbon strips.
 - **Center**: lyrics document is dominant (min 340 px, 1.55 fr floor with a
   regression test); always-visible Title input; verse toolbar (V1/C/B, `[chord]`,
   split, B/I/U/S, H1/H2, list, A+/A−) with tested text surgery; song metadata behind
@@ -42,7 +42,7 @@ Branch `split-gpui` → `main`, PR #15. Reviewed per-surface each round by r-rev
   existing library files byte-identical (round-trip tested) and stays compatible with
   the Electron target.
 - **Suite**: green throughout — app 190→199 tests, vp-core 251→253, misc 5, zero
-  warnings. Seven regression tests were added rather than replacing any.
+  warnings. Tests added, none removed: app +9, vp-core +2.
 - **Offline-first**: no network calls, no telemetry, no autoplay embeds; external
   files open through the OS handler only.
 - **Process**: clean-room rules unchanged — behaviour reimplemented from the SPEC,
