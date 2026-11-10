@@ -11024,12 +11024,14 @@ impl Root {
                 .bg(rgb(0x000000))
                 .items_center()
                 .justify_center()
+                .relative()
                 .child(
                     div()
                         .text_size(px(13.))
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
+                .child(card_caption("OUTPUT"))
         } else if snap.frame.item.is_none() {
             // No slide live: background still shows, with a note naming
             // the way back.
@@ -11047,7 +11049,8 @@ impl Root {
                             .text_size(px(13.))
                             .text_color(hex("#BBBBBB"))
                             .child("(nothing live — press Show)".to_string()),
-                    ),
+                    )
+                    .child(card_caption("OUTPUT")),
             )
         } else {
             // The projector render itself, in an output-ratio box sized to
