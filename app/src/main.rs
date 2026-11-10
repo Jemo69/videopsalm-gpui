@@ -5807,6 +5807,15 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 SaveTarget::Agenda => {}
             }
         }
+        // Stage is a read-only view: Escape always returns to Control, and
+        // this must run BEFORE the lyrics-document vocabulary gate below —
+        // Esc is slide vocabulary, the document keeps focus while unmounted,
+        // and that gate is what made Stage a trap (R-Compression fail).
+        if key == PresKey::EndPres && self.mode == Mode::Stage {
+            self.ui_go(Mode::Control, cx);
+            self.focus_root(window);
+            return;
+        }
         // The lyrics document: the slide vocabulary is suppressed, so typing a
         // `1` or a `V` in a lyric line never jumps a slide — and `Enter`
         // stays a line break inside the verse, never "next slide"
@@ -6077,6 +6086,18 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 
 /// File-kind word for an agenda file row (sheet meta sublines:
 /// "Video · muted", "Image · Cover"). Pure; tested below.
+/// Wrapped instructional sentence for the empty states: full width, wraps,
+/// never clipped at a pane edge.
+fn wrap_note(ui: &UI, text: &str) -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .whitespace_normal()
+        .text_size(px(12.))
+        .text_color(ui.fg)
+        .child(text.to_string())
+}
+
 fn file_kind_label(ext: &str) -> &'static str {
     match ext {
         "mp4" | "mov" | "avi" | "mkv" | "webm" => "video",
@@ -6472,10 +6493,19 @@ fn live_mode_target(current: Mode, projector_window_open: bool) -> Mode {
 /// the projector tab. The room keeps projecting either way (the live
 /// snapshot is untouched; only the control window's own tab changes).
 fn focus_slides_target(current: Mode) -> Mode {
-    if current == Mode::Projector {
+    match current {
+        Mode::Projector | Mode::Stage => Mode::Control,
+        Mode::Control => Mode::Projector,
+    }
+}
+
+/// Menu-row `Stage view` round-trip (pure, tested): Stage is a view, not a
+/// trap. Second press returns to Control; every other mode enters Stage.
+fn stage_toggle_target(current: Mode) -> Mode {
+    if current == Mode::Stage {
         Mode::Control
     } else {
-        Mode::Projector
+        Mode::Stage
     }
 }
 
@@ -6687,10 +6717,39 @@ impl Render for Root {
         if self.show_keytips && self.mode == Mode::Control && chrome {
             root = root.child(self.keytips_strip(&ui, cx));
         }
+        // Stage unmounts every field, so the window can end up with nothing
+        // focused and the keymap (Escape / F6) never runs — that is what made
+        // Stage feel like a trap. Re-attach focus to the root on the first
+        // Stage frame; the guard keeps it to one call.
+        if self.mode == Mode::Stage && !self.focus.is_focused(window) {
+            self.focus.focus(window);
+        }
         root.child(match self.mode {
             Mode::Control => self.control_view(&ui, cx, target_w, target_h),
             Mode::Projector => self.projector_view(&ui, cx, target_w, target_h),
-            Mode::Stage => self.stage_view(&ui, cx),
+            // Stage is an OVERLAY over the control view, not a replacement:
+            // the editor stays mounted, so window focus, the keymap and the
+            // menu row keep working while Stage is up. Replacing the tree
+            // unmounted every field and left the operator with dead input —
+            // the R-Compression trap.
+            Mode::Stage => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .overflow_hidden()
+                .child(self.control_view(&ui, cx, target_w, target_h))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .bottom(px(0.))
+                        .bg(ui.bg)
+                        .child(self.stage_view(&ui, cx)),
+                ),
         })
         .child(
             div()
@@ -7013,19 +7072,35 @@ impl Root {
             .child(btn(ui, cx, "Projector", self.projector_window.is_some(), |this, _, _, cx| {
                 this.toggle_projector(cx);
             }))
-            .child(btn(
-                ui,
-                cx,
-                "Stage view",
-                self.mode == Mode::Stage,
-                |this, _, _, cx| {
-                    if this.mode == Mode::Stage {
-                        this.ui_go(Mode::Control, cx);
-                    } else {
-                        this.ui_go(Mode::Stage, cx);
-                    }
-                },
-            ))
+            .child({
+                let active = self.mode == Mode::Stage;
+                let mut b = div()
+                    .px(px(crate::ux::RIBBON_BTN_PX))
+                    .min_h(px(crate::ux::RIBBON_LINE_PX))
+                    .rounded_sm()
+                    .bg(if active { ui.selection } else { ui.panel })
+                    .text_color(if active { ui.selection_ink } else { ui.fg })
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(ui.border)
+                    .child("Stage view".to_string());
+                if active {
+                    b = b.border_2();
+                }
+                // Press-phase handler: in Stage mode a mouse-UP on this
+                // button never arrived (the stage tree owns the release),
+                // which left the operator trapped. Acting on the press is
+                // the same action on a phase that provably reaches us.
+                b.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.ui_go(stage_toggle_target(this.mode), cx);
+                        // Stage unmounts the editor; without this the root
+                        // keeps no focus and Escape never reaches the keymap.
+                        this.focus_root(window);
+                    }),
+                )
+            })
             .child(btn(ui, cx, "Stop", false, |this, _, _, cx| {
                 this.end_presentation(cx);
             }))
@@ -9003,16 +9078,23 @@ impl Root {
             // The original's empty-state copy names every document kind the
             // agenda accepts, which doubles as its drag-and-drop contract
             // (`SCREENSHOT-1.29-LAYOUT.md`).
+            // Wrapped, not clipped: these are sentences, and the pane is
+            // narrower than they are (R-Compression: text ran off the edge).
             for line in [
                 "The agenda is empty.",
-                "Open one or drag songs and Bible verses here to add them to the agenda,",
-                "or press Load sample agenda in the strip above to start from a bundled service.",
+                "Open one or drag songs and Bible verses here to add them to the agenda, or press Load sample agenda in the strip above to start from a bundled service.",
                 "Drag documents from your desktop:",
-                "Slideshow images, standalone videos, Audio files, PDFs,",
-                "PowerPoints, MS-Words, MS-Excels, Open Office documents,",
-                "CCLI songs, web sites, YouTube, Vimeo",
+                "Slideshow images, standalone videos, Audio files, PDFs, PowerPoints, MS-Words, MS-Excels, Open Office documents, CCLI songs, web sites, YouTube, Vimeo",
             ] {
-                rows.push(label(ui, line, 12.));
+                rows.push(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_size(px(12.))
+                        .text_color(ui.fg)
+                        .child(line.to_string()),
+                );
             }
         }
         let recents = library::list_recents(&self.db, 3)
@@ -11606,21 +11688,14 @@ impl Root {
             .child(label(ui, &self.t("lyrics"), 13.))
             .child(div().h(px(6.)))
             .child(label(ui, "No song is open in the editor.", 13.))
-            .child(label(
+            .child(wrap_note(
                 ui,
-                "Pick a song in the Songs browser on the left to edit it here,",
-                12.,
-            ))
-            .child(label(
-                ui,
-                "or press Load sample agenda in the strip above to open the bundled service.",
-                12.,
+                "Pick a song in the Songs browser on the left to edit it here, or press Load sample agenda in the strip above to open the bundled service.",
             ))
             .child(div().h(px(6.)))
-            .child(label(
+            .child(wrap_note(
                 ui,
                 "Typing goes straight into the open song's lyrics; a blank line starts a new slide.",
-                12.,
             ))
     }
 
@@ -12778,6 +12853,12 @@ impl Root {
             Vec::new()
         };
         let mut kids: Vec<Div> = vec![row(vec![
+            // Visible way home: Stage must never be a trap, whatever the
+            // input path (R-Compression: the menu-row toggle could fail).
+            btn(ui, cx, "‹ Back to control", false, |this, _, window, cx| {
+                this.ui_go(Mode::Control, cx);
+                this.focus_root(window);
+            }),
             label(
                 ui,
                 &format!(
@@ -12878,12 +12959,19 @@ impl Root {
                 .text_size(px(52.))
                 .child(self.clock_display()),
         );
+        // min_h_0 + overflow_hidden keep the stage content inside its own
+        // band: without them a tall card could claim space over the chrome
+        // and swallow menu-row clicks (R-Compression: Stage-OFF dead).
         div()
             .flex()
             .flex_col()
             .gap_2()
             .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .p(px(8.))
+            .track_focus(&self.focus_handle(cx))
             .children(kids)
     }
 }
@@ -13072,8 +13160,33 @@ mod tests {
     fn f6_round_trips_the_single_screen_projector() {
         // Out: visit the room screen. Back: control, live snapshot intact.
         assert_eq!(focus_slides_target(Mode::Control), Mode::Projector);
-        assert_eq!(focus_slides_target(Mode::Stage), Mode::Projector);
         assert_eq!(focus_slides_target(Mode::Projector), Mode::Control);
+        // Stage is a view, not a trap: F6 leaves it for Control too.
+        assert_eq!(focus_slides_target(Mode::Stage), Mode::Control);
+    }
+
+    #[test]
+    fn stage_view_round_trips_from_and_to_control() {
+        // R-Compression fail: Stage ON fired but OFF never returned. The
+        // toggle is a pure round trip, and no non-UI path may ever *enter*
+        // Stage (so a boot restore cannot strand the operator there).
+        assert_eq!(stage_toggle_target(Mode::Control), Mode::Stage);
+        assert_eq!(stage_toggle_target(Mode::Stage), Mode::Control);
+        assert_eq!(stage_toggle_target(Mode::Projector), Mode::Stage);
+        // The live path may keep the current view (a projector window is
+        // open), but it must never *introduce* Stage — so no boot/projection
+        // restore can ever strand the operator there.
+        // No window: show_live always visits the Projector tab. Window open:
+        // it stays where the operator is. Stage is never *entered* either way.
+        for from in [Mode::Control, Mode::Projector, Mode::Stage] {
+            assert_eq!(live_mode_target(from, false), Mode::Projector);
+            assert_eq!(live_mode_target(from, true), from);
+            assert_ne!(
+                live_mode_target(from, false),
+                Mode::Stage,
+                "live path must never enter Stage"
+            );
+        }
     }
 
     #[test]
