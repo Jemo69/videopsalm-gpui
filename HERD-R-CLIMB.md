@@ -115,3 +115,15 @@ Suite: app 197 + vp-core 252 + misc 5, zero warnings.
 - Evidence on current binary: rows are icon-free with lime + ● LIVE + meta ("2 verses · 2 slides"); full-width agenda strip at position 5 with all 7 buttons; fitted preview. Uploaded to slop-media PR15 (`app-210` rows crop + `rust-r10-final` full frame), PR body section added.
 - Suite: app 199 + vp-core 253 + misc 5, zero warnings. Branch split-gpui @ de5e9715.
 - Rust side: every ordered surface now at par; remaining markers are needs-human-hardware only (OS file chooser, 2nd projector window under Xvfb).
+
+---
+
+## 2026-11-11 · Chrome compression (conductor order) + VP1.29/FreeShow lens
+Measured before: chrome 275px, panes y305. After: chrome ~157px, panes y≈188 (target ≤190).
+- Title strip 18px (red, brand + Go live), menu row 22px (7 menus + Lang/Theme/Monitor/Ratio + Projector/Stage/Stop), agenda-file strip 21px (7 buttons, single line).
+- Ribbon 3 stacked rows → 2 bands: tabs now sit LEFT of the groups in the same band; alignment buttons glyph-only with hover tips (⇤ ⇔ ⇥ ⇡ ↕ ⇣) to buy the width; "Max lines/[]" → "Lines n", "Max chars/[]" → "Chars n" (values unchanged). No control removed, no group reordered.
+- Regression guard: `control_window_chrome_stays_under_160px` (test) + tightened RIBBON_* density constants and updated `ribbon_chrome_stays_inside_the_density_budget`.
+- Lens orders: agenda empty copy now points at the visible Load sample agenda button; no-song centre is an instructional panel (was bare "(no song)"); `OUTPUT` caption on the preview card (all three branches: live, base screen, nothing-live) and `STAGE`/`STAGE — NEXT` on the stage cards — drawn on the control div, never in the projector snapshot; status bar shows `◷ <clock>` (app clock, read-only).
+- Evidence: shots/review-2026-11-11-rust/{compact-control,empty-agenda,output-base-screen}.png + slop-media PR15.
+- Gap: the STAGE caption frame needs a mode-switch click this headless session would not deliver (Stage view button clicks went unregistered); code path is the same helper proven by the OUTPUT captures.
+- Suite: app 200 + vp-core 253, zero warnings. Branch split-gpui @ e9664bc4.
