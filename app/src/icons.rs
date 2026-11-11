@@ -179,8 +179,9 @@ impl AssetSource for VpIconAssets {
 }
 
 /// Drawn artwork for a manifest id, sized for the strip's 34px circles.
+/// Test-only since the rail became theme-aware text chips (R-Rail): the
+/// rainbow SVGs stay as the manifest's reference artwork.
 #[cfg(test)]
-/// Unknown ids fall back to the next-slide chevron rather than a tofu box.
 pub fn art(icon_id: &str) -> gpui::Img {
     let path = asset_path(icon_id).unwrap_or_else(|| "icons/cmd-next.svg".to_string());
     gpui::img(path).w(px(20.)).h(px(20.))
