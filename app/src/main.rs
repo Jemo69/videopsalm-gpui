@@ -3871,6 +3871,21 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         self.select_song_ex(cx, idx, false);
     }
 
+    /// Clear the editor's song selection (browser re-click on the selected
+    /// row). The document empties and the centre shows the instructional
+    /// no-song panel; projection is untouched — deselecting is an editing
+    /// gesture, never a live-state change.
+    fn deselect_song(&mut self, cx: &mut Context<Self>) {
+        self.sel_song = None;
+        self.song_dirty = false;
+        self.sel_block = None;
+        self.lyrics_doc.update(cx, |d, cx| d.set_text("", cx));
+        self.number_field.update(cx, |f, cx| f.set_text("", cx));
+        self.song_title_field.update(cx, |f, cx| f.set_text("", cx));
+        self.set_status(cx, "Song deselected — click a song to open it again.");
+        cx.notify();
+    }
+
     fn select_song_ex(&mut self, cx: &mut Context<Self>, idx: usize, punch_through: bool) {
         if self.shield_blocks_browse() && self.live_item.is_some() && !punch_through {
             self.set_status(
@@ -6129,6 +6144,18 @@ fn font_size_readout(ui: &UI, value: i32) -> Div {
         .text_size(px(11.))
         .text_color(ui.fg)
         .child(value.to_string())
+}
+
+/// Browser-list selection after a click on row `clicked` (pure, tested).
+/// Clicking the row that is already selected toggles it OFF — the browser is
+/// the selection surface, and deselecting is the only gesture that reaches
+/// the empty-editor state (no song open). Any other row selects normally.
+fn song_click_target(current: Option<usize>, clicked: usize) -> Option<usize> {
+    if current == Some(clicked) {
+        None
+    } else {
+        Some(clicked)
+    }
 }
 
 /// `--stage-url <URL>` boot hook (pure, tested): the value after the flag,
@@ -9856,7 +9883,13 @@ impl Root {
                         if ev.click_count >= 2 {
                             this.play_browser_song(cx, i);
                         } else {
-                            this.select_song(cx, i);
+                            // Toggle: re-clicking the selected row clears
+                            // it (reaches the no-song panel); any other row
+                            // selects.
+                            match song_click_target(this.sel_song, i) {
+                                Some(idx) => this.select_song(cx, idx),
+                                None => this.deselect_song(cx),
+                            }
                         }
                         this.focus_root(window);
                     }),
@@ -13184,6 +13217,23 @@ mod tests {
         assert!(!pres_key_passes_while_editing(PresKey::Next));
         assert!(!pres_key_passes_while_editing(PresKey::Digit(1)));
         assert!(!pres_key_passes_while_editing(PresKey::Section('V')));
+    }
+
+    #[test]
+    fn browser_song_click_toggles_the_selection() {
+        // Regression: select → click the same row → no song open (the
+        // editor is free) → click again → reselected. Toggle semantics, not
+        // a Close button: the browser list is the selection surface.
+        assert_eq!(song_click_target(None, 3), Some(3), "first click selects");
+        assert_eq!(song_click_target(Some(3), 3), None, "second click clears");
+        assert_eq!(song_click_target(Some(3), 4), Some(4), "another row moves the selection");
+        assert_eq!(song_click_target(None, 0), Some(0), "row 0 selects like any other");
+        // The whole cycle, as the operator performs it.
+        let mut sel = None;
+        for (clicked, want) in [(2, Some(2)), (2, None), (2, Some(2))] {
+            sel = song_click_target(sel, clicked);
+            assert_eq!(sel, want);
+        }
     }
 
     #[test]
