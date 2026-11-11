@@ -315,6 +315,21 @@ pub fn chromium_args(
     fullscreen: bool,
     profile: &std::path::Path,
 ) -> Vec<std::ffi::OsString> {
+    // Stage overlays are transparent: the page (a browser-source output)
+    // paints only its lyrics, and the room sees our own background/lyrics
+    // through it. Both flags are needed — the background colour makes the
+    // window alpha-capable, the visuals flag lets X11 honour it.
+    chromium_args_with(url, geometry, fullscreen, profile, true)
+}
+
+/// [`chromium_args`] with the transparency decision explicit (pure, tested).
+pub fn chromium_args_with(
+    url: &str,
+    geometry: Option<(i32, i32, i32, i32)>,
+    fullscreen: bool,
+    profile: &std::path::Path,
+    transparent: bool,
+) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
     let mut args: Vec<OsString> = vec![
         "--incognito".into(),
@@ -332,6 +347,12 @@ pub fn chromium_args(
         "--disable-extensions".into(),
         "--disable-features=Translate,OptimizationHints,MediaRouter".into(),
     ];
+    if transparent {
+        // Alpha-capable window: the stage overlay composites over whatever
+        // the projector is drawing instead of covering it with a page.
+        args.push("--default-background-color=00000000".into());
+        args.push("--enable-transparent-visuals".into());
+    }
     if let Some((x, y, w, h)) = geometry {
         args.push(format!("--window-position={x},{y}").into());
         args.push(format!("--window-size={w},{h}").into());
@@ -613,6 +634,37 @@ mod tests {
         let plain = chromium_args("https://example.com", None, false, profile);
         assert!(!plain.iter().any(|a| a.to_string_lossy().starts_with("--window-position")), "{plain:?}");
         assert!(!plain.iter().any(|a| a == "--start-fullscreen"), "control screen stays windowed: {plain:?}");
+    }
+
+    #[test]
+    fn live_overlay_window_is_transparent() {
+        // Stage overlays must composite over the projector, not cover it: the
+        // window is alpha-capable and X11 is told to honour it. Both flags
+        // ride every live view, geometry or not.
+        let profile = std::path::Path::new("/tmp/p");
+        for (geom, full) in [
+            (None, false),
+            (Some((1920, 0, 1920, 1080)), true),
+        ] {
+            let args = chromium_args("http://localhost:4000/#/output1", geom, full, profile);
+            assert!(
+                args.iter().any(|a| a == "--default-background-color=00000000"),
+                "no alpha background: {args:?}"
+            );
+            assert!(
+                args.iter().any(|a| a == "--enable-transparent-visuals"),
+                "no transparent visuals: {args:?}"
+            );
+        }
+        // Opaque mode stays available (tests/diagnostics): explicit opt-out.
+        let opaque = chromium_args_with(
+            "http://localhost:4000/#/output1",
+            None,
+            false,
+            profile,
+            false,
+        );
+        assert!(!opaque.iter().any(|a| a == "--enable-transparent-visuals"), "{opaque:?}");
     }
 
     #[test]
