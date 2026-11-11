@@ -22,7 +22,9 @@ PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>Stage output</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+  /* Transparent overlay: the room sees the projector's own background
+     through this page; only the verse text paints. */
+  html, body { margin: 0; height: 100%; background: transparent; color: #fff;
                font-family: Verdana, "DejaVu Sans", sans-serif; }
   #out { height: 100%; display: flex; flex-direction: column;
          align-items: center; justify-content: center; gap: 28px; padding: 40px; }
