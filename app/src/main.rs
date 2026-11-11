@@ -551,6 +551,10 @@ pub(crate) struct Root {
     /// slide for that exact URL, projected live with the live web view on.
     /// Taken once on the first frame; None in every normal launch.
     pending_stage_url: Option<String>,
+    /// Boot hook for Stage-view proofs (`--stage-demo`): load the bundled
+    /// sample agenda, project its first item, and open the Stage view, so the
+    /// stage cards (and their STAGE captions) can be captured without input.
+    pending_stage_demo: bool,
     /// Remote URLs allowed for live view this session (operator-confirmed).
     /// Loopback never needs confirmation; nothing persists to disk.
     live_web_confirmed: Vec<String>,
@@ -1343,6 +1347,7 @@ impl Root {
             media_launched_for: None,
             live_web_on: false,
             pending_stage_url: stage_url_arg(&std::env::args().collect::<Vec<String>>()),
+            pending_stage_demo: std::env::args().any(|a| a == "--stage-demo"),
             live_web_confirmed: Vec::new(),
             live_web_pending: None,
             live_view: live_web::LiveView::new(),
@@ -6752,6 +6757,19 @@ impl Render for Root {
         if self.mode == Mode::Stage && !self.focus.is_focused(window) {
             self.focus.focus(window);
         }
+        // `--stage-demo`: bundled agenda, first item live, Stage view up —
+        // proof scaffolding for the stage cards, off in every normal launch.
+        if self.pending_stage_demo {
+            self.pending_stage_demo = false;
+            if let Ok(a) = Agenda::from_json(AGENDA_SAMPLE) {
+                self.agenda = a;
+            }
+            if !self.agenda.items.is_empty() {
+                self.show_live(cx, 0);
+            }
+            self.mode = Mode::Stage;
+            self.set_status(cx, "Stage demo: sample agenda, first item live.");
+        }
         // `--stage-url <URL>`: open that page as the live website slide with
         // the live web view on, so a stage server can be proved end to end
         // (slide → live view → rendered page). Normal launches never set it.
@@ -11400,51 +11418,29 @@ impl Root {
         action: &'static str,
         _idx: usize,
     ) -> Div {
-        // Per-command colour, so the strip reads as a set of distinct tools rather
-        // than seven identical boxes.
-        let tint = match action {
-            "next" | "base" => rgb(0x1E88E5),
-            "text" => rgb(0xF57C00),
-            "shield" => rgb(0x5E35B1),
-            "freeze" => rgb(0x00ACC1),
-            "project" => rgb(0x43A047),
-            _ => rgb(0x8BC34A), // pencil
-        };
-        // The shield fills **red** when armed — that colour is load-bearing: it is
-        // how the operator knows browsing cannot disturb the live slide.
-        //
-        // Every other command marks engagement exactly like `btn()`: an **orange
-        // outline** (`UI::engaged`) with the background left alone (B-30,
-        // OBSERVATIONS §6). A brightened fill used to sit here and made the
-        // engaged state read as a different, wrong treatment next to the ribbon.
-        let bg = if armed { SHIELD_ARMED } else { tint };
+        // Signal Room rail: theme-aware chips, not a rainbow of circles.
+        // Paper/night surface, hairline border, ink glyph; signal red is the
+        // ONLY accent (armed shield fills it), lime stays reserved for the
+        // live cue on rows. 4px radius, 30px hit target.
+        let bg = if armed { ui.selection } else { ui.panel };
+        let ink = if armed { ui.selection_ink } else { ui.fg };
         let outline = engaged_outline(active, armed);
+        let _ = icon;
         div()
-            .w(px(34.))
-            .h(px(34.))
-            .rounded_full()
+            .w(px(30.))
+            .h(px(30.))
+            .rounded_sm()
             .flex()
             .items_center()
             .justify_center()
             .bg(bg)
-            .text_color(ink_on(bg))
-            .text_size(px(15.))
+            .border_1()
+            .border_color(if armed { ui.selection } else { ui.border })
+            .text_color(ink)
+            .text_size(px(14.))
             .cursor_pointer()
-            .when(outline, |d| d.border_2().border_color(ui.engaged))
-            // Lane G: drawn SVG on a white chip, so a coloured icon stays
-            // readable on its same-coloured circle (VideoPsalm's solid glossy
-            // buttons: tint ring with white center).
-            .child(
-                div()
-                    .w(px(26.))
-                    .h(px(26.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgb(0xFFFFFF))
-                    .child(icons::art(icon)),
-            )
+            .when(outline, |d| d.border_2().border_color(ui.selection))
+            .child(crate::ux::strip_glyph(action).to_string())
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, _w, cx| match action {

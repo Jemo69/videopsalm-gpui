@@ -806,6 +806,21 @@ pub fn tool_strip() -> [(&'static str, &'static str); 7] {
     ]
 }
 
+/// Display glyph for a strip command (Signal Room language): the rail is a
+/// column of theme-aware chips, so the mark is drawn in the theme ink rather
+/// than baked into a rainbow SVG. Order and meaning match [`tool_strip`].
+pub fn strip_glyph(action: &str) -> &'static str {
+    match action {
+        "next" => "▾",
+        "base" => "■",
+        "text" => "T",
+        "shield" => "⊘",
+        "freeze" => "❄",
+        "project" => "▶",
+        _ => "✎",
+    }
+}
+
 /// Index of the pencil in [`tool_strip`]. It and everything after it render
 /// below a gap, because the pencil switches mode rather than controlling the
 /// projection.
@@ -1738,6 +1753,23 @@ mod tests {
                 "{absent} does not belong in the command strip"
             );
         }
+    }
+
+    #[test]
+    fn strip_glyphs_cover_every_command_distinctly() {
+        // Signal Room rail: one readable mark per command, no shared glyph,
+        // in tool_strip order (the rail draws these in the theme ink).
+        let strip = tool_strip();
+        let mut seen: Vec<&str> = Vec::new();
+        for (_, action) in strip {
+            let g = strip_glyph(action);
+            assert!(!g.is_empty(), "{action} has no glyph");
+            assert!(!seen.contains(&g), "duplicate glyph {g} for {action}");
+            seen.push(g);
+        }
+        assert_eq!(seen.len(), strip.len());
+        // The arm-able command keeps a distinct mark from the mode pencil.
+        assert_ne!(strip_glyph("shield"), strip_glyph("mode"));
     }
 
     #[test]
