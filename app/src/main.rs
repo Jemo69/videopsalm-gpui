@@ -547,6 +547,10 @@ pub(crate) struct Root {
     /// window for website slides. Default off — when off this whole path is
     /// dead code at runtime and the projector keeps the offline tiles.
     live_web_on: bool,
+    /// Boot hook for stage-server proofs (`--stage-url <URL>`): a website
+    /// slide for that exact URL, projected live with the live web view on.
+    /// Taken once on the first frame; None in every normal launch.
+    pending_stage_url: Option<String>,
     /// Remote URLs allowed for live view this session (operator-confirmed).
     /// Loopback never needs confirmation; nothing persists to disk.
     live_web_confirmed: Vec<String>,
@@ -1338,6 +1342,7 @@ impl Root {
             media: ExternalPlayer::new(MediaKind::Video),
             media_launched_for: None,
             live_web_on: false,
+            pending_stage_url: stage_url_arg(&std::env::args().collect::<Vec<String>>()),
             live_web_confirmed: Vec::new(),
             live_web_pending: None,
             live_view: live_web::LiveView::new(),
@@ -6101,6 +6106,14 @@ fn font_size_readout(ui: &UI, value: i32) -> Div {
         .child(value.to_string())
 }
 
+/// `--stage-url <URL>` boot hook (pure, tested): the value after the flag,
+/// if any. Used to prove a stage server end to end; absent in normal runs.
+fn stage_url_arg(args: &[String]) -> Option<String> {
+    args.windows(2)
+        .find(|w| w[0] == "--stage-url")
+        .map(|w| w[1].clone())
+}
+
 /// Wrapped instructional sentence for the empty states: full width, wraps,
 /// never clipped at a pane edge.
 fn wrap_note(ui: &UI, text: &str) -> Div {
@@ -6738,6 +6751,30 @@ impl Render for Root {
         // Stage frame; the guard keeps it to one call.
         if self.mode == Mode::Stage && !self.focus.is_focused(window) {
             self.focus.focus(window);
+        }
+        // `--stage-url <URL>`: open that page as the live website slide with
+        // the live web view on, so a stage server can be proved end to end
+        // (slide → live view → rendered page). Normal launches never set it.
+        if let Some(url) = self.pending_stage_url.take() {
+            match vp_core::schema::normalize_website_url(&url) {
+                Some(url) => {
+                    self.live_web_on = true;
+                    let item = vp_core::schema::AgendaItem {
+                        id: "stage-url".to_string(),
+                        kind: ItemKind::WebSite,
+                        title: url.clone(),
+                        reference: ItemRef::Url { url: url.clone() },
+                        flow_type: Default::default(),
+                        auto_advance_ms: None,
+                        overrides: Default::default(),
+                    };
+                    self.agenda.items.push(item);
+                    let idx = self.agenda.items.len() - 1;
+                    self.show_live(cx, idx);
+                    self.set_status(cx, format!("Stage URL live: {url}"));
+                }
+                None => self.set_status(cx, format!("--stage-url rejected (need http(s)://): {url}")),
+            }
         }
         root.child(match self.mode {
             Mode::Control => self.control_view(&ui, cx, target_w, target_h),
@@ -13131,6 +13168,17 @@ mod tests {
         assert!(!pres_key_passes_while_editing(PresKey::Next));
         assert!(!pres_key_passes_while_editing(PresKey::Digit(1)));
         assert!(!pres_key_passes_while_editing(PresKey::Section('V')));
+    }
+
+    #[test]
+    fn stage_url_flag_is_read_only_when_asked() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert_eq!(
+            stage_url_arg(&a(&["perez-rs", "--stage-url", "http://localhost:4000/#/output1"])),
+            Some("http://localhost:4000/#/output1".to_string())
+        );
+        assert_eq!(stage_url_arg(&a(&["perez-rs"])), None);
+        assert_eq!(stage_url_arg(&a(&["perez-rs", "--stage-url"])), None);
     }
 
     #[test]
