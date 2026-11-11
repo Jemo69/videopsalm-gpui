@@ -3465,22 +3465,22 @@ impl Root {
             Some(s) => (s.header, s.lines, s.footer),
             None => (String::new(), Vec::new(), String::new()),
         };
-        // Transparent-overlay rule: when the live web view is painting this
-        // website slide's page on top, the projector must NOT also draw the
-        // URL tile underneath it — the overlay carries the content, and the
-        // projector's job is the background. Without this the URL string
-        // shows through the transparent overlay (the exact failure the
-        // conductor called out).
-        if self.live_web_on
-            && live_web::live_url_for_slide(&Slide::text(
+        // Transparent-overlay rule (FreeShow-matching): when the live web view
+        // is painting this website slide's page on top, the projector must NOT
+        // also draw the URL tile underneath — the overlay carries the content
+        // and the projector carries the background only. FreeShow never puts
+        // a URL on the wall either: remote pages only ever appear in their
+        // hover/navigation controls.
+        if overlay_covers_slide(
+            self.live_web_on,
+            self.live_view_url.as_deref(),
+            live_web::live_url_for_slide(&Slide::text(
                 header.clone(),
                 lines.clone(),
                 footer.clone(),
             ))
-            .zip(self.live_view_url.clone())
-            .map(|(want, showing)| want == showing)
-            .unwrap_or(false)
-        {
+            .as_deref(),
+        ) {
             header.clear();
             lines.clear();
             footer.clear();
@@ -6144,6 +6144,15 @@ fn font_size_readout(ui: &UI, value: i32) -> Div {
         .text_size(px(11.))
         .text_color(ui.fg)
         .child(value.to_string())
+}
+
+/// True when the live web overlay is painting the slide that is on the wall
+/// (pure, tested). FreeShow's rule, adopted here: the wall shows the page (or
+/// the background it composites over), never the address — so the host drops
+/// the URL tile for exactly the slide the overlay is showing, and for no
+/// other. Live off, or a different URL showing, keeps the offline tile.
+fn overlay_covers_slide(live_on: bool, showing: Option<&str>, slide_url: Option<&str>) -> bool {
+    live_on && matches!((showing, slide_url), (Some(a), Some(b)) if a == b)
 }
 
 /// Browser-list selection after a click on row `clicked` (pure, tested).
@@ -13217,6 +13226,25 @@ mod tests {
         assert!(!pres_key_passes_while_editing(PresKey::Next));
         assert!(!pres_key_passes_while_editing(PresKey::Digit(1)));
         assert!(!pres_key_passes_while_editing(PresKey::Section('V')));
+    }
+
+    #[test]
+    fn the_wall_never_shows_the_address_while_the_overlay_is_live() {
+        // FreeShow-matching: page on the wall, no URL string underneath it.
+        let u = Some("http://localhost:4000/#/output1");
+        assert!(overlay_covers_slide(true, u, u), "live + showing it -> tile suppressed");
+        // Everything else keeps the offline tile (honest fallback).
+        assert!(!overlay_covers_slide(false, u, u), "live off keeps the tile");
+        assert!(!overlay_covers_slide(true, None, u), "nothing showing keeps the tile");
+        assert!(!overlay_covers_slide(true, u, None), "non-website slide untouched");
+        assert!(
+            !overlay_covers_slide(
+                true,
+                Some("http://localhost:4000/#/output1"),
+                Some("http://localhost:4000/#/output2")
+            ),
+            "a different page showing must not blank this slide"
+        );
     }
 
     #[test]
