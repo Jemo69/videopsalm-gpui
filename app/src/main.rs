@@ -3461,10 +3461,30 @@ impl Root {
             len,
         );
         let slide = frame.item.and_then(|_| slides.get(frame.slide).cloned());
-        let (header, lines, footer) = match slide {
+        let (mut header, mut lines, mut footer) = match slide {
             Some(s) => (s.header, s.lines, s.footer),
             None => (String::new(), Vec::new(), String::new()),
         };
+        // Transparent-overlay rule: when the live web view is painting this
+        // website slide's page on top, the projector must NOT also draw the
+        // URL tile underneath it — the overlay carries the content, and the
+        // projector's job is the background. Without this the URL string
+        // shows through the transparent overlay (the exact failure the
+        // conductor called out).
+        if self.live_web_on
+            && live_web::live_url_for_slide(&Slide::text(
+                header.clone(),
+                lines.clone(),
+                footer.clone(),
+            ))
+            .zip(self.live_view_url.clone())
+            .map(|(want, showing)| want == showing)
+            .unwrap_or(false)
+        {
+            header.clear();
+            lines.clear();
+            footer.clear();
+        }
         let (luminosity, lum_source) = match self.bg_kind {
             BackgroundKind::Image | BackgroundKind::VideoLoop => {
                 let chain = if self.bg_kind == BackgroundKind::Image {
