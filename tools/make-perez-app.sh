@@ -30,7 +30,9 @@ BIN="$1"
 APP_OUT="$2"
 DMG_OUT="${3:-}"
 VERSION="${PEREZ_VERSION:-0.1.27}"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Rust app closure lives in gpui-app/ (own directory): icons and masters
+# resolve under it, while <binary>/<app-out> stay caller-relative.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../gpui-app" && pwd)"
 
 if [[ ! -x "$BIN" ]]; then
   echo "Missing release binary: $BIN" >&2

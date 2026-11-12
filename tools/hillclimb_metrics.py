@@ -32,7 +32,7 @@ sch = f("vp-core/src/schema.rs")
 check("serde-schemas", all(x in sch for x in ["Song","Agenda","Style","BibleRef"]) or all(x in f("vp-core/src/lib.rs") for x in ["Song","Agenda"]), "schemas")
 # 6. cargo test green (run, may take a while; on failure record output tail)
 try:
-    r = subprocess.run(["cargo","test","--quiet","--offline"], cwd=str(ROOT), capture_output=True, text=True, timeout=600)
+    r = subprocess.run(["cargo","test","--quiet","--offline"], cwd=str(ROOT/"gpui-app"), capture_output=True, text=True, timeout=600)
     tail = (r.stdout+r.stderr)[-500:]
     check("cargo-test-green", r.returncode==0, tail.replace("\n"," | ")[:400])
 except Exception as e:

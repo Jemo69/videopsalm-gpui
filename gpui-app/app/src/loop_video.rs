@@ -237,9 +237,8 @@ impl LoopPlayer {
     /// The frame to show at `elapsed_ms` (wall-clock since loop start).
     /// A stale-but-present frame is returned rather than nothing: a slow
     /// decode drops frames, it never blanks the congregation screen.
-    pub fn frame_now(&self, _elapsed_ms: u64) -> Option<RgbFrame> {
-        // Latest decoded frame wins: a slow decode drops frames, it never
-        // blanks the screen. Position/wrap stays on `clock` (see `finished`).
+    pub fn frame_now(&self, elapsed_ms: u64) -> Option<RgbFrame> {
+        let _want = self.clock.frame_at(elapsed_ms);
         self.latest.lock().ok()?.clone()
     }
 

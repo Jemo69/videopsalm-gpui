@@ -12,7 +12,7 @@
 //!   (offline-first: everything ships in the binary, same as the sample
 //!   songs). `main` wires it via `Application::with_assets`; without that the
 //!   `icons/...` embedded paths resolve to nothing.
-//! * The strip keeps its per-command colours: the SVG paints on a
+//! * The strip keeps its per-command colours: [`art`] paints the SVG on a
 //!   neutral chip of the theme background so a blue chevron stays readable on
 //!   its blue circle (and the same file works on light skins).
 //!
@@ -26,11 +26,13 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, SharedString};
 #[cfg(test)]
+use gpui::{Styled, px};
+#[cfg(test)]
 use vp_core::schema::ItemKind;
 
 /// The manifest, embedded so tests read the same contract both ports share.
 ///
-/// Test-only: the runtime resolves artwork through [`VpIconAssets`],
+/// Test-only: the runtime resolves artwork through [`VpIconAssets`] + [`art`],
 /// never by parsing this JSON. Keeping it out of the shipping binary.
 // In-repo copy (`gpui-app/assets/icons/`): the standalone GitHub repo
 // builds and tests without the monorepo around it.
@@ -91,8 +93,8 @@ pub fn file_for(icon_id: &str) -> Option<&'static str> {
 
 /// Inline SVG markup for a manifest id, if it is one of ours.
 ///
-/// Test-only: the runtime draws through [`VpIconAssets`] + `img()`,
-/// not through this string.
+/// Test-only: the runtime draws through [`art`] (which goes through
+/// [`VpIconAssets`] + `img()`), not through this string.
 #[cfg(test)]
 pub fn svg_for(icon_id: &str) -> Option<&'static str> {
     let bytes = bytes_for_file(file_for(icon_id)?)?;
@@ -128,7 +130,8 @@ pub fn strip_icon(action: &str) -> Option<&'static str> {
 /// Agenda kind → badge manifest id. Exhaustive over [`ItemKind`]: adding a
 /// kind breaks the build here until it gets drawn artwork.
 ///
-/// Test-only mapping check: the runtime resolves badges through [`asset_path`] + `img()`.
+/// Test-only mapping check: the runtime resolves badges through `art` +
+/// [`asset_path`].
 #[cfg(test)]
 pub fn kind_icon(kind: ItemKind) -> &'static str {
     match kind {
@@ -173,6 +176,15 @@ impl AssetSource for VpIconAssets {
             Ok(Vec::new())
         }
     }
+}
+
+/// Drawn artwork for a manifest id, sized for the strip's 34px circles.
+/// Test-only since the rail became theme-aware text chips (R-Rail): the
+/// rainbow SVGs stay as the manifest's reference artwork.
+#[cfg(test)]
+pub fn art(icon_id: &str) -> gpui::Img {
+    let path = asset_path(icon_id).unwrap_or_else(|| "icons/cmd-next.svg".to_string());
+    gpui::img(path).w(px(20.)).h(px(20.))
 }
 
 #[cfg(test)]
