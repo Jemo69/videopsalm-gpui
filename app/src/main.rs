@@ -12691,6 +12691,24 @@ impl Root {
     /// Keep the live browser window in step with the pushed slide. Runs at
     /// the end of every [`Self::push_projection`]: spawn on website slides,
     /// die the moment they leave, never fetch anything itself.
+    /// CSS background for the live overlay's wrapper document: the same
+    /// field the presentation is drawing (colour or image), so verse text
+    /// sits on the room's picture. Video backgrounds cannot be mirrored into
+    /// a document — those fall back to the theme's projection colour.
+    fn overlay_field_css(&self) -> String {
+        let fallback = format!("background:{}", self.theme().projection_bg);
+        match self.bg_kind {
+            BackgroundKind::Image => match &self.bg_file {
+                Some(p) => format!(
+                    "background:#000 url('file://{}') center/cover no-repeat",
+                    p.display()
+                ),
+                None => fallback,
+            },
+            _ => fallback,
+        }
+    }
+
     fn sync_live_web(&mut self, cx: &mut Context<Self>) {
         let desired = self
             .projected_slides
@@ -12778,7 +12796,11 @@ impl Root {
             cx.notify();
             return;
         };
-        if self.live_view.show(&bin, &kind, &url, geometry, room_fullscreen) {
+        // The overlay sits on the presentation's own background, so a stage
+        // overlay over a colour or image background matches the room instead
+        // of covering it with a black slab.
+        let field_css = self.overlay_field_css();
+        if self.live_view.show(&bin, &kind, &url, geometry, room_fullscreen, &field_css) {
             self.live_view_url = Some(url.clone());
             // Firefox ignores geometry (private window, no placement
             // control), so only a Chromium-family window on a dedicated

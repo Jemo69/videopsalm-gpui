@@ -291,12 +291,19 @@ pub fn reachable(url: &str, timeout: Duration) -> bool {
 /// The live-view URL for a projected slide, if it is a website slide with a
 /// valid URL body. Footer templates rename the footer, so templated cards
 /// stay tiles (documented residual).
+///
+/// The slide body is the *wrapped* URL (`slides.rs` wraps at `max_chars`,
+/// default 40): rejoin every line, or long URLs lose their tail and the
+/// browser opens the wrong page (first fragment only).
 pub fn live_url_for_slide(slide: &Slide) -> Option<String> {
     if slide.footer != "WebSite" && slide.footer != "YouTube" {
         return None;
     }
-    let url = slide.lines.first()?.trim().to_string();
-    vp_core::schema::normalize_website_url(&url)
+    let url: String = slide.lines.join("");
+    if url.trim().is_empty() {
+        return None;
+    }
+    vp_core::schema::normalize_website_url(url.trim())
 }
 
 /// Chromium-family launch: incognito app window in a throwaway profile.
@@ -340,6 +347,54 @@ pub fn chromium_args_full(
     chromium_args_impl(url, geometry, fullscreen, profile, transparent, incognito)
 }
 
+/// What paints behind the page (pure, tested).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverlayField {
+    /// Alpha window: the presentation (background, lyrics) shows through the
+    /// transparent page. Needs a compositing manager.
+    Alpha,
+    /// Opaque black behind the page: correct text contrast anywhere, but it
+    /// covers the presentation behind it.
+    Black,
+}
+
+/// Pick the field for the live overlay (pure, tested).
+///
+/// `VP_LIVE_FIELD=alpha|black` wins when set. Otherwise: a compositing
+/// desktop gets the real thing (alpha — the presentation background shows
+/// through the transparent page); without a compositor an ARGB window shows
+/// the X default, so we paint black instead and say so.
+pub fn overlay_field(has_compositor: bool, env: Option<&str>) -> OverlayField {
+    match env {
+        Some("alpha") => OverlayField::Alpha,
+        Some("black") => OverlayField::Black,
+        _ if has_compositor => OverlayField::Alpha,
+        _ => OverlayField::Black,
+    }
+}
+
+/// Whether a compositing manager is present, by process name — the cheap,
+/// dependency-free check available to us. Unknown desktops default to "no",
+/// which selects the safe black field (never a white window).
+pub fn has_compositor() -> bool {
+    const NAMES: [&str; 10] = [
+        "picom", "compton", "xcompmgr", "mutter", "kwin_x11", "kwin_wayland",
+        "gnome-shell", "sway", "weston", "compiz",
+    ];
+    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
+    let mut found = false;
+    entries.flatten().any(|e| {
+        let comm = e.path().join("comm");
+        let Ok(name) = std::fs::read_to_string(comm) else { return false };
+        let name = name.trim();
+        if NAMES.contains(&name) {
+            // Mutter/KWin are compositing WMs: a hit means alpha is safe.
+            found = true;
+        }
+        false
+    }) || found
+}
+
 /// Wrapper page for the transparent overlay (pure, tested).
 ///
 /// The stage page paints *transparently* (Selah's `transparentBackground`),
@@ -350,6 +405,14 @@ pub fn chromium_args_full(
 /// page, so the result is white verse over black with no browser chrome,
 /// with or without a compositor.
 pub fn overlay_wrapper_html(target: &str) -> String {
+    overlay_wrapper_html_with_bg(target, "background:#000")
+}
+
+/// [`overlay_wrapper_html`] with the field the page sits on: the live
+/// presentation's own background, so a stage overlay over a colour or image
+/// background looks like the room's picture instead of a black slab.
+pub fn overlay_wrapper_html_with_bg(target: &str, field_css: &str) -> String {
+    let field = field_css;
     // Attribute-escape the target: it goes into an HTML attribute.
     let safe = target
         .replace('&', "&amp;")
@@ -358,7 +421,7 @@ pub fn overlay_wrapper_html(target: &str) -> String {
         .replace('>', "&gt;");
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Overlay</title>\
-<style>html,body{{margin:0;height:100%;background:#000;overflow:hidden}}\
+<style>html,body{{margin:0;height:100%;{field};overflow:hidden}}\
 iframe{{border:0;width:100vw;height:100vh;background:transparent}}</style></head>\
 <body><iframe src=\"{safe}\" allow=\"autoplay\"></iframe></body></html>"
     )
@@ -374,10 +437,20 @@ iframe{{border:0;width:100vw;height:100vh;background:transparent}}</style></head
 /// `VP_LIVE_PROFILE=persist` for the default location): flip the page's own
 /// toggle once in that profile and every later show keeps it.
 pub fn profile_dir(throwaway: PathBuf, persist: Option<&str>, fallback_dir: &std::path::Path) -> PathBuf {
+    // A bare name resolves under `fallback_dir` (the app-data default),
+    // never the process CWD: a stray value must not scatter
+    // operator-owned directories across wherever the app launched.
     match persist {
         None | Some("") => throwaway,
         Some("persist") | Some("1") => fallback_dir.to_path_buf(),
-        Some(dir) => PathBuf::from(dir),
+        Some(dir) => {
+            let p = PathBuf::from(dir);
+            if p.is_absolute() {
+                p
+            } else {
+                fallback_dir.join(p)
+            }
+        }
     }
 }
 
@@ -539,6 +612,7 @@ impl LiveView {
         url: &str,
         geometry: Option<(i32, i32, i32, i32)>,
         room_fullscreen: bool,
+        field_css: &str,
     ) -> bool {
         // Already up and alive: re-pushes must not flicker the projector.
         if self.showing(url, geometry, room_fullscreen) {
@@ -554,7 +628,12 @@ impl LiveView {
                 .unwrap_or(0)
         ));
         let persist_env = std::env::var("VP_LIVE_PROFILE").ok();
-        let persist_dir = std::env::temp_dir().join("videopsalm-live-web-profile");
+        // Persistent profile default: the app-data dir, not the temp dir.
+        // Tmp is cleaned on reboot/expiry, which would silently lose the
+        // page's stored settings (and the transparency toggle with them).
+        let persist_dir = vp_core::native_folder::ensure_app_dirs()
+            .map(|b| b.join("live-web-profile"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("videopsalm-live-web-profile"));
         let profile = profile_dir(throwaway, persist_env.as_deref(), &persist_dir);
         // Persistent profiles already exist: create-or-keep, and never
         // `hide()` (delete) what the operator owns.
@@ -585,12 +664,17 @@ impl LiveView {
         }
         // Overlay wrapper: the page paints transparent, so the document
         // around it paints the black field (see overlay_wrapper_html).
-        let wrapper_off = std::env::var("VP_LIVE_WRAPPER").as_deref() == Ok("0");
+        // Field: alpha (presentation shows through) only when a compositor
+        // can honour it; otherwise the wrapper's black field.
+        let field_env = std::env::var("VP_LIVE_FIELD").ok();
+        let field = overlay_field(has_compositor(), field_env.as_deref());
+        let wrapper_off = std::env::var("VP_LIVE_WRAPPER").as_deref() == Ok("0")
+            || field == OverlayField::Alpha;
         let mut launch_url = url.to_string();
         let mut wrapper: Option<PathBuf> = None;
         if !wrapper_off {
             let path = profile.with_extension("overlay.html");
-            if std::fs::write(&path, overlay_wrapper_html(url)).is_ok() {
+            if std::fs::write(&path, overlay_wrapper_html_with_bg(url, field_css)).is_ok() {
                 launch_url = format!("file://{}", path.display());
                 wrapper = Some(path);
             }
@@ -604,7 +688,7 @@ impl LiveView {
                     geometry,
                     geometry.is_some() || room_fullscreen,
                     &profile,
-                    true,
+                    field == OverlayField::Alpha,
                     !persistent,
                 )
             }
@@ -808,6 +892,44 @@ mod tests {
     }
 
     #[test]
+    fn live_url_survives_caption_wrapping() {
+        // Slides wrap the URL body at max_chars (40): the live view must
+        // rejoin every line, or long URLs open truncated (first fragment
+        // only — YouTube home instead of the video).
+        let long = "https://www.youtube.com/watch?v=abcdefghijk";
+        assert!(long.len() > 40, "fixture must exceed the wrap width");
+        let lines = vp_core::verse_splitter::wrap_caption(long, 40);
+        assert!(lines.len() > 1, "fixture must actually wrap: {lines:?}");
+        let slide = Slide::text("title", lines, "YouTube");
+        assert_eq!(live_url_for_slide(&slide).as_deref(), Some(long));
+        // Single-line slides behave exactly as before.
+        let short = Slide::text("t", vec!["example.com/live".into()], "WebSite");
+        assert_eq!(
+            live_url_for_slide(&short).as_deref(),
+            Some("https://example.com/live")
+        );
+        // Non-website slides and empty bodies stay tiles.
+        let song = Slide::text("t", vec![long.into()], "Song");
+        assert_eq!(live_url_for_slide(&song), None);
+        let empty = Slide::text("t", Vec::new(), "YouTube");
+        assert_eq!(live_url_for_slide(&empty), None);
+    }
+
+    #[test]
+    fn overlay_field_follows_the_compositor_and_the_override() {
+        // With a compositor: real alpha, so the presentation background and
+        // lyrics show through the transparent page.
+        assert_eq!(overlay_field(true, None), OverlayField::Alpha);
+        // Without one: black field, because an ARGB window would show the X
+        // default (white) and swallow white text.
+        assert_eq!(overlay_field(false, None), OverlayField::Black);
+        // Operator override wins either way.
+        assert_eq!(overlay_field(false, Some("alpha")), OverlayField::Alpha);
+        assert_eq!(overlay_field(true, Some("black")), OverlayField::Black);
+        assert_eq!(overlay_field(true, Some("nonsense")), OverlayField::Alpha);
+    }
+
+    #[test]
     fn overlay_wrapper_gives_the_page_its_black_field() {
         // The stage page paints transparent; the wrapper document paints the
         // black field, so a headed window without a compositor shows white
@@ -841,6 +963,11 @@ mod tests {
         assert_eq!(
             profile_dir(throwaway, Some("/home/operator/stage-profile"), fallback),
             std::path::PathBuf::from("/home/operator/stage-profile")
+        );
+        // A bare name stays under the app-data fallback, never the CWD.
+        assert_eq!(
+            profile_dir(throwaway, Some("stage-profile"), fallback),
+            fallback.join("stage-profile")
         );
     }
 
