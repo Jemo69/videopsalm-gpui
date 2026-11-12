@@ -295,7 +295,7 @@ pub fn compute_item_slides_templated(
         ItemKind::YouTube | ItemKind::WebSite => match &item.reference {
             ItemRef::Url { url } => vec![Slide::text(
                 item.title.clone(),
-                vec![url.clone()],
+                crate::verse_splitter::wrap_caption(url, opts.max_chars),
                 kind_label(item.kind),
             )],
             other => ref_mismatch(item, other),
@@ -305,7 +305,7 @@ pub fn compute_item_slides_templated(
             vec![ref_summary(&item.reference)],
             "CCLI".to_string(),
         )],
-        _ => file_slide(item),
+        _ => file_slide(item, opts.max_chars),
     }
 }
 
@@ -331,14 +331,14 @@ fn ref_mismatch(item: &AgendaItem, _other: &ItemRef) -> Vec<Slide> {
     )]
 }
 
-fn file_slide(item: &AgendaItem) -> Vec<Slide> {
+fn file_slide(item: &AgendaItem, max_chars: usize) -> Vec<Slide> {
     vec![Slide::text(
         if item.title.is_empty() {
             kind_label(item.kind)
         } else {
             item.title.clone()
         },
-        vec![ref_summary(&item.reference)],
+        crate::verse_splitter::wrap_caption(&ref_summary(&item.reference), max_chars),
         kind_label(item.kind),
     )]
 }
@@ -1110,5 +1110,50 @@ mod tests {
         assert_eq!(slides[0].header, "Amazing Grace — 1/2");
         assert_eq!(slides[1].header, "Amazing Grace — 2/2");
         assert!(slides[0].footer.contains("John Newton"));
+    }
+
+    #[test]
+    fn long_url_slide_wraps_without_overrun() {
+        let url = "http://localhost:4000/#/output1-holy-holy-holy-holy";
+        let item = AgendaItem {
+            id: "u1".into(),
+            kind: ItemKind::WebSite,
+            title: url.into(),
+            reference: ItemRef::Url { url: url.into() },
+            flow_type: FlowType::Manual,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let slides = compute_item_slides(&item, &songs(), &bibles(), &opts(), true, true);
+        assert_eq!(slides.len(), 1);
+        let lines = &slides[0].lines;
+        assert!(lines.len() > 1, "URL should wrap: {lines:?}");
+        assert!(
+            lines.iter().all(|l| l.chars().count() <= 40),
+            "wrapped line overrun: {lines:?}"
+        );
+        assert_eq!(lines.concat(), url, "content lost in wrap: {lines:?}");
+    }
+
+    #[test]
+    fn long_file_caption_slide_wraps_without_overrun() {
+        let file = "/home/operator/Very Long Directory Name/with-spaces/video-loop-bg-holy-holy.mp4";
+        let item = AgendaItem {
+            id: "f1".into(),
+            kind: ItemKind::Audio,
+            title: "Loop".into(),
+            reference: ItemRef::File { file: file.into() },
+            flow_type: FlowType::Manual,
+            auto_advance_ms: None,
+            overrides: ItemOverrides::default(),
+        };
+        let slides = compute_item_slides(&item, &songs(), &bibles(), &opts(), true, true);
+        assert_eq!(slides.len(), 1);
+        let lines = &slides[0].lines;
+        assert!(
+            lines.iter().all(|l| l.chars().count() <= 40),
+            "wrapped caption overrun: {lines:?}"
+        );
+        assert_eq!(lines.concat(), file, "content lost in wrap: {lines:?}");
     }
 }

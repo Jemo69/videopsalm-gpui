@@ -24,3 +24,10 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 image = "0.25.10"
 # Single-frame vec for the motion image loader.
 smallvec = "1.16"
+# In-house loop-video backgrounds (pure-Rust MP4 demux + OpenH264 built
+# from source): fallback behind the ffmpeg MotionPump (see loop_video.rs).
+mp4 = "0.14"
+openh264 = "0.4"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

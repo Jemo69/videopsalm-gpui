@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Perez RS
+Comment=Offline-first worship and presentation software
+Exec=perez-rs
+Terminal=false
+Type=Application
+Categories=AudioVideo;Office;Presentation;Utility;
+Icon=perez
+StartupWMClass=perez-rs

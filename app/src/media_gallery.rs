@@ -234,6 +234,28 @@ impl GalleryState {
 
 }
 
+/// Rail "Add video": agenda title for a picked video file (pure, tested).
+/// Mirrors the gallery "+ Agenda" constructor (`Root::add_video_to_agenda`):
+/// the file stem, or "Video" for a root/empty path. `ItemRef::File` is
+/// attached by the caller exactly like that constructor.
+pub fn picked_video_title(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Video".to_string())
+}
+
+/// Rail "Add web": pure link validation (tested) — is there a valid
+/// http(s) URL in this clipboard payload? `false` keeps the rail's
+/// instructive status and never touches the agenda. When `true`, the
+/// caller feeds the payload through the existing Website-field
+/// constructor (`website_agenda_item` → offline link card: stored URL
+/// only, never fetched or embedded — AGENTS.md: no autoplay), so the
+/// YouTube/WebSite classification stays in exactly one place;
+/// `vp_core::schema::normalize_website_url` supplies the http(s) gate.
+pub fn clipboard_has_link(raw: &str) -> bool {
+    vp_core::schema::normalize_website_url(raw).is_some()
+}
+
 /// Read the gallery folder label (Explore-folder row).
 pub fn gallery_folder(state: &GalleryState, kind: MediaFileKind) -> String {
     if let Some(f) = &state.folder {
@@ -1507,6 +1529,35 @@ mod tests {
         // …and stays invisible to the song chain (B-33).
         let p = media::resolve_luminosity(&c, Chain::Songs);
         assert_eq!(p.source, None);
+    }
+
+    #[test]
+    fn picked_video_title_uses_the_file_stem() {
+        // Mirrors the gallery "+ Agenda" constructor: stem, never the path.
+        assert_eq!(
+            picked_video_title(Path::new("/v/Red Sunset.mp4")),
+            "Red Sunset"
+        );
+        assert_eq!(picked_video_title(Path::new("clip.webm")), "clip");
+        assert_eq!(picked_video_title(Path::new("/")), "Video");
+    }
+
+    #[test]
+    fn clipboard_link_validation_accepts_http_and_youtube_only() {
+        // Valid http(s) — the constructor then builds the offline link
+        // card (YouTube classification stays there, not duplicated here).
+        assert!(clipboard_has_link("https://example.com/live"));
+        assert!(clipboard_has_link("http://example.com"));
+        assert!(clipboard_has_link("example.com/live")); // https:// assumed
+        assert!(clipboard_has_link("https://www.youtube.com/watch?v=abc"));
+        assert!(clipboard_has_link("https://youtu.be/abc"));
+        // Non-http(s), empties and pasted prose are not links: the rail
+        // keeps its instructive "type a page URL first" status.
+        assert!(!clipboard_has_link("javascript:alert(1)"));
+        assert!(!clipboard_has_link("file:///etc/passwd"));
+        assert!(!clipboard_has_link("ftp://example.com/x"));
+        assert!(!clipboard_has_link("   "));
+        assert!(!clipboard_has_link("just some words"));
     }
 
     #[test]

@@ -35,16 +35,6 @@ impl NdiOutput {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn backend(&self) -> NdiBackend {
-        self.runtime.backend()
-    }
-
-    #[allow(dead_code)]
-    pub fn sdk_available(&self) -> bool {
-        self.runtime.sdk_available()
-    }
-
     /// Toggle output. Returns a status line for the control window.
     pub fn set_enabled(&mut self, on: bool) -> String {
         if on == self.enabled && self.runtime.backend() != NdiBackend::Off {

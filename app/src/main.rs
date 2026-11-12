@@ -41,6 +41,7 @@ mod file_picker;
 mod icons;
 mod lyrics_doc;
 mod live_web;
+mod loop_video;
 mod media_gallery;
 mod monitors;
 mod ndi_out;
@@ -93,7 +94,7 @@ use ux::{
     agenda_rail_buttons, apply_verse_grid_click, bible_hit_rows, bible_slide_badge,
     bible_slide_verses, chapter_count, clamp_verses_to_chapter, default_verse_count,
     digit_slide_index, filmstrip_label,
-    font_families, is_slide_vocabulary_key, kind_badge, presentation_end_blocked,
+    font_families, is_slide_vocabulary_key, presentation_end_blocked,
     presentation_start_index, rail_menu_items, route_pres_key, save_target, section_name,
     shortcut_help, slide_verse_id, style_dropdown_label, style_levels, style_override_dot,
     style_preset_levels, tool_strip, transitions, valid_rename_title, verse_shortcut_target,
@@ -180,16 +181,20 @@ pub(crate) struct UI {
     /// (sky/amber/yellow) and is nearly invisible.
     accent_ink: Rgba,
     danger: Rgba,
-    /// The **selection** colour: the row currently projecting is highlighted
-    /// blue, always.
+    /// The **selection** colour: selected agenda item, selected slide row,
+    /// active buttons — always signal red, on every skin.
     ///
-    /// This must NOT be `accent`. Two of the four themes use a yellow or amber
-    /// accent, so painting "the live slide" with the theme accent made the
-    /// most important cue in the app come out yellow. The original's cue is
-    /// blue regardless of skin, so it gets its own token.
+    /// This must NOT be `accent`. Two of the five themes use a yellow or amber
+    /// accent, so painting selection with the theme accent made the cue come
+    /// out yellow. The projecting row is NOT this token — that is `live`
+    /// (lime-only rule).
     selection: Rgba,
     /// Text colour guaranteed readable on `selection` backgrounds.
     selection_ink: Rgba,
+    /// The live/projecting cue: lime, on every skin (LIVE = lime only).
+    live: Rgba,
+    /// Text colour guaranteed readable on `live` backgrounds.
+    live_ink: Rgba,
     /// The orange used to mark an **engaged** command.
     ///
     /// UX-RESEARCH §6 (OBSERVATIONS): an engaged presentation command is drawn
@@ -211,12 +216,20 @@ const ENGAGED: Rgba = Rgba {
 /// polls at the same cadence; higher reads smoother but republishes more.
 const MOTION_FPS: u32 = 8;
 
-/// Blue, for the row that is currently projecting (UX-RESEARCH §10.3:
-/// "highlighted in blue" — since 1.2, and on every skin).
-const SELECTION_BLUE: Rgba = Rgba {
-    r: 0.145,
-    g: 0.388,
-    b: 0.922,
+/// Signal red: selected agenda item + primary buttons (perez-sheet.html
+/// brand layer). Projection-surface blue cue is unchanged).
+const SELECTION_RED: Rgba = Rgba {
+    r: 0xED as f32 / 255.0,
+    g: 0x12 as f32 / 255.0,
+    b: 0x16 as f32 / 255.0,
+    a: 1.0,
+};
+
+/// Lime: the ONLY live/projecting cue (perez-sheet.html LIVE = lime only).
+const LIVE_LIME: Rgba = Rgba {
+    r: 0xCC as f32 / 255.0,
+    g: 0xED as f32 / 255.0,
+    b: 0x12 as f32 / 255.0,
     a: 1.0,
 };
 
@@ -267,16 +280,15 @@ impl UI {
             .and_then(themes::parse_hex)
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
-        // VideoPsalm chrome: panels are white on a light-blue window with
-        // thin steel-blue borders (#7F9DB9, the Office 2007 edge). Painting
-        // every border with the accent (#2E74B5) made the whole control
-        // window read as a grid of bright-blue boxes next to the original's
-        // soft gray-blue chrome (viewer-mode.png). The border is its own
-        // token on light; other skins keep the accent edge.
-        let border = if t.id == "light" {
-            rgb(0x7F9DB9)
-        } else {
-            hex(t.accent)
+        // Signal Room chrome: paper/night window, thin line-token borders.
+        // Each skin uses its sheet `--line`: light paper #E4B3B7, dark night
+        // #5B2327, onyx neutral gray (true black, never red-tinted);
+        // gray/blue keep the signal-red accent edge.
+        let border = match t.id {
+            "light" => rgb(0xE4B3B7),
+            "dark" => rgb(0x5B2327),
+            "onyx" => rgb(0x3F3F46),
+            _ => hex(t.accent),
         };
         UI {
             bg: hex(t.bg),
@@ -286,10 +298,13 @@ impl UI {
             accent,
             accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
-            // Skin-independent: the projected row is blue on every skin, and
-            // the engaged-command outline is orange on every skin.
-            selection: SELECTION_BLUE,
-            selection_ink: ink_on(SELECTION_BLUE),
+            // Skin-independent: the selected agenda item is signal red and
+            // the live/projecting row is lime, on every skin
+            // (perez-sheet.html brand layer).
+            selection: SELECTION_RED,
+            selection_ink: ink_on(SELECTION_RED),
+            live: LIVE_LIME,
+            live_ink: ink_on(LIVE_LIME),
             engaged: ENGAGED,
         }
     }
@@ -502,6 +517,9 @@ pub(crate) struct Root {
     collapsed_at: Option<std::time::Instant>,
     /// The current song has unsaved lyrics.
     song_dirty: bool,
+    /// Center lyrics-document text size in px (verse-toolbar A+/A-,
+    /// session-only, clamped 10..24). The DocField paints this size.
+    lyrics_text_size: f32,
     /// Lyrics-editor sub-tab: `0` = Lyrics, `1` = Files, `2` = Chords.
     song_tab: u8,
     /// `Miscellaneous` tab selected. Kept separate because it is the only
@@ -529,6 +547,14 @@ pub(crate) struct Root {
     /// window for website slides. Default off — when off this whole path is
     /// dead code at runtime and the projector keeps the offline tiles.
     live_web_on: bool,
+    /// Boot hook for stage-server proofs (`--stage-url <URL>`): a website
+    /// slide for that exact URL, projected live with the live web view on.
+    /// Taken once on the first frame; None in every normal launch.
+    pending_stage_url: Option<String>,
+    /// Boot hook for Stage-view proofs (`--stage-demo`): load the bundled
+    /// sample agenda, project its first item, and open the Stage view, so the
+    /// stage cards (and their STAGE captions) can be captured without input.
+    pending_stage_demo: bool,
     /// Remote URLs allowed for live view this session (operator-confirmed).
     /// Loopback never needs confirmation; nothing persists to disk.
     live_web_confirmed: Vec<String>,
@@ -548,6 +574,12 @@ pub(crate) struct Root {
     /// while a video moves in preview/projector. One pump at a time — a
     /// standalone clip takes over the background loop.
     motion: Option<MotionPump>,
+    /// In-house H.264 decoder fallback (no ffmpeg binary): probed-playable
+    /// loops decode native and ride the same `motion_frame` channel.
+    loop_player: Option<crate::loop_video::LoopRun>,
+    /// Paused in-house loop (path + loop-play), so transport resume can
+    /// restart it — the native twin of the ffmpeg pump's tracked offset.
+    loop_paused: Option<(PathBuf, bool)>,
     /// Latest decoded-live frame (JPEG bytes) for the motion render.
     /// Replaced per tick; the custom loader decodes only this one, so no
     /// image cache can accumulate across a long play.
@@ -599,6 +631,14 @@ pub(crate) struct Root {
     /// Collapsible Bibles-browser sections (translations / import / picker).
     /// Session-only disclosure state, like `agenda_file_open`.
     verse_order_open: bool,
+    /// Song metadata disclosure (Number/Title/References/Author/Copyright).
+    /// Shut by default: the control center is the lyrics document, and the
+    /// metadata rows live one click away on the song-editor surface.
+    song_details_open: bool,
+    /// Separate song-editor page (sheet PAGE 02). False = control center:
+    /// pure lyrics (title + document + details). True = full editor surface:
+    /// Tabs + Number/Title + document + metadata, always visible.
+    editor_page: bool,
     scroll_verse_order: ScrollHandle,
     bible_sec_trans: bool,
     bible_sec_import: bool,
@@ -715,6 +755,56 @@ fn merge_native_songs(songs: &mut Vec<Song>, incoming: Vec<Song>) -> (usize, usi
     smoke::merge_into_library(songs, incoming)
 }
 
+/// Open the persistent library database (application support folder, falling
+/// back to in-memory when the folder cannot be created). Shared by
+/// `Root::build` and `main()` so the recents the boot-agenda rule reads are
+/// the same database the rest of the app writes.
+fn open_boot_db() -> rusqlite::Connection {
+    match vp_core::native_folder::ensure_app_dirs() {
+        Ok(base) => {
+            let path = base.join("library.db");
+            library::open(path.to_string_lossy().as_ref()).unwrap_or_else(|_| {
+                library::open_memory().expect("in-memory library")
+            })
+        }
+        Err(_) => library::open_memory().unwrap(),
+    }
+}
+
+/// Boot-agenda rule (single source; `Root::build` and the window-title call in
+/// `main()` both resolve through here so they can never disagree): reopen the
+/// most recent agenda when its file still exists and parses (every successful
+/// Save records it via `push_recent` in `save_agenda`); otherwise the bundled
+/// sample. A missing/corrupt recent falls back silently. A restored agenda
+/// with an empty/blank title is retitled "New agenda" so the operator never
+/// sees a blank header or title bar (R2-S2-01).
+fn boot_agenda_from_lib(db: &rusqlite::Connection) -> (Agenda, Option<String>) {
+    let restored: Option<(Agenda, String)> = library::list_recents(db, 1)
+        .ok()
+        .and_then(|recents| {
+            library::recent_agenda_to_restore(&recents, |p| std::path::Path::new(p).is_file())
+        })
+        .and_then(|p| {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|text| Agenda::from_json(&text).ok())
+                .and_then(|a| a.validate().ok().map(|_| (a, p.clone())))
+        });
+    match restored {
+        Some((mut a, p)) => {
+            if a.title.trim().is_empty() {
+                a.title = "New agenda".to_string();
+            }
+            (a, Some(p))
+        }
+        None => (
+            Agenda::from_json(AGENDA_SAMPLE)
+                .unwrap_or_else(|_| Agenda::new("New agenda")),
+            None,
+        ),
+    }
+}
+
 /// VJSM parity: which column divider is being dragged (0 = left/library,
 /// 1 = right/slides+preview). Carried as the drag payload so moves track
 /// even when the cursor leaves the divider — same pattern as B-07 frames.
@@ -731,6 +821,17 @@ pub(crate) fn clamp_col_width(w: f32) -> f32 {
 /// Row-divider payload: 0 = agenda/browser split, 1 = slides/preview split.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct RowSplit(u8);
+
+/// Control-view column math, shared by the layout and the dominance test so
+/// the two cannot drift: fixed side columns, flexible dominant center.
+/// Sheet page 01 pins the center at 1.55fr — wider than either side at the
+/// default widths on a 1280px window (12px view padding + four 8px gaps +
+/// two 14px dividers + the 44px tool strip beside a 4px gap = 120px chrome).
+pub(crate) fn center_width(vw: f32, left_w: f32, right_w: f32) -> f32 {
+    let left = left_w.min((vw * 0.32).max(180.0));
+    let right = right_w.min((vw * 0.32).max(220.0));
+    vw - left - right - 120.0
+}
 
 /// Adjustable section heights, clamped so neither pane can vanish nor push
 /// its sibling off the window. 0 splits agenda/browser (100..520 px),
@@ -823,7 +924,7 @@ impl Root {
     /// missed press is visible instead of silent. Double-click resets.
     fn divider(&mut self, ui: &UI, cx: &mut Context<Self>, col: u8) -> impl gpui::IntoElement {
         let ghost = self.drag_ghost.clone();
-        let default_w = if col == 0 { 360.0 } else { 560.0 };
+        let default_w = if col == 0 { 320.0 } else { 300.0 };
         let grabbed = self.col_drag.is_some_and(|(c, _, _)| c == col);
         let strip = div()
             .w(px(14.))
@@ -984,15 +1085,7 @@ impl Root {
         // `~/.local/share/videopsalm` on Linux) so songs, songbooks, and
         // imports survive restart. Falls back to in-memory when the folder
         // cannot be created (read-only profile, headless test).
-        let db = match vp_core::native_folder::ensure_app_dirs() {
-            Ok(base) => {
-                let path = base.join("library.db");
-                library::open(path.to_string_lossy().as_ref()).unwrap_or_else(|_| {
-                    library::open_memory().expect("in-memory library")
-                })
-            }
-            Err(_) => library::open_memory().unwrap(),
-        };
+        let db = open_boot_db();
         library::upsert_songbook(
             &db,
             &vp_core::schema::Songbook {
@@ -1003,8 +1096,17 @@ impl Root {
             },
         )
         .unwrap();
+        // Sample-overwrite guard: only insert bundled samples whose id is
+        // absent, so operator edits to a sample survive restarts. The
+        // stored copy still reaches the browser via the `all_songs` merge
+        // below (known ids replace in place).
         for s in &songs {
-            library::upsert_song(&db, s).unwrap();
+            // A corrupt stored row with a sample's id must never kill
+            // boot: skip it loudly (crash log) — the stored copy still
+            // reaches the browser through the `all_songs` merge below.
+            if let Err(e) = library::upsert_song_if_absent(&db, s) {
+                crate::crash_log::log_line(&format!("boot sample skipped: {} ({e})", s.id));
+            }
         }
 
         let mut bibles = BibleLibrary::default();
@@ -1033,6 +1135,27 @@ impl Root {
                         .map_err(|e| e.to_string())
                         .and_then(|xml| {
                             vp_core::bible_import::import_bible_xml(&xml, &name)
+                                .map_err(|e| e.to_string())
+                        });
+                    match loaded {
+                        Ok(t) => {
+                            bibles.install(t);
+                            boot_imports += 1;
+                        }
+                        Err(e) => boot_import_errors.push(format!("{}: {e}", p.display())),
+                    }
+                } else if ext == "vpc" {
+                    let loaded = std::fs::read(&p)
+                        .map_err(|e| e.to_string())
+                        .and_then(|bytes| {
+                            vp_core::native_archive::read_vpac_entries(
+                                &bytes,
+                                vp_core::native_archive::VPC_PASSWORD,
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .and_then(|entries| {
+                            vp_core::bible_import::import_bible_vpc(&entries, &name)
                                 .map_err(|e| e.to_string())
                         });
                     match loaded {
@@ -1074,11 +1197,16 @@ impl Root {
             .map(|t| t.translation_id.clone())
             .unwrap_or_else(|| "SAMPLE-EN".to_string());
 
-        let agenda = Agenda::from_json(AGENDA_SAMPLE).unwrap_or_else(|_| Agenda::new("New agenda"));
+        let (agenda, restored_agenda_path) = boot_agenda_from_lib(&db);
 
         let search_field =
             cx.new(|cx| TextField::new("Keywords (title and lyrics) or number to search", cx));
-        let path_field = cx.new(|cx| TextField::new("agenda.json", cx));
+        let path_field = cx.new(|cx| {
+            TextField::new(
+                restored_agenda_path.as_deref().unwrap_or("agenda.json"),
+                cx,
+            )
+        });
         let alert_field = cx.new(|cx| TextField::new("Alert text...", cx));
         let book_field = cx.new(|cx| TextField::new("Book (e.g. John / Jean)...", cx));
         let verse_field = cx.new(|cx| TextField::new("16-18", cx));
@@ -1198,14 +1326,15 @@ impl Root {
             frame_sel: FrameId::Body,
             frame_drag: None,
             drag_ghost: drag_ghost.clone(),
-            left_w: 360.0,
-            right_w: 560.0,
+            left_w: 320.0,
+            right_w: 300.0,
             col_drag: None,
             agenda_h: None,
             preview_h: None,
             row_drag: None,
             collapsed_at: None,
             song_dirty: false,
+            lyrics_text_size: 15.0,
             song_tab: 0,
             song_misc: false,
             frozen_slide: None,
@@ -1222,12 +1351,16 @@ impl Root {
             media: ExternalPlayer::new(MediaKind::Video),
             media_launched_for: None,
             live_web_on: false,
+            pending_stage_url: stage_url_arg(&std::env::args().collect::<Vec<String>>()),
+            pending_stage_demo: std::env::args().any(|a| a == "--stage-demo"),
             live_web_confirmed: Vec::new(),
             live_web_pending: None,
             live_view: live_web::LiveView::new(),
             live_view_url: None,
             video_posters: HashMap::new(),
             motion: None,
+            loop_player: None,
+            loop_paused: None,
             motion_frame: None,
             motion_ticking: false,
             pptx_info: String::new(),
@@ -1250,6 +1383,8 @@ impl Root {
             scroll_bible_hits: ScrollHandle::new(),
             scroll_bible_browser: ScrollHandle::new(),
             verse_order_open: false,
+            song_details_open: false,
+            editor_page: false,
             scroll_verse_order: ScrollHandle::new(),
             bible_sec_trans: true,
             bible_sec_import: false,
@@ -1477,7 +1612,26 @@ impl Root {
         // Restore persisted library songs (app support folder) so imports
         // survive restart — the browser list is rebuilt from the database,
         // not just the bundled samples.
-        if let Ok(stored) = library::all_songs(&this.db) {
+        if let Ok((stored, skipped)) = library::all_songs(&this.db) {
+            if !skipped.is_empty() {
+                // Bound the status: a long corrupt-id list must not blow
+                // out the narrow status bar — name the first few, count
+                // the rest (full ids are in the crash log via boot skip).
+                let shown: Vec<&str> =
+                    skipped.iter().take(3).map(String::as_str).collect();
+                let rest = skipped.len().saturating_sub(shown.len());
+                let more =
+                    if rest > 0 { format!(" +{rest} more") } else { String::new() };
+                this.set_status(
+                    cx,
+                    format!(
+                        "Library: {} unreadable song(s) skipped ({}{}).",
+                        skipped.len(),
+                        shown.join(", "),
+                        more
+                    ),
+                );
+            }
             let (added, _) = merge_native_songs(&mut this.songs, stored);
             if added > 0 {
                 let q = this.search_field.read(cx).text();
@@ -1493,7 +1647,7 @@ impl Root {
         if let Some(vp_dir) = crate::file_picker::videopsalm_start_dir() {
             let folder = vp_dir.to_string_lossy().into_owned();
             let scan = vp_core::native_folder::scan_folder(&folder);
-            if !scan.songs.is_empty() || !scan.images.is_empty() || !scan.videos.is_empty() {
+            if !scan.songs.is_empty() || !scan.images.is_empty() || !scan.videos.is_empty() || !scan.backgrounds.is_empty() {
                 let (added, kept) = merge_native_songs(&mut this.songs, scan.songs);
                 let mut failed = 0;
                 for s in &this.songs {
@@ -1538,6 +1692,23 @@ impl Root {
                 }
                 for w in scan.errors.iter().take(3) {
                     msg.push_str(&format!(" [{w}]"));
+                }
+                // Style-driven background at boot (mirror Electron restore,
+                // announce=false): only fill an unset background, never
+                // stomp the operator's persisted choice.
+                if this.bg_kind == BackgroundKind::Color && this.bg_file.is_none() {
+                    if let Some(bg) = vp_core::native_folder::pick_style_background(&scan.backgrounds) {
+                        this.bg_kind = if bg.kind == "videoLoop" {
+                            BackgroundKind::VideoLoop
+                        } else {
+                            BackgroundKind::Image
+                        };
+                        this.bg_file = Some(PathBuf::from(&bg.file));
+                        this.bg_website = None;
+                        this.persist_layout_quiet();
+                        crate::presentation::publish(&this, cx);
+                        msg.push_str(&format!(" background → {}.", PathBuf::from(&bg.file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| bg.file.clone())));
+                    }
                 }
                 vp_note = Some(msg);
                 let q = this.search_field.read(cx).text();
@@ -1980,13 +2151,10 @@ impl Root {
         // row key (`web:{url}`, content-stable) is hidden.
         let hide = self.hidden_for(&item.id);
         if hide.iter().any(|h| h.starts_with("web:")) {
+            // Key on the full rejoined URL (see `live_url_for_slide`): the
+            // wrapped first line alone collides for URLs sharing a prefix.
             slides.retain(|s| {
-                !(s.footer == "WebSite"
-                    && s
-                        .lines
-                        .first()
-                        .map(|u| hide.contains(&web_row_key(u)))
-                        .unwrap_or(false))
+                !(s.footer == "WebSite" && hide.contains(&web_row_key(&s.lines.join(""))))
             });
         }
         slides
@@ -2173,29 +2341,6 @@ impl Root {
             .position(|s| slide_verse_id(&s.header).as_deref() == Some(verse_id))
     }
 
-    /// Projected slide index holding a Bible verse's text snippet.
-    #[allow(dead_code)] // CENTER Bible-row click handler, kept for rewire
-    fn slide_for_bible_text(&self, slides: &[Slide], verse_text: &str) -> Option<usize> {
-        let text = verse_text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        for len in [24usize, 12, 6] {
-            let snippet: String = text.chars().take(len).collect();
-            let snippet = snippet.trim();
-            if snippet.len() < 3 {
-                continue;
-            }
-            if let Some(i) = slides
-                .iter()
-                .position(|s| s.lines.iter().any(|l| l.contains(snippet)))
-            {
-                return Some(i);
-            }
-        }
-        None
-    }
-
     /// Click a CENTER song block: re-include when unchecked, then project
     /// the verse's first slide.
     fn goto_song_verse(&mut self, cx: &mut Context<Self>, item_idx: usize, verse_id: &str) {
@@ -2211,32 +2356,6 @@ impl Root {
         let target = self.slide_for_song_verse(&slides, verse_id).unwrap_or(0);
         self.goto_item_slide(cx, item_idx, target);
         self.sel_block = Some(verse_id.to_string());
-    }
-
-    /// Click a CENTER Bible row: re-include when unchecked, then project.
-    #[allow(dead_code)] // kept for CENTER Bible-row rewire
-    fn goto_bible_verse(
-        &mut self,
-        cx: &mut Context<Self>,
-        item_idx: usize,
-        verse_no: &str,
-        verse_text: &str,
-    ) {
-        let item_id = match self.agenda.items.get(item_idx) {
-            Some(it) => it.id.clone(),
-            None => return,
-        };
-        if self.is_hidden(&item_id, verse_no) {
-            self.set_hidden(&item_id, verse_no, false);
-        }
-        self.sel_block = Some(verse_no.to_string());
-        let slides = self.item_slides(item_idx);
-        let target = self
-            .slide_for_bible_text(&slides, verse_text)
-            .unwrap_or(0)
-            .min(slides.len().saturating_sub(1));
-        self.goto_item_slide(cx, item_idx, target);
-        self.sel_block = Some(verse_no.to_string());
     }
 
     /// Load the agenda item's song/Bible into the centre editor so the
@@ -2405,10 +2524,42 @@ impl Root {
                 cx,
                 "Add slideshow image… is not wired yet — drop the file onto the agenda.",
             ),
-            "add-video" => self.set_status(
-                cx,
-                "Add standalone video… is not wired yet — drop the file onto the agenda.",
-            ),
+            "add-video" => {
+                // Rail video: pick with the Videos filter, then append the
+                // same agenda video item the gallery "+ Agenda" constructor
+                // builds (stem title + ItemRef::File via add_item). Cancel
+                // changes nothing — the instructive guidance stays, no error.
+                if let Some(p) = crate::file_picker::pick_file(
+                    "Add standalone video",
+                    &[crate::file_picker::VIDEO_FILTER],
+                ) {
+                    let title = crate::media_gallery::picked_video_title(&p);
+                    self.agenda_dirty = true;
+                    let id = agenda_ops::add_item(
+                        &mut self.agenda,
+                        ItemKind::Video,
+                        title.clone(),
+                        ItemRef::File {
+                            file: p.to_string_lossy().into_owned(),
+                        },
+                    );
+                    self.sel_item = self.agenda.items.iter().position(|i| i.id == id);
+                    self.sync_editor_to_item(cx, self.sel_item.unwrap_or(usize::MAX));
+                    // Preview/codec honesty: only H.264-in-MP4 plays in-app;
+                    // anything else is named as a captioned tile on the
+                    // projector (probe + picker filter deliberately unchanged).
+                    self.set_status(
+                        cx,
+                        crate::loop_video::rail_video_status(&p, &title, crate::loop_video::probe),
+                    );
+                    cx.notify();
+                } else {
+                    self.set_status(
+                        cx,
+                        "Add video cancelled — no file chosen. Drop the file onto the agenda, or use Videos gallery ▸ + Agenda.",
+                    );
+                }
+            }
             "add-audio" => self.set_status(
                 cx,
                 "Add audio file… is not wired yet — drop the file onto the agenda.",
@@ -2421,7 +2572,33 @@ impl Root {
                 cx,
                 "Add document… is not wired yet — drop the Word/Excel/PDF onto the agenda.",
             ),
-            "add-web" => self.add_website_to_agenda(cx),
+            "add-web" => {
+                // Rail web: the clipboard link becomes an offline link-card
+                // agenda item through the existing Website-field
+                // constructor (stored URL only — no embed, no autoplay, no
+                // fetch). No valid http(s) URL on the clipboard keeps the
+                // paste-as-title instruction, agenda untouched.
+                // R2-VIDEO-02: the field is seeded with the *normalised*
+                // URL the card stores, not the raw clipboard text — so
+                // field-value == stored-URL (`website_agenda_item`
+                // re-normalises the field-bound value and the normaliser
+                // is idempotent on it).
+                let clip = cx.read_from_clipboard().and_then(|item| item.text());
+                match clip
+                    .as_deref()
+                    .filter(|raw| crate::media_gallery::clipboard_has_link(raw))
+                    .and_then(vp_core::schema::normalize_website_url)
+                {
+                    Some(url) => {
+                        self.website_field.update(cx, |f, cx| f.set_text(&url, cx));
+                        self.add_website_to_agenda(cx);
+                    }
+                    None => self.set_status(
+                        cx,
+                        "Website item: type a page URL first (Background > Website field — example.com/live or a YouTube link).",
+                    ),
+                }
+            }
             "save" => self.save_agenda(cx),
             "save-as" => {
                 self.agenda_file_open = true;
@@ -2993,18 +3170,28 @@ impl Root {
     /// Returns true when a pump was running. The last frame stays as the
     /// poster still — the room never flashes to black.
     pub(crate) fn stop_motion(&mut self) -> bool {
+        let mut was = false;
         if let Some(mut pump) = self.motion.take() {
             pump.stop();
-            self.motion_frame = None;
-            true
-        } else {
-            false
+            was = true;
         }
+        // Dropping the in-house run stops its decoder thread (Drop flag).
+        if self.loop_player.take().is_some() {
+            was = true;
+        }
+        // A paused loop also holds a frozen frame; after navigation it
+        // must go, or it would keep rendering behind the next slide.
+        let was_paused = self.loop_paused.take().is_some();
+        if was || was_paused {
+            self.motion_frame = None;
+        }
+        was
     }
 
-    /// Play `path` in-app when ffmpeg exists, else report why not. True =
-    /// motion pump running (caller marks launched); false = caller falls
-    /// back (poster still + OS player for standalone, still for loops).
+    /// Play `path` in-app — ffmpeg pipe first (unchanged when it works),
+    /// in-house H.264 decoder when ffmpeg is missing or fails. True =
+    /// motion running (caller marks launched); false = caller falls back
+    /// (poster still + OS player for standalone, still for loops).
     /// Idempotent: the same live source re-arms the tick only.
     pub(crate) fn ensure_motion_for(
         &mut self,
@@ -3019,6 +3206,14 @@ impl Root {
             self.ensure_motion_tick(cx);
             return true;
         }
+        // Native loop already playing this source: same re-arm rule.
+        let same_loop = self.loop_player.as_ref().is_some_and(|l| {
+            l.path.as_path() == path && l.loop_play == loop_play
+        });
+        if same_loop {
+            self.ensure_motion_tick(cx);
+            return true;
+        }
         self.stop_motion();
         match MotionPump::start(path, MOTION_FPS, loop_play, 0.0) {
             Ok(pump) => {
@@ -3027,18 +3222,49 @@ impl Root {
                 self.set_status(cx, format!("Playing in-app — {}.", path.display()));
                 true
             }
-            Err(e) => {
-                self.set_status(cx, format!("In-app motion off ({e})"));
-                false
-            }
+            Err(e) => match crate::loop_video::LoopRun::start(path, loop_play) {
+                Some(run) => {
+                    self.loop_player = Some(run);
+                    self.ensure_motion_tick(cx);
+                    self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                    true
+                }
+                None => {
+                    self.set_status(cx, format!("In-app motion off ({e})"));
+                    false
+                }
+            },
         }
     }
 
     /// Pause/resume in-app motion (transport button). True when a pump
     /// owned the press. Pause kills the pump and freezes the clock; resume
-    /// restarts at the tracked offset — universal, no IPC.
+    /// restarts at the tracked offset — universal, no IPC. The native
+    /// loop twin: pause stashes (path, loop-play) and drops the decoder
+    /// thread; resume restarts it from zero (no position tracking yet),
+    /// and its frozen JPEG stays frozen via `loop_paused` + `motion_frame`.
     pub(crate) fn motion_toggle_pause(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(pump) = self.motion.as_mut() else {
+            // No ffmpeg pump: delegate to the native loop / its pause stash.
+            if let Some(run) = self.loop_player.take() {
+                let (path, loop_play) = (run.path.clone(), run.loop_play);
+                self.loop_paused = Some((path, loop_play));
+                self.set_status(cx, "Paused — still frame held.");
+                cx.notify();
+                return true;
+            }
+            if let Some((path, loop_play)) = self.loop_paused.take() {
+                match crate::loop_video::LoopRun::start(&path, loop_play) {
+                    Some(run) => {
+                        self.loop_player = Some(run);
+                        self.ensure_motion_tick(cx);
+                        self.set_status(cx, "Playing in-app.");
+                    }
+                    None => self.set_status(cx, "Resume failed."),
+                }
+                cx.notify();
+                return true;
+            }
             return false;
         };
         if pump.paused() {
@@ -3065,9 +3291,11 @@ impl Root {
     /// 1000/fps tick loop while a pump runs (mirrors `ensure_clock_tick`).
     /// Each piped frame replaces the live bytes + republishes, so preview
     /// and projector move together; an ended standalone clip stops the
-    /// pump and keeps its last frame as a still.
+    /// pump and keeps its last frame as a still. The native loop polls
+    /// through the same channel (decoded JPEG bytes, clock-wrapped);
+    /// a single-pass loop run ends here exactly like ffmpeg's clip end.
     fn ensure_motion_tick(&mut self, cx: &mut Context<Self>) {
-        if self.motion_ticking || self.motion.is_none() {
+        if self.motion_ticking || (self.motion.is_none() && self.loop_player.is_none()) {
             return;
         }
         self.motion_ticking = true;
@@ -3083,13 +3311,20 @@ impl Root {
                         .update(&mut async_cx, |this: &mut Root, cx| {
                             // Poll first (borrows only the pump), then act:
                             // method calls below need `this` free.
-                            let mut ended = this.motion.is_none();
+                            let mut ended = this.motion.is_none() && this.loop_player.is_none();
                             let mut fresh: Option<Arc<Vec<u8>>> = None;
                             if let Some(pump) = this.motion.as_mut() {
                                 if let Some(frame) = pump.read_frame() {
                                     fresh = Some(Arc::new(frame));
                                 }
                                 if !pump.alive() {
+                                    ended = true;
+                                }
+                            } else if let Some(run) = this.loop_player.as_ref() {
+                                if let Some(frame) = run.frame_jpeg() {
+                                    fresh = Some(frame);
+                                }
+                                if run.finished() {
                                     ended = true;
                                 }
                             }
@@ -3102,7 +3337,8 @@ impl Root {
                                 this.set_status(cx, "Video ended — last frame held.");
                                 this.republish(cx);
                             }
-                            let done = ended || this.motion.is_none();
+                            let done = ended
+                                || (this.motion.is_none() && this.loop_player.is_none());
                             if done {
                                 this.motion_ticking = false;
                             }
@@ -3168,7 +3404,9 @@ impl Root {
         // standalone clip owns the pump; otherwise motion stops and the
         // poster still stands.
         if standalone_live {
-            if self.motion.as_ref().is_some_and(|m| m.loop_play) {
+            if self.motion.as_ref().is_some_and(|m| m.loop_play)
+                || self.loop_player.as_ref().is_some_and(|l| l.loop_play)
+            {
                 self.stop_motion();
             }
         } else if self.bg_kind == BackgroundKind::VideoLoop {
@@ -3244,10 +3482,30 @@ impl Root {
             len,
         );
         let slide = frame.item.and_then(|_| slides.get(frame.slide).cloned());
-        let (header, lines, footer) = match slide {
+        let (mut header, mut lines, mut footer) = match slide {
             Some(s) => (s.header, s.lines, s.footer),
             None => (String::new(), Vec::new(), String::new()),
         };
+        // Transparent-overlay rule (FreeShow-matching): when the live web view
+        // is painting this website slide's page on top, the projector must NOT
+        // also draw the URL tile underneath — the overlay carries the content
+        // and the projector carries the background only. FreeShow never puts
+        // a URL on the wall either: remote pages only ever appear in their
+        // hover/navigation controls.
+        if overlay_covers_slide(
+            self.live_web_on,
+            self.live_view_url.as_deref(),
+            live_web::live_url_for_slide(&Slide::text(
+                header.clone(),
+                lines.clone(),
+                footer.clone(),
+            ))
+            .as_deref(),
+        ) {
+            header.clear();
+            lines.clear();
+            footer.clear();
+        }
         let (luminosity, lum_source) = match self.bg_kind {
             BackgroundKind::Image | BackgroundKind::VideoLoop => {
                 let chain = if self.bg_kind == BackgroundKind::Image {
@@ -3634,6 +3892,32 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         self.select_song_ex(cx, idx, false);
     }
 
+    /// Clear the editor's song selection (browser re-click on the selected
+    /// row). The document empties and the centre shows the instructional
+    /// no-song panel; projection is untouched — deselecting is an editing
+    /// gesture, never a live-state change.
+    fn deselect_song(&mut self, cx: &mut Context<Self>) {
+        if self.song_dirty {
+            // Belt-and-braces behind `song_click_target`'s dirty veto:
+            // never unmount unsaved lyrics — the operator saves (Ctrl+S)
+            // and re-clicks to close the song.
+            self.set_status(
+                cx,
+                "Unsaved lyrics — save first (Ctrl+S), then click again to close the song.",
+            );
+            cx.notify();
+            return;
+        }
+        self.sel_song = None;
+        self.song_dirty = false;
+        self.sel_block = None;
+        self.lyrics_doc.update(cx, |d, cx| d.set_text("", cx));
+        self.number_field.update(cx, |f, cx| f.set_text("", cx));
+        self.song_title_field.update(cx, |f, cx| f.set_text("", cx));
+        self.set_status(cx, "Song deselected — click a song to open it again.");
+        cx.notify();
+    }
+
     fn select_song_ex(&mut self, cx: &mut Context<Self>, idx: usize, punch_through: bool) {
         if self.shield_blocks_browse() && self.live_item.is_some() && !punch_through {
             self.set_status(
@@ -3816,6 +4100,42 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 );
             }
             Err(e) => self.set_status(cx, format!("Could not save: {e}")),
+        }
+    }
+
+    /// Export the selected song as a pretty-printed Song JSON file via the
+    /// OS save dialog. The export does not touch the library copy and does
+    /// not clear the dirty flag — it is a copy, not a save. Cancel / headless
+    /// keeps prior behavior silently (no write, no status change).
+    fn export_song_document(&mut self, cx: &mut Context<Self>) {
+        let Some(song) = self
+            .sel_song
+            .and_then(|si| self.songs.get(si))
+            .cloned()
+        else {
+            self.set_status(cx, "No song selected — nothing to export.");
+            return;
+        };
+        let suggested = crate::file_picker::song_export_filename(&song.title);
+        let picked = crate::file_picker::pick_save(
+            "Export song",
+            &[("Song JSON", &["json"])],
+            &suggested,
+            None,
+        );
+        let Some(path) = picked else { return };
+        match serde_json::to_string_pretty(&song)
+            .map_err(|e| e.to_string())
+            .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()))
+        {
+            Ok(_) => {
+                // NOTE: song exports are deliberately NOT pushed to recents.
+                // Recents drive boot restore (newest-only); a song path as
+                // newest recent would fail agenda parse and silently boot
+                // the sample instead of the saved agenda (R2-SONG-01).
+                self.set_status(cx, format!("Exported {} to {}.", song.title, path.display()));
+            }
+            Err(e) => self.set_status(cx, format!("Export failed: {e}")),
         }
     }
 
@@ -4258,11 +4578,26 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     }
 
     fn save_agenda(&mut self, cx: &mut Context<Self>) {
-        let path = self.path_field.read(cx).text();
-        let path = if path.trim().is_empty() {
-            "agenda.json".into()
+        let typed = self.path_field.read(cx).text();
+        let trimmed = typed.trim();
+        // Known path = plain Save (a modal Save-As every Ctrl+S steals
+        // focus mid-service while the room keeps the previous file).
+        // Unknown path opens the picker; headless cancel falls back via
+        // `resolve_save_path` (typed path, then the default). The match is
+        // case-insensitive (`SONG.JSON` from Explorer is still a save).
+        let path = if trimmed.to_lowercase().ends_with(".json") {
+            trimmed.to_string()
         } else {
-            path.trim().to_string()
+            let suggested = crate::file_picker::suggested_file_name(&typed, "agenda.json");
+            let picked = crate::file_picker::pick_save(
+                "Save agenda",
+                &[("Agenda JSON", &["json"])],
+                &suggested,
+                crate::file_picker::typed_parent_dir(&typed).as_deref(),
+            );
+            crate::file_picker::resolve_save_path(&typed, picked, "agenda.json")
+                .to_string_lossy()
+                .to_string()
         };
         let json = self
             .agenda
@@ -4347,6 +4682,42 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// agenda item at the ends — the original's behavior at the end of a song
     /// is to continue with the following item.
     fn step_slide(&mut self, dir: i32, cx: &mut Context<Self>) {
+        if self.live_item.is_none() {
+            // Cold Enter: nothing is projecting yet — project the operator's
+            // current context instead of no-op'ing. Agenda cursor first, then
+            // the item holding the clicked verse, else the first item; the
+            // clicked verse wins its slide via `goto_song_verse` (slide-0
+            // fallback). Empty agenda stays a status message, never a panic.
+            let owned: Vec<(usize, Vec<String>)> = (0..self.agenda.items.len())
+                .map(|i| {
+                    let headers = self
+                        .item_slides(i)
+                        .iter()
+                        .filter_map(|s| slide_verse_id(&s.header))
+                        .collect();
+                    (i, headers)
+                })
+                .collect();
+            let want = self.sel_block.clone();
+            match cold_start_index(
+                self.sel_item,
+                want.as_deref(),
+                self.agenda.items.len(),
+                &|vid| {
+                    owned
+                        .iter()
+                        .find(|(_, hs)| hs.iter().any(|h| h == vid))
+                        .map(|(i, _)| *i)
+                },
+            ) {
+                Some(i) => match want {
+                    Some(vid) => self.goto_song_verse(cx, i, &vid),
+                    None => self.show_live(cx, i),
+                },
+                None => self.set_status(cx, "Enter: agenda is empty — add an item first."),
+            }
+            return;
+        }
         let n = self.live_slides().len();
         if n == 0 {
             return;
@@ -4627,6 +4998,14 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 "Shield off."
             },
         );
+    }
+
+    /// Return to the full control workspace (menu row): viewer off, layout
+    /// persisted, repaint. Every menu item except View routes through here.
+    fn show_control(&mut self, cx: &mut Context<Self>) {
+        self.viewer_mode = false;
+        self.persist_layout_quiet();
+        cx.notify();
     }
 
     /// `Ctrl+E`: Viewer ↔ Edit mode. Viewer hides the ribbon and editors so a
@@ -5086,7 +5465,6 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
 
     // ------------------------------------------------------------- export
 
-    #[allow(dead_code)] // export actions, kept for menu rewire
     fn print_booklet(&mut self, cx: &mut Context<Self>) {
         // The booklet prints songs: resolve the songs chain, same as the
         // projector does for song items.
@@ -5128,13 +5506,25 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             }
         }
         html.push_str("</div></body></html>");
-        match std::fs::write("print-booklet.html", &html) {
-            Ok(_) => self.set_status(cx, "Booklet written to print-booklet.html"),
+        let picked = crate::file_picker::pick_save(
+            "Export booklet",
+            &[("HTML", &["html"])],
+            crate::file_picker::BOOKLET_FALLBACK_FILENAME,
+            None,
+        );
+        let path = crate::file_picker::resolve_save_path(
+            "",
+            picked,
+            crate::file_picker::BOOKLET_FALLBACK_FILENAME,
+        )
+        .to_string_lossy()
+        .to_string();
+        match std::fs::write(&path, &html) {
+            Ok(_) => self.set_status(cx, format!("Booklet written to {path}")),
             Err(e) => self.set_status(cx, format!("Booklet failed: {e}")),
         }
     }
 
-    #[allow(dead_code)] // kept for menu rewire
     fn import_pptx(&mut self, cx: &mut Context<Self>) {
         let path = self.pptx_field.read(cx).text();
         match std::fs::read(path.trim()) {
@@ -5225,7 +5615,7 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// The file itself is never modified (read-only import).
     fn import_songbook_file(&mut self, cx: &mut Context<Root>) {
         let Some(picked) =
-            crate::file_picker::pick_file("Import songbook", &[("Songbook", &["json", "vpc"])])
+            crate::file_picker::pick_file("Import songbook", &[crate::file_picker::SONGBOOK_FILTER])
         else {
             self.set_status(cx, "Browse cancelled — no file chosen.");
             return;
@@ -5281,13 +5671,21 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     fn open_native_folder(&mut self, cx: &mut Context<Self>) {
         let typed = self.native_path_field.read(cx).text();
         let folder = if typed.trim().is_empty() {
-            // Same search the picker starts in: explicit override, the
-            // vendor's public-documents home, then the operator's own.
-            match crate::file_picker::videopsalm_start_dir() {
-                Some(dir) => dir.to_string_lossy().into_owned(),
-                None => {
-                    self.set_status(cx, "Enter the VideoPsalm folder path.");
-                    return;
+            // Empty field: offer the OS folder chooser first; headless
+            // cancel falls through to the known-folder search (explicit
+            // override, the vendor's public-documents home, then the
+            // operator's own).
+            if let Some(picked) = crate::file_picker::pick_folder("Select the VideoPsalm document folder") {
+                let s = picked.to_string_lossy().into_owned();
+                self.native_path_field.update(cx, |f, cx| f.set_text(&s, cx));
+                s
+            } else {
+                match crate::file_picker::videopsalm_start_dir() {
+                    Some(dir) => dir.to_string_lossy().into_owned(),
+                    None => {
+                        self.set_status(cx, "Enter the VideoPsalm folder path.");
+                        return;
+                    }
                 }
             }
         } else {
@@ -5329,6 +5727,22 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 },
             );
         }
+        // Style-driven background (mirror Electron applyVpFolderResult):
+        // explicit open always applies the RootStyle-preferred background.
+        if let Some(bg) = vp_core::native_folder::pick_style_background(&scan.backgrounds) {
+            self.bg_kind = if bg.kind == "videoLoop" {
+                BackgroundKind::VideoLoop
+            } else {
+                BackgroundKind::Image
+            };
+            self.bg_file = Some(PathBuf::from(&bg.file));
+            // One background at a time: a file background clears any
+            // website background (and vice versa in the UI).
+            self.bg_website = None;
+            self.persist_layout_quiet();
+            crate::presentation::publish(self, cx);
+            msg.push_str(&format!(" background → {}.", PathBuf::from(&bg.file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| bg.file.clone())));
+        }
         let q = self.search_field.read(cx).text();
         self.refresh_search(&q, cx);
         self.set_status(cx, msg);
@@ -5339,12 +5753,24 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// projections). Plan songs join the library only when it lacks them;
     /// plan media is extracted next to the plan file.
     fn import_native_plan(&mut self, cx: &mut Context<Self>) {
-        let path = self.native_path_field.read(cx).text();
-        let path = path.trim().to_string();
-        if path.is_empty() {
-            self.set_status(cx, "Enter the .vpagd plan path to import.");
-            return;
-        }
+        let typed = self.native_path_field.read(cx).text();
+        let path = if typed.trim().is_empty() {
+            // Empty field: offer the OS chooser (headless cancel falls
+            // through to the instruct message).
+            match crate::file_picker::pick_file("Import native plan", &[crate::file_picker::VPAGD_FILTER]) {
+                Some(picked) => {
+                    let s = picked.to_string_lossy().into_owned();
+                    self.native_path_field.update(cx, |f, cx| f.set_text(&s, cx));
+                    s
+                }
+                None => {
+                    self.set_status(cx, "Enter the .vpagd plan path to import.");
+                    return;
+                }
+            }
+        } else {
+            typed.trim().to_string()
+        };
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
@@ -5418,23 +5844,22 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// opens in VideoPsalm itself (`Agenda.LoadFromFile`). Songs resolve
     /// against the library; verse texts resolve against installed Bibles.
     fn export_native_plan(&mut self, cx: &mut Context<Self>) {
-        let path = self.native_path_field.read(cx).text();
-        let path = if path.trim().is_empty() || !path.trim().to_lowercase().ends_with(".vpagd") {
-            let safe: String = self
-                .agenda
-                .title
-                .chars()
-                .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
-                .collect();
-            let file = if safe.trim().is_empty() {
-                "agenda.vpagd".to_string()
-            } else {
-                format!("{}.vpagd", safe.trim())
-            };
-            file
-        } else {
-            path.trim().to_string()
-        };
+        let typed = self.native_path_field.read(cx).text();
+        let suggested = crate::file_picker::suggested_file_name(
+            &typed,
+            &crate::file_picker::vpagd_fallback_path(&self.agenda.title),
+        );
+        let start = crate::file_picker::typed_parent_dir(&typed);
+        let picked = crate::file_picker::pick_save(
+            "Export native plan (.vpagd)",
+            &[("VideoPsalm plan", &["vpagd"])],
+            &suggested,
+            start.as_deref(),
+        );
+        let path =
+            crate::file_picker::resolve_vpagd_path(&typed, picked, &self.agenda.title)
+                .to_string_lossy()
+                .to_string();
         let songs = self.song_map();
         match vp_core::native_agenda::write_plan_file(&path, &self.agenda, &songs, &self.bibles) {
             Ok(built) => {
@@ -5474,6 +5899,15 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 SaveTarget::Agenda => {}
             }
         }
+        // Stage is a read-only view: Escape always returns to Control, and
+        // this must run BEFORE the lyrics-document vocabulary gate below —
+        // Esc is slide vocabulary, the document keeps focus while unmounted,
+        // and that gate is what made Stage a trap (R-Compression fail).
+        if key == PresKey::EndPres && self.mode == Mode::Stage {
+            self.ui_go(Mode::Control, cx);
+            self.focus_root(window);
+            return;
+        }
         // The lyrics document: the slide vocabulary is suppressed, so typing a
         // `1` or a `V` in a lyric line never jumps a slide — and `Enter`
         // stays a line break inside the verse, never "next slide"
@@ -5512,17 +5946,11 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             return;
         }
         // While a text field has focus only the non-character shortcuts work,
-        // so on-the-fly lyric edits are never interrupted.
+        // so on-the-fly lyric edits are never interrupted. F5 (start) is
+        // explicitly whitelisted: it never types, and "F5 start" is on the
+        // status bar as a global promise.
         let typing = self.editing(window, cx);
-        if typing
-            && !matches!(
-                key,
-                PresKey::RangeExtendEnd
-                    | PresKey::RangeShrinkEnd
-                    | PresKey::ToggleRibbon
-                    | PresKey::KeyTips
-            )
-        {
+        if typing && !pres_key_passes_while_editing(key) {
             return;
         }
         match key {
@@ -5551,7 +5979,31 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             PresKey::ToggleShield => self.toggle_shield(cx),
             PresKey::ToggleFreeze => self.toggle_freeze(cx),
             PresKey::ToggleMode => self.toggle_viewer_mode(cx),
-            PresKey::StartPres => self.start_presentation(cx),
+            // Electron F5 parity (presKeys §F5 block, RESEARCH-weebly §1.6):
+            // F5 restarts from the beginning (startPres) normally, but
+            // play/pause when a video/audio player owns focus — "which is
+            // also what a Logitech R400 sends" (1.27b). This port has no
+            // focusable player widget, so "owns focus" is the live in-app
+            // media session: `motion_toggle_pause` proves ownership by
+            // answering the press (pump alive/paused or any loop session);
+            // only when nothing media owns the press does F5 restart the
+            // show from the beginning (startPres), exactly as Electron's
+            // mediaFocused=false branch does.
+            PresKey::StartPres => {
+                // Only a launched standalone clip owns the press (see
+                // `f5_hands_to_motion`): the background VideoLoop must
+                // never swallow F5 — the status bar promises "F5 start".
+                let motion_live = self.motion.as_mut().is_some_and(|m| m.alive())
+                    || self.loop_player.is_some()
+                    || self.loop_paused.is_some();
+                let hand_to_motion = f5_hands_to_motion(
+                    self.media_launched_for.is_some(),
+                    motion_live,
+                );
+                if !(hand_to_motion && self.motion_toggle_pause(cx)) {
+                    self.start_presentation(cx);
+                }
+            }
             PresKey::ToggleRibbon => {
                 let to = !self.ribbon_collapsed;
                 self.set_ribbon_collapsed(cx, to);
@@ -5578,7 +6030,7 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
                 window.focus(&h);
                 cx.notify();
             }
-            PresKey::FocusSlides => self.ui_go(Mode::Projector, cx),
+            PresKey::FocusSlides => self.ui_go(focus_slides_target(self.mode), cx),
             PresKey::PptxNext => self.pptx_advance(cx),
             PresKey::RangeExtendEnd => self.adjust_range(cx, 0),
             PresKey::RangeShrinkEnd => self.adjust_range(cx, 1),
@@ -5622,9 +6074,9 @@ pub(crate) fn btn(
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
     let shield = active && ui.accent == SHIELD_ARMED;
-    // The outline only thickens when a control is actually engaged — a 2px
-    // border on every button at rest turns the whole ribbon into a grid of
-    // boxes and reads as noise.
+    // Sheet chips: an ON control is filled signal red with readable ink;
+    // the orange 2px edge stays so engagement still reads at a glance.
+    // The shield keeps its own armed-red fill with ink to match.
     let border = if shield {
         SHIELD_ARMED
     } else if active {
@@ -5633,11 +6085,25 @@ pub(crate) fn btn(
         ui.border
     };
     let mut d = div()
-        .px_2()
-        .py(px(2.))
+        .px(px(crate::ux::RIBBON_BTN_PX))
+        .py(px(crate::ux::RIBBON_BTN_PY))
+        // One 11px control row never collapses below its line box.
+        .min_h(px(crate::ux::RIBBON_LINE_PX))
         .rounded_sm()
-        .bg(if shield { SHIELD_ARMED } else { ui.panel })
-        .text_color(if shield { ink_on(SHIELD_ARMED) } else { ui.fg })
+        .bg(if shield {
+            SHIELD_ARMED
+        } else if active {
+            ui.selection
+        } else {
+            ui.panel
+        })
+        .text_color(if shield {
+            ink_on(SHIELD_ARMED)
+        } else if active {
+            ui.selection_ink
+        } else {
+            ui.fg
+        })
         .cursor_pointer()
         .child(label.to_string());
     d = if active {
@@ -5710,8 +6176,8 @@ pub(crate) fn btn_tip(
 /// No click handler, default cursor.
 pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
     div()
-        .px_2()
-        .py(px(3.))
+        .px(px(crate::ux::RIBBON_BTN_PX))
+        .py(px(crate::ux::RIBBON_BTN_PY))
         .rounded_sm()
         .bg(ui.panel)
         .text_color(ui.border)
@@ -5720,13 +6186,164 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
         .child(label.to_string())
 }
 
+/// File-kind word for an agenda file row (sheet meta sublines:
+/// "Video · muted", "Image · Cover"). Pure; tested below.
+/// Live value between the A− / A+ stepper keys: fixed-width, centred, so the
+/// number never drifts as digits change and reads as the control's value
+/// rather than a caption beside it.
+fn font_size_readout(ui: &UI, value: i32) -> Div {
+    div()
+        .w(px(26.))
+        .min_h(px(crate::ux::RIBBON_LINE_PX))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .text_color(ui.fg)
+        .child(value.to_string())
+}
+
+/// True when the live web overlay is painting the slide that is on the wall
+/// (pure, tested). FreeShow's rule, adopted here: the wall shows the page (or
+/// the background it composites over), never the address — so the host drops
+/// the URL tile for exactly the slide the overlay is showing, and for no
+/// other. Live off, or a different URL showing, keeps the offline tile.
+fn overlay_covers_slide(live_on: bool, showing: Option<&str>, slide_url: Option<&str>) -> bool {
+    live_on && matches!((showing, slide_url), (Some(a), Some(b)) if a == b)
+}
+
+/// Whether F5 hands the press to in-app motion first (pure, tested): only
+/// a launched standalone clip owns it — never the background VideoLoop,
+/// never silence. The background loop has its own transport button; F5 is
+/// the show-start key (see `PresKey::StartPres` + `motion_toggle_pause`).
+fn f5_hands_to_motion(standalone_launched: bool, motion_live: bool) -> bool {
+    standalone_launched && motion_live
+}
+
+/// Browser-list selection after a click on row `clicked` (pure, tested).
+/// Clicking the row that is already selected toggles it OFF — the browser is
+/// the selection surface, and deselecting is the only gesture that reaches
+/// the empty-editor state (no song open). Any other row selects normally.
+/// A dirty editor vetoes the toggle: re-clicking keeps the song open until
+/// the operator saves, so typed lyrics are never silently discarded.
+fn song_click_target(
+    current: Option<usize>,
+    clicked: usize,
+    song_dirty: bool,
+) -> Option<usize> {
+    if current == Some(clicked) {
+        if song_dirty {
+            current
+        } else {
+            None
+        }
+    } else {
+        Some(clicked)
+    }
+}
+
+/// `--stage-url <URL>` boot hook (pure, tested): the value after the flag,
+/// if any. Used to prove a stage server end to end; absent in normal runs.
+fn stage_url_arg(args: &[String]) -> Option<String> {
+    args.windows(2)
+        .find(|w| w[0] == "--stage-url")
+        .map(|w| w[1].clone())
+}
+
+/// Wrapped instructional sentence for the empty states: full width, wraps,
+/// never clipped at a pane edge.
+fn wrap_note(ui: &UI, text: &str) -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .whitespace_normal()
+        .text_size(px(12.))
+        .text_color(ui.fg)
+        .child(text.to_string())
+}
+
+fn file_kind_label(ext: &str) -> &'static str {
+    match ext {
+        "mp4" | "mov" | "avi" | "mkv" | "webm" => "video",
+        "mp3" | "wav" | "ogg" | "flac" | "m4a" => "audio",
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" => "image",
+        "pdf" => "document",
+        "ppt" | "pptx" | "odp" => "slides",
+        "doc" | "docx" | "odt" => "document",
+        "xls" | "xlsx" | "ods" | "csv" => "sheet",
+        _ => "file",
+    }
+}
+
+/// Host of a URL row ("link · youtube.com"), empty when unparseable.
+/// Pure; tested below.
+fn url_host(url: &str) -> &str {
+    url.split('/').nth(2).unwrap_or("")
+}
+
+/// Chord symbols used in lyrics (`[C]`, `[Am7]`), in first-appearance
+/// order, duplicates removed. Pure; tested below. Powers the Chords tab:
+/// the tab is a real derived view, not a second copy of the document.
+fn lyric_chords(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            if let Some(end) = text[i..].find(']') {
+                let inner = text[i + 1..i + end].trim();
+                let mut chars = inner.chars();
+                let head_ok = matches!(chars.next(), Some('A'..='G'));
+                let rest_ok = inner.chars().skip(1).all(|c| {
+                    c.is_ascii_alphanumeric() || "+-#bmaj7susdim".contains(c)
+                });
+                if head_ok && rest_ok && !inner.is_empty() && inner.len() <= 12 {
+                    if !out.iter().any(|s| s == inner) {
+                        out.push(inner.to_string());
+                    }
+                }
+                i += end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// FreeShow-style output caption for a control-window picture card: a tiny
+/// uppercase label in the card's top-left corner. Visual only — drawn on the
+/// control window's own div, never inside the projector snapshot, so the room
+/// and the real projector window are untouched.
+pub(crate) fn card_caption(text: &str) -> Div {
+    div()
+        .absolute()
+        .top(px(4.))
+        .left(px(6.))
+        .text_size(px(9.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(rgb(0xBBBBBB))
+        .child(text.to_string())
+}
+
+/// Sheet `.kbd` key chip: bordered key name on paper. Used by the status
+/// bar shortcut hints — keys read as keys, not prose.
+pub(crate) fn kbd(ui: &UI, key: &str) -> Div {
+    div()
+        .border_1()
+        .border_color(ui.border)
+        .rounded_sm()
+        .px(px(5.))
+        .text_size(px(10.))
+        .bg(ui.panel)
+        .child(key.to_string())
+}
+
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
-    // VideoPsalm panel chrome (agenda-panel.png / slides-panel.png): a light-
-    // blue header bar with dark-blue bold text sits on a white panel with a
-    // thin steel border. The old plain 13px label on a transparent panel with
-    // a bright-blue edge read as a wireframe next to the original.
-    let header_bg = rgb(0xC9DDF3);
-    let header_ink = rgb(0x1E3A5F);
+    // Signal Room cards (sheet section 1): white card, bold ink title.
+    // Red is reserved for the title strip, primary buttons, selected rows.
+    let header_bg = ui.panel;
+    let header_ink = ui.fg;
     let mut col = div()
         .flex()
         .flex_col()
@@ -5764,16 +6381,14 @@ pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
 /// Compact ribbon group box: wrapped controls + small caption BELOW.
 ///
 /// 1.29 lays group names UNDER their controls (SCREENSHOT-1.29-LAYOUT.md
-/// §Ribbon: `caption` labels BELOW the controls). The old caption-on-top
-/// with accent color read as a second tab row next to the original's soft
-/// gray captions under light-blue groups.
+/// §Ribbon: `caption` labels BELOW the controls).
 fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(1.))
-        .px(px(6.))
-        .py(px(2.))
+        .gap(px(crate::ux::RIBBON_GROUP_PY))
+        .px(px(crate::ux::RIBBON_GROUP_PX))
+        .py(px(crate::ux::RIBBON_GROUP_PY))
         .rounded_sm()
         .border_1()
         .border_color(ui.border)
@@ -5783,7 +6398,7 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .gap_1()
+                .gap(px(2.))
                 .items_center()
                 .children(kids),
         )
@@ -5791,7 +6406,7 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
             div()
                 .w_full()
                 .text_center()
-                .text_size(px(11.))
+                .text_size(px(crate::ux::RIBBON_TEXT_PX))
                 .text_color(rgb(0x5B6B82))
                 .child(caption.to_string()),
         )
@@ -5808,14 +6423,14 @@ fn swatch(
 ) -> Div {
     let ink = hex(color_hex);
     div()
-        .px_2()
-        .py(px(3.))
+        .px(px(crate::ux::RIBBON_BTN_PX))
+        .py(px(crate::ux::RIBBON_BTN_PY))
         .rounded_sm()
         .border_1()
         .border_color(if active { ui.fg } else { ui.border })
         .bg(if active { ui.panel } else { ui.bg })
         .cursor_pointer()
-        .text_size(px(16.))
+        .text_size(px(13.))
         .text_color(ink)
         .child("A".to_string())
         .on_mouse_up(MouseButton::Left, cx.listener(f))
@@ -5963,8 +6578,8 @@ fn section_scrolled_with_rail(
                 .px(px(6.))
                 .py(px(3.))
                 .rounded_sm()
-                .bg(rgb(0xC9DDF3))
-                .text_color(rgb(0x1E3A5F))
+                .bg(ui.panel)
+                .text_color(ui.fg)
                 .text_size(px(13.))
                 .font_weight(FontWeight::BOLD)
                 .child(title.to_string()),
@@ -6035,6 +6650,72 @@ fn live_mode_target(current: Mode, projector_window_open: bool) -> Mode {
     }
 }
 
+/// `F6` round-trips the single-screen projector tab: Control (or Stage)
+/// visits the projector; from the projector it returns home to Control.
+/// Without the way back, going live single-screen stranded the operator —
+/// `Esc` is deliberately disabled while projecting and nothing else left
+/// the projector tab. The room keeps projecting either way (the live
+/// snapshot is untouched; only the control window's own tab changes).
+fn focus_slides_target(current: Mode) -> Mode {
+    match current {
+        Mode::Projector | Mode::Stage => Mode::Control,
+        Mode::Control => Mode::Projector,
+    }
+}
+
+/// Menu-row `Stage view` round-trip (pure, tested): Stage is a view, not a
+/// trap. Second press returns to Control; every other mode enters Stage.
+fn stage_toggle_target(current: Mode) -> Mode {
+    if current == Mode::Stage {
+        Mode::Control
+    } else {
+        Mode::Stage
+    }
+}
+
+/// Keys that keep working while a text field has focus (pure, tested):
+/// range extend/shrink, ribbon toggle, KeyTips — and F5 (start), which
+/// never types and is promised globally on the status bar. Everything
+/// else (slide vocabulary, letters, Enter) stays local to the field so
+/// lyric edits are never interrupted.
+fn pres_key_passes_while_editing(key: PresKey) -> bool {
+    matches!(
+        key,
+        PresKey::RangeExtendEnd
+            | PresKey::RangeShrinkEnd
+            | PresKey::ToggleRibbon
+            | PresKey::KeyTips
+            | PresKey::StartPres
+    )
+}
+
+/// Cold-Enter target (pure, tested): nothing is projecting yet, so Enter
+/// projects the operator's current context — agenda cursor first, then the
+/// item holding the clicked verse, else the first item. Empty agenda
+/// yields `None` (the caller keeps a status message, never a panic).
+fn cold_start_index(
+    sel_item: Option<usize>,
+    sel_block: Option<&str>,
+    agenda_len: usize,
+    verse_owner: &dyn Fn(&str) -> Option<usize>,
+) -> Option<usize> {
+    if agenda_len == 0 {
+        return None;
+    }
+    if let Some(i) = sel_item {
+        return Some(i);
+    }
+    if let Some(want) = sel_block {
+        if let Some(i) = verse_owner(want) {
+            return Some(i);
+        }
+    }
+    if agenda_len > 0 {
+        return Some(0);
+    }
+    None
+}
+
 /// Pick the bilingual second translation (pure, tested): the operator's
 /// favorite when one is installed and isn't the current translation, else
 /// the first installed id that isn't current. Never the current twice.
@@ -6103,7 +6784,14 @@ pub(crate) fn row(kids: Vec<Div>) -> Div {
 /// document scrolls internally. Without `min_h_0` a tall wrapped footer
 /// pushes the Save row beneath the panel fold with no way to reach it.
 fn document_wrap(doc: gpui::Entity<DocField>) -> Div {
-    div().flex_1().min_h_0().overflow_hidden().child(doc)
+    // The lyrics document is the visual anchor of the control window
+    // (sheet page 01): never shorter than 340px, even on short windows.
+    div()
+        .flex_1()
+        .min_h_0()
+        .min_h(px(340.))
+        .overflow_hidden()
+        .child(doc)
 }
 /// past a fixed-width panel (the 360px agenda column plus Browse buttons
 /// overflowed and clipped button labels — WI-024).
@@ -6120,6 +6808,17 @@ pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
         .text_size(px(size_px))
         .text_color(ui.fg)
         .child(text.to_string())
+}
+
+/// The live cue tag (DESIGN.md signature component): the word LIVE in bold
+/// on the lime row — color plus label, never color alone. The row behind it
+/// already carries the lime fill; the tag itself is transparent.
+pub(crate) fn live_tag(ui: &UI) -> Div {
+    div()
+        .text_size(px(10.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(ui.live_ink)
+        .child("● LIVE".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -6164,6 +6863,16 @@ impl Render for Root {
             // utility toolbar. Keep those actions reachable from Message (the
             // stage/live workspace) instead of adding a non-original row above
             // the ribbon.
+            root = root.child(self.title_strip(&ui, cx));
+            root = root.child(self.menu_row(&ui, cx));
+            // Sheet position 5: the agenda-file strip runs full width here,
+            // between the menu row and the ribbon — not inside the left
+            // column (R9: sheet-faithful placement).
+            root = root.child(self.agenda_file_strip(&ui, cx));
+            // Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/
+            // View menu row sits at position 2 — directly below the title
+            // strip, above all ribbon strips. Every item drives existing
+            // state — no dead wires.
             root = root.child(self.ribbon_bar(&ui, cx));
         }
         // KeyTips overlay (bare Alt): control mode with chrome only, never
@@ -6172,17 +6881,111 @@ impl Render for Root {
         if self.show_keytips && self.mode == Mode::Control && chrome {
             root = root.child(self.keytips_strip(&ui, cx));
         }
+        // Stage unmounts every field, so the window can end up with nothing
+        // focused and the keymap (Escape / F6) never runs — that is what made
+        // Stage feel like a trap. Re-attach focus to the root on the first
+        // Stage frame; the guard keeps it to one call.
+        if self.mode == Mode::Stage && !self.focus.is_focused(window) {
+            self.focus.focus(window);
+        }
+        // `--stage-demo`: bundled agenda, first item live, Stage view up —
+        // proof scaffolding for the stage cards, off in every normal launch.
+        if self.pending_stage_demo {
+            self.pending_stage_demo = false;
+            if let Ok(a) = Agenda::from_json(AGENDA_SAMPLE) {
+                self.agenda = a;
+            }
+            if !self.agenda.items.is_empty() {
+                self.show_live(cx, 0);
+            }
+            self.mode = Mode::Stage;
+            self.set_status(cx, "Stage demo: sample agenda, first item live.");
+        }
+        // `--stage-url <URL>`: open that page as the live website slide with
+        // the live web view on, so a stage server can be proved end to end
+        // (slide → live view → rendered page). Normal launches never set it.
+        if let Some(url) = self.pending_stage_url.take() {
+            match vp_core::schema::normalize_website_url(&url) {
+                Some(url) => {
+                    self.live_web_on = true;
+                    let item = vp_core::schema::AgendaItem {
+                        id: "stage-url".to_string(),
+                        kind: ItemKind::WebSite,
+                        title: url.clone(),
+                        reference: ItemRef::Url { url: url.clone() },
+                        flow_type: Default::default(),
+                        auto_advance_ms: None,
+                        overrides: Default::default(),
+                    };
+                    self.agenda.items.push(item);
+                    let idx = self.agenda.items.len() - 1;
+                    self.show_live(cx, idx);
+                    self.set_status(cx, format!("Stage URL live: {url}"));
+                }
+                None => self.set_status(cx, format!("--stage-url rejected (need http(s)://): {url}")),
+            }
+        }
         root.child(match self.mode {
             Mode::Control => self.control_view(&ui, cx, target_w, target_h),
             Mode::Projector => self.projector_view(&ui, cx, target_w, target_h),
-            Mode::Stage => self.stage_view(&ui, cx),
+            // Stage is an OVERLAY over the control view, not a replacement:
+            // the editor stays mounted, so window focus, the keymap and the
+            // menu row keep working while Stage is up. Replacing the tree
+            // unmounted every field and left the operator with dead input —
+            // the R-Compression trap.
+            Mode::Stage => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .overflow_hidden()
+                .child(self.control_view(&ui, cx, target_w, target_h))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .bottom(px(0.))
+                        .bg(ui.bg)
+                        .child(self.stage_view(&ui, cx)),
+                ),
         })
         .child(
             div()
                 .px_2()
                 .py(px(2.))
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_1()
+                .items_center()
                 .border_color(ui.border)
-                .child(format!("{} {}", self.t("status"), self.status)),
+                .child(format!("{} {}", self.t("status"), self.status))
+                .child(div().text_size(px(10.5)).child("|".to_string()))
+                .child(kbd(&ui, "Enter"))
+                .child(div().text_size(px(10.5)).child("project".to_string()))
+                .child(kbd(&ui, "F5"))
+                .child(div().text_size(px(10.5)).child("start".to_string()))
+                .child(kbd(&ui, "X"))
+                .child(div().text_size(px(10.5)).child("next".to_string()))
+                .child(kbd(&ui, "F6"))
+                .child(div().text_size(px(10.5)).child("slides".to_string()))
+                .child(kbd(&ui, "Ctrl+S"))
+                .child(div().text_size(px(10.5)).child("save".to_string()))
+                .child(kbd(&ui, "F1"))
+                .child(div().text_size(px(10.5)).child("shortcuts".to_string()))
+                .child(div().flex_1())
+                // FreeShow shows the time prominently; VP1.29 keeps it in the
+                // status area. Read-only view of the app's own clock widget
+                // (elapsed / countdown / stopwatch per clock mode).
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(ui.fg)
+                        .child(format!("◷ {}", self.clock_display())),
+                ),
         )
         // Settings modal paints last: topmost, over ribbon, panels and
         // the status line.
@@ -6271,56 +7074,7 @@ impl Root {
                     cx.notify();
                 },
             ))
-            .child(btn(
-                ui,
-                cx,
-                "Light",
-                self.theme_id == "light",
-                |this, _, _, cx| {
-                    this.theme_id = "light".into();
-                    this.persist_layout_quiet();
-                    // Theme drives the wall's projection colors: publish.
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "Dark",
-                self.theme_id == "dark",
-                |this, _, _, cx| {
-                    this.theme_id = "dark".into();
-                    this.persist_layout_quiet();
-                    // Theme drives the wall's projection colors: publish.
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "Gray",
-                self.theme_id == "gray",
-                |this, _, _, cx| {
-                    this.theme_id = "gray".into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "Blue",
-                self.theme_id == "blue",
-                |this, _, _, cx| {
-                    this.theme_id = "blue".into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                },
-            ))
+            .children(self.theme_choice_buttons(ui, cx))
             .child(btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
                 this.lang = "en".into();
                 this.persist_layout_quiet();
@@ -6363,6 +7117,195 @@ impl Root {
     // Toolbar strip mirroring the original ribbon tabs
     // (File|Agenda|Songs|Bibles|Media|Style|View) as a tab bar + grouped
     // action buttons. All buttons reuse the same handlers as the panels.
+
+    /// Slim signal-red title strip (position 1): brand + agenda name on
+    /// red, paper strips below. The old full-red ribbon band read as one
+    /// oversized block next to the sheet's paper strips (R3).
+    fn title_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py(px(0.))
+            .bg(ui.selection)
+            .text_color(rgb(0xFFFFFF))
+            .text_size(px(10.))
+            .font_weight(FontWeight::BOLD)
+            .child(format!("♪ Perez — {}", self.agenda.title))
+            .child(div().flex_1())
+            .child(btn(ui, cx, "⛶ Go live", false, |this, _, _, cx| {
+                this.go_live(cx);
+            }))
+    }
+
+    /// Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/View
+    /// menu row. Each item drives existing workspace state (ribbon tab,
+    /// browser tab, disclosures, viewer mode) — no dead wires.
+    fn menu_row(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_1()
+            .items_center()
+            .px_2()
+            .py(px(0.))
+            .text_size(px(11.))
+            .bg(ui.panel)
+            .border_b_1()
+            .border_color(ui.border)
+            .child(btn(ui, cx, "File", self.agenda_file_open, |this, _, _, cx| {
+                this.agenda_file_open = !this.agenda_file_open;
+                this.show_control(cx);
+            }))
+            .child(btn(ui, cx, "Agenda", false, |this, _, _, cx| {
+                this.show_control(cx);
+                this.set_status(cx, "Agenda.");
+            }))
+            .child(btn(
+                ui,
+                cx,
+                "Songs",
+                self.left_tab == LeftTab::Songs,
+                |this, _, _, cx| {
+                    this.left_tab = LeftTab::Songs;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Bibles",
+                self.left_tab == LeftTab::Bibles,
+                |this, _, _, cx| {
+                    this.left_tab = LeftTab::Bibles;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Media",
+                self.ribbon == RibbonTab::Background,
+                |this, _, _, cx| {
+                    this.ribbon = RibbonTab::Background;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(
+                ui,
+                cx,
+                "Style",
+                self.show_style_explorer,
+                |this, _, _, cx| {
+                    this.show_style_explorer = !this.show_style_explorer;
+                    this.show_control(cx);
+                },
+            ))
+            .child(btn(ui, cx, "View", self.viewer_mode, |this, _, _, cx| {
+                this.toggle_viewer_mode(cx);
+            }))
+            .child(div().w(px(8.)))
+            // Sheet menu-strip right cluster: Lang · Theme · Monitor · Ratio
+            // indicators (each one cycles on click) plus the primary
+            // Projector button, Stage view and Stop. All drive existing
+            // state — the same actions as the ribbon/settings, surfaced
+            // where the operator's hand already is.
+            .child({
+                let label = format!("Lang: {}", self.lang.to_uppercase());
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    this.lang = if this.lang == "fr" { "en".into() } else { "fr".into() };
+                    this.persist_layout_quiet();
+                    cx.notify();
+                })
+            })
+            .child({
+                // Current values ride in the label; the button cycles.
+                let label = format!(
+                    "{}: {}",
+                    "Theme",
+                    vp_core::themes::theme_by_id(&self.theme_id)
+                        .map(|t| t.name)
+                        .unwrap_or("Light")
+                );
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    let ids: Vec<&str> = vp_core::themes::builtin_themes()
+                        .iter()
+                        .map(|t| t.id)
+                        .collect();
+                    let next = ids
+                        .iter()
+                        .position(|id| **id == this.theme_id)
+                        .map(|i| ids[(i + 1) % ids.len()])
+                        .unwrap_or("light");
+                    this.theme_id = next.into();
+                    this.persist_layout_quiet();
+                    this.republish(cx);
+                    cx.notify();
+                })
+            })
+            .child({
+                let label = format!("Monitor {}", self.projector_display + 1);
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    this.set_projector_display(cx, (this.projector_display + 1) % 3);
+                    cx.notify();
+                })
+            })
+            .child({
+                let label = format!("Ratio {}", self.aspect_ratio);
+                btn(ui, cx, &label, false, |this, _, _, cx| {
+                    const RATIOS: [&str; 6] =
+                        ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"];
+                    let i = RATIOS
+                        .iter()
+                        .position(|r| *r == this.aspect_ratio)
+                        .map(|i| (i + 1) % RATIOS.len())
+                        .unwrap_or(0);
+                    this.aspect_ratio = RATIOS[i].into();
+                    this.persist_layout_quiet();
+                    this.republish(cx);
+                    cx.notify();
+                })
+            })
+            .child(div().w(px(8.)))
+            .child(btn(ui, cx, "Projector", self.projector_window.is_some(), |this, _, _, cx| {
+                this.toggle_projector(cx);
+            }))
+            .child({
+                let active = self.mode == Mode::Stage;
+                let mut b = div()
+                    .px(px(crate::ux::RIBBON_BTN_PX))
+                    .min_h(px(crate::ux::RIBBON_LINE_PX))
+                    .rounded_sm()
+                    .bg(if active { ui.selection } else { ui.panel })
+                    .text_color(if active { ui.selection_ink } else { ui.fg })
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(ui.border)
+                    .child("Stage view".to_string());
+                if active {
+                    b = b.border_2();
+                }
+                // Press-phase handler: in Stage mode a mouse-UP on this
+                // button never arrived (the stage tree owns the release),
+                // which left the operator trapped. Acting on the press is
+                // the same action on a phase that provably reaches us.
+                b.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.ui_go(stage_toggle_target(this.mode), cx);
+                        // Stage unmounts the editor; without this the root
+                        // keeps no focus and Escape never reaches the keymap.
+                        this.focus_root(window);
+                    }),
+                )
+            })
+            .child(btn(ui, cx, "Stop", false, |this, _, _, cx| {
+                this.end_presentation(cx);
+            }))
+    }
 
     /// The ribbon: four tabs, then the active tab's groups.
     ///
@@ -6431,20 +7374,17 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                // 1.29 Background tab (Screenshot 2026-10-30 111820): solid
-                // VideoPsalm-blue ribbon with the active tab WHITE and
-                // inactive tabs blue with white text. The old white ribbon
-                // with an orange active tab read as a different app next
-                // to the original's blue chrome.
-                let ribbon_blue = rgb(0x1E6CC8);
+                // Signal Room tabs (perez-sheet.html): paper tabs, the
+                // active tab filled ink. Primary actions are signal red
+                // buttons, not tabs — tabs never compete with them.
                 let (tab_bg, tab_ink, tab_border) = if active {
-                    (rgb(0xFFFFFF), rgb(0x1E3A5F), rgb(0xFFFFFF))
+                    (ui.fg, ui.bg, ui.fg)
                 } else {
-                    (ribbon_blue, rgb(0xFFFFFF), rgb(0x5AA0E8))
+                    (ui.panel, ui.fg, ui.border)
                 };
                 div()
-                    .px_2()
-                    .py(px(2.))
+                    .px(px(1.))
+                    .py(px(crate::ux::RIBBON_TAB_PY))
                     .rounded_sm()
                     .border_1()
                     .border_color(tab_border)
@@ -6472,27 +7412,45 @@ impl Root {
         div()
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .px(px(6.))
-            .py(px(4.))
-            .bg(rgb(0x1E6CC8))
+            .gap(px(crate::ux::RIBBON_BAND_GAP))
+            .px(px(4.))
+            .py(px(crate::ux::RIBBON_OUTER_PY))
+            .text_size(px(crate::ux::RIBBON_TEXT_PX))
+            // Sheet paper strips: the ribbon band is a paper card, not a
+            // red block. Red lives on the slim title strip above, primary
+            // buttons, selected rows and the lime-only live cue.
+            .bg(ui.panel)
             .border_b_1()
-            .border_color(rgb(0x155AAD))
+            .border_color(ui.border)
+            // Tabs, Hide and the active tab's groups share ONE wrapping band
+            // (sheet strip 3: tabs | Styles | Font on a single row). This is
+            // what takes the ribbon from three stacked rows to two.
+            // Tabs sit LEFT of the groups; the groups wrap inside the
+            // remaining width. Two bands total (VP1.29 density), no row is
+            // spent on tabs alone.
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .children(tabs)
-                    // VJSM parity: an explicit Hide button. Double-click
-                    // and Ctrl+F1 already collapsed, but neither is
-                    // discoverable — the original has a visible Hide affordance.
-                    .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
-                        this.set_ribbon_collapsed(cx, true);
-                    })),
+                    .gap(px(crate::ux::RIBBON_WRAP_GAP))
+                    .items_start()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_1()
+                            .items_center()
+                            .flex_none()
+                            .children(tabs)
+                            .child(btn(ui, cx, &self.t("ribbon_hide"), false, |this, _, _, cx| {
+                                this.set_ribbon_collapsed(cx, true);
+                            })),
+                    )
+                    .child(div().flex_1().min_w_0().child(self.format_ribbon(ui, cx))),
             )
-            .child(self.format_ribbon(ui, cx))
             // The `Message` tab mirrors 1.29: Alert message | Clock |
             // Countdown | Stage view | Display ribbon groups with captions
             // below. Rarely-changed knobs (alert styling, clock designs,
@@ -6752,7 +7710,11 @@ impl Root {
                         this.close_projector(cx);
                     }),
                 ]))
-            .child(row(vec![
+            .child(row({
+                // Workspace switcher, all five skins, language, edit mode —
+                // the theme buttons come from the helper so new skins
+                // appear here with no further edits.
+                let mut kids = vec![
                     label(ui, "workspace:", 12.),
                     btn(ui, cx, "Control", self.mode == Mode::Control, |this, _, _, cx| {
                         this.ui_go(Mode::Control, cx);
@@ -6761,30 +7723,21 @@ impl Root {
                         this.ui_go(Mode::Projector, cx);
                     }),
                     label(ui, "theme:", 12.),
-                    btn(ui, cx, "Light", self.theme_id == "light", |this, _, _, cx| {
-                        this.theme_id = "light".into();
-                        this.persist_layout_quiet();
-                        this.republish(cx);
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "Dark", self.theme_id == "dark", |this, _, _, cx| {
-                        this.theme_id = "dark".into();
-                        this.persist_layout_quiet();
-                        this.republish(cx);
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
-                        this.lang = "en".into();
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
-                        this.lang = "fr".into();
-                        cx.notify();
-                    }),
-                    btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
-                        this.toggle_viewer_mode(cx);
-                    }),
-                ]))
+                ];
+                kids.extend(self.theme_choice_buttons(ui, cx));
+                kids.push(btn(ui, cx, "EN", self.lang == "en", |this, _, _, cx| {
+                    this.lang = "en".into();
+                    cx.notify();
+                }));
+                kids.push(btn(ui, cx, "FR", self.lang == "fr", |this, _, _, cx| {
+                    this.lang = "fr".into();
+                    cx.notify();
+                }));
+                kids.push(btn(ui, cx, "Edit", !self.viewer_mode, |this, _, _, cx| {
+                    this.toggle_viewer_mode(cx);
+                }));
+                kids
+            }))
             .child(row(vec![
                     label(ui, "default font size:", 12.),
                     btn(ui, cx, "A-", false, |this, _, _, cx| {
@@ -7062,7 +8015,7 @@ impl Root {
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_2()
+            .gap(px(crate::ux::RIBBON_WRAP_GAP))
             .items_start()
             .child(
                 div()
@@ -7125,6 +8078,9 @@ impl Root {
         let song_kids: Vec<Div> = vec![
             btn(ui, cx, "Save song", false, |this, _, _, cx| {
                 this.save_song_document(cx);
+            }),
+            btn(ui, cx, "Export song…", false, |this, _, _, cx| {
+                this.export_song_document(cx);
             }),
             btn(
                 ui,
@@ -7221,22 +8177,15 @@ impl Root {
                 cx.notify();
             }));
         }
+        // Style Explorer launcher ends the preset row (not a third line of
+        // the group) — same handler; the tree still opens over whichever tab
+        // is active (UX-RESEARCH §5.3).
+        presets.push(btn(ui, cx, "Style explorer", self.show_style_explorer, |this, _, _, cx| {
+            this.show_style_explorer = !this.show_style_explorer;
+            this.persist_layout_quiet();
+            cx.notify();
+        }));
         style_kids.push(row(presets));
-        // Style Explorer launcher, bottom-right of the Styles group (UX-RESEARCH
-        // §5.3: "the little launcher button at the bottom-right of the Styles
-        // ribbon group"). It is NOT a fifth ribbon tab and does not belong on
-        // Text or Edit — the tree opens over whatever tab is active.
-        style_kids.push(btn(
-            ui,
-            cx,
-            "Style explorer",
-            self.show_style_explorer,
-            |this, _, _, cx| {
-                this.show_style_explorer = !this.show_style_explorer;
-                this.persist_layout_quiet();
-                cx.notify();
-            },
-        ));
         // Font group: family + B/I/U + alignment + chord notation.
         // Font dropdown (WI-029): every installed family, searchable — eight
         // quick buttons could never cover a real laptop's font list. The
@@ -7272,12 +8221,11 @@ impl Root {
         // to 40 rows of font names down the ribbon.
         // Projector lyric size (WI-026): step the base size; everything
         // projected scales from it (preview proportionally).
-        font_kids.push(label(
-            ui,
-            &format!("A {}", self.font_size.round() as i32),
-            12.,
-        ));
-        font_kids.push(btn(ui, cx, "A-", false, |this, _, _, cx| {
+        // Stepper: A− | value | A+ — the live size sits BETWEEN the two
+        // steps (it read as a static caption hanging off the left before).
+        // Same strip position, same handlers.
+        let size_value = self.font_size.round() as i32;
+        font_kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
             this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
             let sz = this.font_size;
@@ -7285,6 +8233,7 @@ impl Root {
                 v.size = Some(sz);
             });
         }));
+        font_kids.push(font_size_readout(ui, size_value));
         font_kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
             this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
             this.mirror_font_to_style();
@@ -7314,10 +8263,12 @@ impl Root {
                 v.underline = Some(on);
             });
         }));
+        // Glyph-only: the operator reads the alignment from the icon and the
+        // hover tip names it (ribbon width is the chrome budget's currency).
         for (glyph, want) in [
-            ("≡", Align::Left),
-            ("≣", Align::Center),
-            ("≡ ", Align::Right),
+            ("⇤", Align::Left),
+            ("⇔", Align::Center),
+            ("⇥", Align::Right),
         ] {
             let active = self.align == want;
             let label = match want {
@@ -7325,14 +8276,24 @@ impl Root {
                 Align::Center => "Center",
                 Align::Right => "Right",
             };
-            let text = format!("{glyph} {label}");
-            font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
-                this.align = want;
-                this.mirror_font_to_style();
-                this.write_style_attr(cx, &format!("Align {}", label.to_lowercase()), move |v| {
-                    v.align = Some(want.literal().to_string());
-                });
-            }));
+            font_kids.push(btn_tip(
+                ui,
+                cx,
+                glyph,
+                match want {
+                    Align::Left => "Align left",
+                    Align::Center => "Center",
+                    Align::Right => "Align right",
+                },
+                active,
+                move |this, _, _, cx| {
+                    this.align = want;
+                    this.mirror_font_to_style();
+                    this.write_style_attr(cx, &format!("Align {}", label.to_lowercase()), move |v| {
+                        v.align = Some(want.literal().to_string());
+                    });
+                },
+            ));
         }
         // Vertical placement of the lyric block in its frame (WI-021):
         // top / center / bottom, same global-setting shape as horizontal.
@@ -7342,19 +8303,28 @@ impl Root {
             ("↓", VAlign::Bottom),
         ] {
             let active = self.valign == want;
-            let label = match want {
-                VAlign::Top => "Top",
-                VAlign::Center => "Middle",
-                VAlign::Bottom => "Bottom",
-            };
-            let text = format!("{glyph} {label}");
-            font_kids.push(btn(ui, cx, &text, active, move |this, _, _, cx| {
-                this.valign = want;
-                this.mirror_font_to_style();
-                this.write_style_attr(cx, &format!("Vertical align {}", want.literal()), move |v| {
-                    v.v_align = Some(want.literal().to_string());
-                });
-            }));
+            font_kids.push(btn_tip(
+                ui,
+                cx,
+                glyph,
+                match want {
+                    VAlign::Top => "Top",
+                    VAlign::Center => "Middle",
+                    VAlign::Bottom => "Bottom",
+                },
+                active,
+                move |this, _, _, cx| {
+                    this.valign = want;
+                    this.mirror_font_to_style();
+                    this.write_style_attr(
+                        cx,
+                        &format!("Vertical align {}", want.literal()),
+                        move |v| {
+                            v.v_align = Some(want.literal().to_string());
+                        },
+                    );
+                },
+            ));
         }
         // Lyric text color (WI-024): preset swatches + Auto (theme). The
         // Colors group next door drives the accent; this one drives the
@@ -7450,7 +8420,7 @@ impl Root {
         // splitter's two knobs. They used to live as steppers under the slide
         // list; the original puts them in the ribbon, beside Colors.
         let layout_kids: Vec<Div> = vec![
-            label(ui, &format!("Max lines [{}]", self.max_lines), 12.),
+            label(ui, &format!("Lines {}", self.max_lines), 11.),
             btn(ui, cx, "L-", false, |this, _, _, cx| {
                 this.max_lines = this.max_lines.saturating_sub(1).max(1);
                 cx.notify();
@@ -7459,7 +8429,7 @@ impl Root {
                 this.max_lines = (this.max_lines + 1).min(8);
                 cx.notify();
             }),
-            label(ui, &format!("Max chars [{}]", self.max_chars), 12.),
+            label(ui, &format!("Chars {}", self.max_chars), 11.),
             btn(ui, cx, "C-", false, |this, _, _, cx| {
                 this.max_chars = this.max_chars.saturating_sub(5).max(10);
                 cx.notify();
@@ -7475,7 +8445,7 @@ impl Root {
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_2()
+            .gap(px(crate::ux::RIBBON_WRAP_GAP))
             .items_start()
             .min_w_0()
             .overflow_hidden()
@@ -7842,12 +8812,14 @@ impl Root {
             // bearing: without it the flex default (min-width:auto) lets
             // long slide/editor rows push the right column — and the
             // command strip — off the window edge (fidelity loop R2).
+            // min_w pins the sheet 1.55fr dominance floor (`center_width`).
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w_0()
+                    .min_w(px(center_width(vw, self.left_w, self.right_w).max(0.0)))
                     .min_h_0()
                     .overflow_hidden()
                     .child(self.editor_panel(ui, cx)),
@@ -7888,6 +8860,264 @@ impl Root {
         root
     }
 
+    /// Agenda row meta subline (sheet rows carry a small detail line:
+    /// "4 verses · key G", "Image · Cover", "Video · muted"). Pure:
+    /// song verse/slide counts, Bible header, file extension kind, URL
+    /// host, else the kind label. Never empty, never panics.
+    fn agenda_meta(&self, item: &AgendaItem, idx: usize) -> String {
+        match &item.reference {
+            ItemRef::Song { song_id } => match self.songs.iter().find(|s| &s.id == song_id) {
+                Some(song) => {
+                    let verses = song.ordered_verses().len();
+                    let slides = self.item_slides(idx).len();
+                    format!("{verses} verses · {slides} slides")
+                }
+                None => "Song · missing from library".to_string(),
+            },
+            ItemRef::Bible { bible_ref } => format_header(bible_ref),
+            ItemRef::File { file } => {
+                // `Path::extension` (not `rsplit('.')`, which returns the
+                // whole path for extensionless files like `/home/op/README`).
+                let ext = std::path::Path::new(file)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                format!("{} · {ext}", file_kind_label(ext.as_str()))
+            }
+            ItemRef::Url { url } => {
+                let host = url_host(url);
+                if host.is_empty() {
+                    "web link".to_string()
+                } else {
+                    format!("link · {host}")
+                }
+            }
+            ItemRef::Text { text } => {
+                let preview: String = text.chars().take(28).collect();
+                if preview.is_empty() {
+                    format!("{:?}", item.kind)
+                } else {
+                    preview
+                }
+            }
+        }
+    }
+
+    /// Open a file path with the OS handler (best effort, offline).
+    /// Same xdg-open/open/start dispatch the app already uses for URLs.
+    fn open_path_with_os(&mut self, path: &str, cx: &mut Context<Self>) {
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("xdg-open");
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        match cmd.arg(path).spawn() {
+            Ok(_) => self.set_status(cx, format!("Opening {path}.")),
+            Err(e) => self.set_status(cx, format!("Cannot open {path}: {e}")),
+        }
+    }
+
+    /// Load the bundled sample agenda (sheet strip: Load sample agenda,
+    /// primary). Replaces the working agenda; selection and live reset.
+    fn load_sample_agenda(&mut self, cx: &mut Context<Self>) {
+        match Agenda::from_json(AGENDA_SAMPLE) {
+            Ok(a) => {
+                self.agenda = a;
+                self.sel_item = None;
+                self.live_item = None;
+                self.agenda_dirty = true;
+                self.set_status(cx, "Sample agenda loaded.");
+            }
+            Err(e) => self.set_status(cx, format!("Sample agenda is corrupt: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Center document area per tab: Lyrics edits the WYSIWYG document;
+    /// Files lists the song's attached files with Attach/Open/remove;
+    /// Chords lists the chord symbols detected in the lyrics plus the hint
+    /// to add `[C]` markers (the toolbar `[chord]` key inserts one).
+    /// Attachments persist on the song via the normal Save (Ctrl+S).
+    fn song_document_area(
+        &mut self,
+        ui: &UI,
+        cx: &mut Context<Root>,
+        document: gpui::Entity<DocField>,
+    ) -> Div {
+        if self.song_tab == 1 {
+            return self.song_files_panel(ui, cx);
+        }
+        if self.song_tab == 2 {
+            let text = document.read(cx).text();
+            let chords = lyric_chords(&text);
+            let mut body = if chords.is_empty() {
+                "No [chord] markers in these lyrics yet.".to_string()
+            } else {
+                format!("Chords in these lyrics: {}", chords.join(" – "))
+            };
+            body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar [chord] key inserts one at the cursor); transpose lives with the song chords.");
+            if text.contains("[]") {
+                body.push_str("\nEmpty [] markers are ignored until a chord letter is typed inside them.");
+            }
+            return div()
+                .flex_1()
+                .min_h_0()
+                .min_h(px(340.))
+                .overflow_hidden()
+                .p(px(10.))
+                .text_size(px(12.5))
+                .text_color(ui.fg)
+                .child(body);
+        }
+        document_wrap(document)
+    }
+
+    /// Song Files tab: attached MP3/video/sheet paths with Attach, Open
+    /// (OS handler) and remove. Stored on `song.files`, saved with the
+    /// song — never a dead list.
+    fn song_files_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let Some(si) = self.sel_song else {
+            return section(ui, &self.t("files"), vec![label(ui, "(no song)", 13.)]);
+        };
+        let files = self
+            .songs
+            .get(si)
+            .map(|s| s.files.clone())
+            .unwrap_or_default();
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p(px(6.))
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .min_h(px(340.))
+            .child(row(vec![btn(
+                ui,
+                cx,
+                "Attach…",
+                false,
+                |this, _, _, cx| {
+                    if let Some(p) =
+                        crate::file_picker::pick_file("Attach file", &[("All files", &["*"])])
+                    {
+                        if let Some(si) = this.sel_song {
+                            if let Some(song) = this.songs.get_mut(si) {
+                                song.files.push(p.to_string_lossy().into_owned());
+                                this.song_dirty = true;
+                                this.set_status(cx, "File attached — Save the song (Ctrl+S).");
+                            }
+                        }
+                        cx.notify();
+                    }
+                },
+            )]));
+        for path in files {
+            let open_path = path.clone();
+            let drop_path = path.clone();
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(path.clone());
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(12.))
+                            .text_color(ui.fg)
+                            .child(name),
+                    )
+                    .child(btn(ui, cx, "Open", false, move |this, _, _, cx| {
+                        this.open_path_with_os(&open_path, cx);
+                    }))
+                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
+                        if let Some(si) = this.sel_song {
+                            if let Some(song) = this.songs.get_mut(si) {
+                                song.files.retain(|f| f != &drop_path);
+                                this.song_dirty = true;
+                            }
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        col.child(
+            div()
+                .p(px(2.))
+                .text_size(px(11.))
+                .text_color(ui.fg)
+                .child(
+                    "Attached files save with the song (Ctrl+S). Open shells to the OS handler."
+                        .to_string(),
+                ),
+        )
+    }
+
+    /// Agenda-file strip (sheet position 5): New · Open… · Save ·
+    /// Open VP plan… · Save VP plan… · Load sample agenda (primary) ·
+    /// Print booklet. Full width between the menu row and the ribbon —
+    /// the File `▾` disclosure inside the agenda panel keeps the
+    /// paths/recents rows; the strip is the always-visible quick row.
+    fn agenda_file_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_1()
+            .items_center()
+            .px_2()
+            .py(px(0.))
+            .text_size(px(10.))
+            .bg(ui.panel)
+            .border_b_1()
+            .border_color(ui.border)
+            .child(row_wrap(vec![
+            btn(ui, cx, "New", false, |this, _, _, cx| {
+                this.agenda = Agenda::new("New agenda");
+                this.sel_item = None;
+                this.live_item = None;
+                cx.notify();
+            }),
+            btn(ui, cx, "Open…", false, |this, _, _, cx| {
+                this.open_agenda(cx)
+            }),
+            btn(ui, cx, "Save", false, |this, _, _, cx| {
+                this.save_agenda(cx)
+            }),
+            btn(ui, cx, "Open VP plan…", false, |this, _, _, cx| {
+                this.import_native_plan(cx)
+            }),
+            btn(ui, cx, "Save VP plan…", false, |this, _, _, cx| {
+                this.export_native_plan(cx)
+            }),
+            btn(
+                ui,
+                cx,
+                "Load sample agenda",
+                true,
+                |this, _, _, cx| {
+                    this.load_sample_agenda(cx)
+                },
+            ),
+            btn(ui, cx, "Print booklet", false, |this, _, _, cx| {
+                this.print_booklet(cx)
+            }),
+        ]))
+    }
+
     /// Agenda wrapper: automatic (content up to the 360 px cap) until the
     /// operator drags the divider below it, then the pinned height.
     fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
@@ -7924,16 +9154,17 @@ impl Root {
             let live = self.live_item == Some(idx);
             // `item.kind` is an enum, and `{:?}` on it renders the Rust variant
             // name — the operator would read "BibleVerses" or
-            // "PowerPointSlide" in the agenda. `kind_badge` returns a short
-            // drawn mark; use that alone.
+            // "PowerPointSlide" in the agenda. No kind glyph: sheet rows
+            // carry no icons (R10: unicode glyphs removed as an addition
+            // beyond the sheet) — the meta subline carries the kind.
             //
             // Two states, as in `agenda-panel.png`: the **live** row is the one
-            // currently projecting and is filled blue; the **selected** row is
-            // the keyboard cursor and only gets a blue left edge. Collapsing
+            // currently projecting and is filled lime; the **selected** row is
+            // the keyboard cursor and is filled signal red. Collapsing
             // them loses the distinction that makes the list readable mid-service.
-            // Row shape per agenda-panel.png / LAYOUT.md: kind glyph, songbook
-            // ABBREV, song NUMBER, title — then the status dot. `show_abbrev`
-            // / `show_number` (1.27b toggles) hide their column.
+            // Row shape: songbook ABBREV, song NUMBER, title — then the
+            // status dot. `show_abbrev` / `show_number` (1.27b toggles)
+            // hide their column.
             let row_title = match &item.reference {
                 ItemRef::Song { song_id } => {
                     let song = self.songs.iter().find(|s| &s.id == song_id);
@@ -7959,13 +9190,15 @@ impl Root {
                     } else {
                         String::new()
                     };
-                    format!("{}{} {}", kind_badge(item.kind), ab, format!("{num} {}", item.title).trim_start())
+                    format!("{}{}", ab, format!("{num} {}", item.title).trim_start())
+                        .trim_start()
+                        .to_string()
                 }
-                _ => format!("{} {}", kind_badge(item.kind), item.title),
+                _ => item.title.clone(),
             };
             let title = row_title;
-            // A filled blue dot at the right edge of every row is the per-item
-            // status indicator the original shows.
+            // A filled signal-red dot at the right edge of every row is the
+            // per-item status indicator the original shows.
             let status_dot = div()
                 .flex_none()
                 .w(px(8.))
@@ -7989,7 +9222,16 @@ impl Root {
                         this.cancel_agenda_rename(cx);
                     }))
             } else {
-                div().flex_1().child(title)
+                // Sheet rows pair the title with a small meta line
+                // ("4 verses · key G", "Image · Cover"). It inherits
+                // the row ink, so live/selected coloring still reads.
+                let meta = self.agenda_meta(item, idx);
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(title)
+                    .child(div().text_size(px(10.5)).child(meta))
             };
             rows.push(
                 div()
@@ -7999,16 +9241,27 @@ impl Root {
                     .items_center()
                     .px_1()
                     .rounded_sm()
-                    .bg(if live { ui.selection } else { ui.panel })
-                    .text_color(if live { ui.selection_ink } else { ui.fg })
+                    .bg(if live {
+                        ui.live
+                    } else if selected {
+                        ui.selection
+                    } else {
+                        ui.panel
+                    })
+                    .text_color(if live {
+                        ui.live_ink
+                    } else if selected {
+                        ui.selection_ink
+                    } else {
+                        ui.fg
+                    })
                     .cursor_pointer()
                     .child(title_cell)
+                    .when(live, |d| d.child(live_tag(ui)))
                     .child(status_dot)
-                    // The selected-but-not-live row is marked by an edge, not a
-                    // fill, so the two never read as one state.
-                    .when(!live && selected, |d| {
-                        d.border_l_2().border_color(ui.selection)
-                    })
+                    // Lime (live) and red (selected) fills never read as one
+                    // state; the engaged outline marks the keyboard cursor.
+                    .when(selected, |d| d.border_1().border_color(ui.engaged))
                     // A single click respects the shield; a **double-click
                     // renames the row in place** (UX-RESEARCH §3.1: items are
                     // renamable meaningful names) and still punches through
@@ -8032,15 +9285,23 @@ impl Root {
             // The original's empty-state copy names every document kind the
             // agenda accepts, which doubles as its drag-and-drop contract
             // (`SCREENSHOT-1.29-LAYOUT.md`).
+            // Wrapped, not clipped: these are sentences, and the pane is
+            // narrower than they are (R-Compression: text ran off the edge).
             for line in [
                 "The agenda is empty.",
-                "Open one or drag songs and Bible verses here to add them to the agenda.",
+                "Open one or drag songs and Bible verses here to add them to the agenda, or press Load sample agenda in the strip above to start from a bundled service.",
                 "Drag documents from your desktop:",
-                "Slideshow images, standalone videos, Audio files, PDFs,",
-                "PowerPoints, MS-Words, MS-Excels, Open Office documents,",
-                "CCLI songs, web sites, YouTube, Vimeo",
+                "Slideshow images, standalone videos, Audio files, PDFs, PowerPoints, MS-Words, MS-Excels, Open Office documents, CCLI songs, web sites, YouTube, Vimeo",
             ] {
-                rows.push(label(ui, line, 12.));
+                rows.push(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_size(px(12.))
+                        .text_color(ui.fg)
+                        .child(line.to_string()),
+                );
             }
         }
         let recents = library::list_recents(&self.db, 3)
@@ -8712,7 +9973,13 @@ impl Root {
                         if ev.click_count >= 2 {
                             this.play_browser_song(cx, i);
                         } else {
-                            this.select_song(cx, i);
+                            // Toggle: re-clicking the selected row clears
+                            // it (reaches the no-song panel); any other row
+                            // selects.
+                            match song_click_target(this.sel_song, i, this.song_dirty) {
+                                Some(idx) => this.select_song(cx, idx),
+                                None => this.deselect_song(cx),
+                            }
                         }
                         this.focus_root(window);
                     }),
@@ -9144,7 +10411,7 @@ impl Root {
                 ui,
                 cx,
                 &self.t("import_bible"),
-                "Import a Bible translation file (.xml or .vpc); empty field opens the file picker",
+                "Import Bible translation (.xml or .vpc). Import-only by design (no export).",
                 false,
                 |this, _, _, cx| {
                     this.import_bible_file(cx);
@@ -9585,7 +10852,7 @@ impl Root {
             // an em dash inside an embed title must never fabricate a verse.
             let web = slide.footer == "WebSite";
             let vid = if web {
-                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+                web_row_key(&slide.lines.join(""))
             } else {
                 slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
             };
@@ -9593,12 +10860,26 @@ impl Root {
             let preview: String = slide.lines.join(" / ");
             let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
-            let row_bg = if live_now { ui.selection } else { ui.panel };
-            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
-            let border_c = if selected {
-                ui.engaged
-            } else if live_now {
+            // Brand layer: the projecting row is lime, the keyboard
+            // cursor row is signal red, everything else is the panel.
+            // Lime wins when a row is both (mid-service the cursor often
+            // sits on the live slide).
+            let row_bg = if live_now {
+                ui.live
+            } else if selected {
                 ui.selection
+            } else {
+                ui.panel
+            };
+            let row_ink = if live_now {
+                ui.live_ink
+            } else if selected {
+                ui.selection_ink
+            } else {
+                ui.fg
+            };
+            let border_c = if selected && !live_now {
+                ui.engaged
             } else {
                 row_bg
             };
@@ -9636,6 +10917,9 @@ impl Root {
                             .text_color(if live_now { row_ink } else { ui.accent })
                             .child(badge),
                     )
+                    // DESIGN.md signature: the live cue is lime PLUS the
+                    // word LIVE — never color alone.
+                    .when(live_now, |d| d.child(live_tag(ui)))
                     .child(
                         div()
                             .flex_1()
@@ -9719,7 +11003,7 @@ impl Root {
             // key survives reordering.
             let web = slide.footer == "WebSite";
             let vid = if web {
-                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+                web_row_key(&slide.lines.join(""))
             } else {
                 slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
             };
@@ -9736,19 +11020,29 @@ impl Root {
             // that makes the panel readable mid-service.
             let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
-            // The row currently projecting is highlighted **blue**, always
-            // (UX-RESEARCH 10.3 — "the displayed slide is now highlighted in
-            // blue", since 1.2, on every skin). Using `ui.accent` here made
-            // that cue yellow on two of the four themes. `selected` is the
-            // keyboard cursor and stays subtler so the two never read as one.
-            // White rows on the blue window = the original's white lists
-            // (slides-panel.png); the old window-gray rows read as disabled.
-            let row_bg = if live_now { ui.selection } else { ui.panel };
-            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
-            let border_c = if selected {
-                ui.engaged
-            } else if live_now {
+            // The row currently projecting is filled lime, always (sheet
+            // LIVE = lime only, on every skin). The selected row is filled
+            // signal red so the two never read as one.
+            // Brand layer: the projecting row is lime, the keyboard
+            // cursor row is signal red, everything else is the panel.
+            // Lime wins when a row is both (mid-service the cursor often
+            // sits on the live slide).
+            let row_bg = if live_now {
+                ui.live
+            } else if selected {
                 ui.selection
+            } else {
+                ui.panel
+            };
+            let row_ink = if live_now {
+                ui.live_ink
+            } else if selected {
+                ui.selection_ink
+            } else {
+                ui.fg
+            };
+            let border_c = if selected && !live_now {
+                ui.engaged
             } else {
                 row_bg
             };
@@ -9789,6 +11083,9 @@ impl Root {
                             .text_color(if live_now { row_ink } else { ui.accent })
                             .child(badge),
                     )
+                    // DESIGN.md signature: the live cue is lime PLUS the
+                    // word LIVE — never color alone.
+                    .when(live_now, |d| d.child(live_tag(ui)))
                     // The slide text, wrapped over 2–3 lines as in the
                     // screenshot — never truncated (R-6). min_w_0 is
                     // load-bearing: without it the flex default keeps the
@@ -9866,13 +11163,27 @@ impl Root {
                     .all(|v| self.is_hidden(&item_id, &v.to_string()));
             let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(badge.as_str());
-            // White rows on the blue window = the original's white lists.
-            let row_bg = if live_now { ui.selection } else { ui.panel };
-            let row_ink = if live_now { ui.selection_ink } else { ui.fg };
-            let border_c = if selected {
-                ui.engaged
-            } else if live_now {
+            // Plain panel rows; color carries state, not chrome.
+            // Brand layer: the projecting row is lime, the keyboard
+            // cursor row is signal red, everything else is the panel.
+            // Lime wins when a row is both (mid-service the cursor often
+            // sits on the live slide).
+            let row_bg = if live_now {
+                ui.live
+            } else if selected {
                 ui.selection
+            } else {
+                ui.panel
+            };
+            let row_ink = if live_now {
+                ui.live_ink
+            } else if selected {
+                ui.selection_ink
+            } else {
+                ui.fg
+            };
+            let border_c = if selected && !live_now {
+                ui.engaged
             } else {
                 row_bg
             };
@@ -10045,12 +11356,14 @@ impl Root {
                 .bg(rgb(0x000000))
                 .items_center()
                 .justify_center()
+                .relative()
                 .child(
                     div()
                         .text_size(px(13.))
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
+                .child(card_caption("OUTPUT"))
         } else if snap.frame.item.is_none() {
             // No slide live: background still shows, with a note naming
             // the way back.
@@ -10068,18 +11381,22 @@ impl Root {
                             .text_size(px(13.))
                             .text_color(hex("#BBBBBB"))
                             .child("(nothing live — press Show)".to_string()),
-                    ),
+                    )
+                    .child(card_caption("OUTPUT")),
             )
         } else {
-            // The projector render itself, in an output-ratio box: the
-            // preview cannot disagree with the projector by construction
-            // (WI-028). "current" follows the window glass; a set preset
+            // The projector render itself, in an output-ratio box sized to
+            // the panel: the box used to be a fixed 548px, which overflowed
+            // the ~300px right column and cropped lyric lines at both edges
+            // (R3 worst surface). It now tracks the column so the preview
+            // cannot disagree with the projector by construction (WI-028)
+            // AND fits. "current" follows the window glass; a set preset
             // letterboxes exactly like the projector does.
-            const PREVIEW_W: f32 = 548.0;
+            let panel_w = (self.right_w.min((win_w * 0.32).max(220.0)) - 12.0).max(120.0);
             let aspect = AspectRatio::from_label(&self.aspect_ratio)
                 .map(|r| r.aspect() as f32)
                 .unwrap_or((win_w / win_h.max(1.0)).clamp(0.5, 4.0));
-            let bh = PREVIEW_W / aspect;
+            let bh = panel_w / aspect;
             div()
                 .flex()
                 .flex_col()
@@ -10087,9 +11404,17 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .bg(rgb(0x000000))
-                .child(div().w(px(PREVIEW_W)).h(px(bh)).overflow_hidden().child(
-                    projector_window::render_snapshot(snap.danger, &snap, PREVIEW_W, bh, None),
-                ))
+                .child(
+                    div()
+                        .w(px(panel_w))
+                        .h(px(bh))
+                        .overflow_hidden()
+                        .relative()
+                        .child(projector_window::render_snapshot(
+                            snap.danger, &snap, panel_w, bh, None,
+                        ))
+                        .child(card_caption("OUTPUT")),
+                )
         };
         let count = if n == 0 {
             "0/0".to_string()
@@ -10125,8 +11450,8 @@ impl Root {
                     .px(px(6.))
                     .py(px(3.))
                     .rounded_sm()
-                    .bg(rgb(0xC9DDF3))
-                    .text_color(rgb(0x1E3A5F))
+                    .bg(ui.panel)
+                    .text_color(ui.fg)
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
                     .child(format!(
@@ -10236,51 +11561,29 @@ impl Root {
         action: &'static str,
         _idx: usize,
     ) -> Div {
-        // Per-command colour, so the strip reads as a set of distinct tools rather
-        // than seven identical boxes.
-        let tint = match action {
-            "next" | "base" => rgb(0x1E88E5),
-            "text" => rgb(0xF57C00),
-            "shield" => rgb(0x5E35B1),
-            "freeze" => rgb(0x00ACC1),
-            "project" => rgb(0x43A047),
-            _ => rgb(0x8BC34A), // pencil
-        };
-        // The shield fills **red** when armed — that colour is load-bearing: it is
-        // how the operator knows browsing cannot disturb the live slide.
-        //
-        // Every other command marks engagement exactly like `btn()`: an **orange
-        // outline** (`UI::engaged`) with the background left alone (B-30,
-        // OBSERVATIONS §6). A brightened fill used to sit here and made the
-        // engaged state read as a different, wrong treatment next to the ribbon.
-        let bg = if armed { SHIELD_ARMED } else { tint };
+        // Signal Room rail: theme-aware chips, not a rainbow of circles.
+        // Paper/night surface, hairline border, ink glyph; signal red is the
+        // ONLY accent (armed shield fills it), lime stays reserved for the
+        // live cue on rows. 4px radius, 30px hit target.
+        let bg = if armed { ui.selection } else { ui.panel };
+        let ink = if armed { ui.selection_ink } else { ui.fg };
         let outline = engaged_outline(active, armed);
+        let _ = icon;
         div()
-            .w(px(34.))
-            .h(px(34.))
-            .rounded_full()
+            .w(px(30.))
+            .h(px(30.))
+            .rounded_sm()
             .flex()
             .items_center()
             .justify_center()
             .bg(bg)
-            .text_color(ink_on(bg))
-            .text_size(px(15.))
+            .border_1()
+            .border_color(if armed { ui.selection } else { ui.border })
+            .text_color(ink)
+            .text_size(px(14.))
             .cursor_pointer()
-            .when(outline, |d| d.border_2().border_color(ui.engaged))
-            // Lane G: drawn SVG on a white chip, so a coloured icon stays
-            // readable on its same-coloured circle (VideoPsalm's solid glossy
-            // buttons: tint ring with white center).
-            .child(
-                div()
-                    .w(px(26.))
-                    .h(px(26.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgb(0xFFFFFF))
-                    .child(icons::art(icon)),
-            )
+            .when(outline, |d| d.border_2().border_color(ui.selection))
+            .child(crate::ux::strip_glyph(action).to_string())
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, _w, cx| match action {
@@ -10332,6 +11635,8 @@ impl Root {
                 selection: ui.selection,
                 selection_ink: ui.selection_ink,
                 engaged: ui.engaged,
+                live: ui.live,
+                live_ink: ui.live_ink,
             };
             let button = Self::round_command(ui, &strip, cx, icon, active, armed, action, i);
             // Dropdown affordance under the commands that have one.
@@ -10458,6 +11763,88 @@ impl Root {
         }
     }
 
+    /// Verse/format toolbar (sheet §Center): verse chips (V1 C B …) that
+    /// start a new labelled verse block at the cursor, `chord` (`[]`)
+    /// and `split` (blank line = slide boundary) inserters, then live
+    /// B I U S H1 H2 list wrappers on the selection and A+/A− editor zoom.
+    /// Every key edits the same document the typing path edits — no dead
+    /// wires. Session-only size, clamped 10..24px.
+    fn verse_toolbar(&mut self, ui: &UI, cx: &mut Context<Root>, verse_ids: Vec<String>) -> Div {
+        let mut kids: Vec<Div> = Vec::new();
+        for id in verse_ids {
+            let tag = format!("\n{id}\n");
+            kids.push(btn(ui, cx, &id, false, move |this, _, _, cx| {
+                let doc = this.lyrics_doc.clone();
+                doc.update(cx, |d, cx| d.insert_at_cursor(&tag, cx));
+            }));
+        }
+        kids.push(btn(ui, cx, "[chord]", false, |this, _, _, cx| {
+            let doc = this.lyrics_doc.clone();
+            doc.update(cx, |d, cx| d.insert_at_cursor("[]", cx));
+        }));
+        kids.push(btn(ui, cx, "split", false, |this, _, _, cx| {
+            let doc = this.lyrics_doc.clone();
+            doc.update(cx, |d, cx| d.insert_at_cursor("\n\n", cx));
+        }));
+        for (label, before, after) in [
+            ("B", "**", "**"),
+            ("I", "*", "*"),
+            ("U", "__", "__"),
+            ("S", "~~", "~~"),
+        ] {
+            kids.push(btn(ui, cx, label, false, move |this, _, _, cx| {
+                let doc = this.lyrics_doc.clone();
+                doc.update(cx, |d, cx| d.wrap_selection(before, after, cx));
+            }));
+        }
+        for (label, prefix) in [("H1", "# "), ("H2", "## "), ("list", "- ")] {
+            kids.push(btn(ui, cx, label, false, move |this, _, _, cx| {
+                let doc = this.lyrics_doc.clone();
+                doc.update(cx, |d, cx| d.prefix_current_line(prefix, cx));
+            }));
+        }
+        kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
+            this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
+            let size = this.lyrics_text_size;
+            this.lyrics_doc.update(cx, |d, cx| {
+                d.text_px = size;
+                cx.notify();
+            });
+            cx.notify();
+        }));
+        kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
+            this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
+            let size = this.lyrics_text_size;
+            this.lyrics_doc.update(cx, |d, cx| {
+                d.text_px = size;
+                cx.notify();
+            });
+            cx.notify();
+        }));
+        row_wrap(kids)
+    }
+
+    /// Theme picker buttons, one per built-in skin (Light/Dark/Gray/Blue/
+    /// Onyx) — driven by `vp_core::themes::builtin_themes` so a new skin
+    /// appears in every picker with no further edits. Each button applies
+    /// the skin and republishes projection colors.
+    fn theme_choice_buttons(&mut self, ui: &UI, cx: &mut Context<Root>) -> Vec<Div> {
+        vp_core::themes::builtin_themes()
+            .into_iter()
+            .map(|t| {
+                let active = self.theme_id == t.id;
+                let id = t.id.to_string();
+                btn(ui, cx, t.name, active, move |this, _, _, cx| {
+                    this.theme_id = id.clone();
+                    this.persist_layout_quiet();
+                    // Theme drives the wall's projection colors: publish.
+                    this.republish(cx);
+                    cx.notify();
+                })
+            })
+            .collect()
+    }
+
     /// The centre panel: **one WYSIWYG document for the whole song**.
     ///
     /// Not a verse form. The original's centre panel is *"a WYSIWYG word
@@ -10472,12 +11859,43 @@ impl Root {
     /// The boundary rule the document implements — **Enter is a line break,
     /// a blank line is the slide boundary** — lives in [`lyrics_doc`], pure and
     /// separately tested.
+    /// Empty centre state: no song selected. Instructional, in the sheet's
+    /// plain-label voice — names the two ways to get a song into the editor
+    /// (browser click, or the sample agenda) instead of a bare "(no song)".
+    /// Visual only: the document and every action stay untouched.
+    fn no_song_panel(&self, ui: &UI) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p(px(6.))
+            .min_h_0()
+            .flex_1()
+            .overflow_hidden()
+            .rounded_sm()
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel)
+            .child(label(ui, &self.t("lyrics"), 13.))
+            .child(div().h(px(6.)))
+            .child(label(ui, "No song is open in the editor.", 13.))
+            .child(wrap_note(
+                ui,
+                "Pick a song in the Songs browser on the left to edit it here, or press Load sample agenda in the strip above to open the bundled service.",
+            ))
+            .child(div().h(px(6.)))
+            .child(wrap_note(
+                ui,
+                "Typing goes straight into the open song's lyrics; a blank line starts a new slide.",
+            ))
+    }
+
     fn editor_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let Some(si) = self.sel_song else {
-            return section(ui, &self.t("lyrics"), vec![label(ui, "(no song)", 13.)]);
+            return self.no_song_panel(ui);
         };
         let Some(song) = self.songs.get(si).cloned() else {
-            return section(ui, &self.t("lyrics"), vec![label(ui, "(no song)", 13.)]);
+            return self.no_song_panel(ui);
         };
         // The document itself: one scrolling white area, `Paroles` tab selected.
         // A vertical scrollbar on the right, uniform line height, no gridlines,
@@ -10509,22 +11927,56 @@ impl Root {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap_2()
                     .px(px(6.))
                     .py(px(3.))
                     .rounded_sm()
-                    .bg(rgb(0xC9DDF3))
-                    .text_color(rgb(0x1E3A5F))
+                    .bg(ui.panel)
+                    .text_color(ui.fg)
                     .text_size(px(13.))
                     .font_weight(FontWeight::BOLD)
-                    .child(format!(
+                    .child(div().flex_1().child(format!(
                         "♪ {}{}",
                         if self.song_dirty { "*" } else { "" },
                         song.title
+                    )))
+                    .child(btn(
+                        ui,
+                        cx,
+                        if self.editor_page {
+                            "‹ Lyrics"
+                        } else {
+                            "Song editor ›"
+                        },
+                        self.editor_page,
+                        |this, _, _, cx| {
+                            this.editor_page = !this.editor_page;
+                            cx.notify();
+                        },
                     )),
             )
-            // `Paroles | Divers` — Divers holds transposition, capo and CCLI.
+            // Sheet center contract: the song title is an always-visible
+            // input above the toolbar; Number and the rest stay behind the
+            // details disclosure / on the editor page.
             .child(row(vec![
-                // Four document tabs, not two. `Lyrics | Files | Chords | Miscellaneous`
+                label(ui, "Title:", 12.),
+                div().flex_1().min_w(px(120.)).child(self.song_title_field.clone()),
+            ]))
+            .child({
+                // Verse/format toolbar (sheet center strip): verse chips +
+                // chord/split inserters + live B I U S H1 H2 list + A± zoom.
+                // Visible in control center AND on the editor page.
+                let ids: Vec<String> = song
+                    .ordered_verses()
+                    .into_iter()
+                    .map(|v| v.id.clone())
+                    .collect();
+                self.verse_toolbar(ui, cx, ids)
+            })
+            // `Paroles | Divers` — Divers holds transposition, capo and CCLI.
+            .when(self.editor_page, |d| {
+                d.child(row(vec![
+                // Four document tabs, not two (song-editor page only). `Lyrics | Files | Chords | Miscellaneous`
                 // per the 1.29 screenshot — `Files` is for the attached MP3/video,
                 // `Chords` for the chord view, `Miscellaneous` for
                 // transposition/Capo/CCLI.
@@ -10552,28 +12004,46 @@ impl Root {
                     this.song_misc = !this.song_misc;
                     cx.notify();
                 }),
-            ]))
+            ]))})
             // Save. `Ctrl+S` since 1.27 — `Alt+S` is Songbooks, NOT save. The
             // original gives the agenda save the same icon and warns they must
             // not be confused, so this one is worded explicitly.
             // Save lives in the Song ribbon group and on Ctrl+S; transpose and
             // notation live in the Chords tab and the Font group — the 1.29
             // editor keeps this row for Number/Title only.
+            // Song metadata (Number/Title/References/…) sits behind a
+            // disclosure: the control center is the lyrics document.
+            .when(!self.editor_page, |d| {
+                d.child(row(vec![btn(
+                ui,
+                cx,
+                if self.song_details_open {
+                    "Song details ▾"
+                } else {
+                    "Song details ▸"
+                },
+                self.song_details_open,
+                |this, _, _, cx| {
+                    this.song_details_open = !this.song_details_open;
+                    cx.notify();
+                },
+            )]))})
             // Canonical 1.29 metadata row: editable Number and Title fields.
-            .child(row(vec![
-                label(ui, "Number:", 12.),
-                div().w(px(90.)).child(self.number_field.clone()),
-                label(ui, "Title:", 12.),
-                div().flex_1().child(self.song_title_field.clone()),
-            ]))
-            .child(document_wrap(document))
+            .when(self.song_details_open || self.editor_page, |d| {
+                d.child(row(vec![
+                    label(ui, "Number:", 12.),
+                    div().w(px(90.)).child(self.number_field.clone()),
+                ]))
+            })
+            .child(self.song_document_area(ui, cx, document))
             // English 1.29 uses five editable footer fields: References and
             // Author/Composer on the left; Verse order and Copyright on the
             // right. Verse order is LIVE: the agenda item's override when one
             // exists, otherwise the song's own verse sequence. `×` clears a
             // custom order back to the song default; `⌃`/`⌄` rotate it.
-            .child({
-                let song_id = song.id.clone();
+            .when(self.song_details_open || self.editor_page, |d| {
+                d.child({
+                    let song_id = song.id.clone();
                 let default_order: Vec<String> =
                     song.ordered_verses().into_iter().map(|v| v.id.clone()).collect();
                 let owner = self.agenda.items.iter().find_map(|it| match &it.reference {
@@ -10726,10 +12196,12 @@ impl Root {
                             }
                         }
                     }),
-                ])
+                    ])
+                })
             })
-            .child(row_wrap(vec![
-                label(ui, "Author:", 12.),
+            .when(self.song_details_open || self.editor_page, |d| {
+                d.child(row_wrap(vec![
+                    label(ui, "Author:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.author_field.clone()),
                 label(ui, "Copyright:", 12.),
                 div().flex_1().min_w(px(120.)).child(self.copyright_field.clone()),
@@ -10750,11 +12222,11 @@ impl Root {
                         "Save song"
                     },
                     self.song_dirty,
-                    |this, _, _, cx| {
-                        this.save_song_document(cx);
-                    },
-                ),
-            ]))
+                        |this, _, _, cx| {
+                            this.save_song_document(cx);
+                        },
+                    ),
+                ]))})
     }
 
     #[allow(dead_code)] // superseded by message_ribbon on the mirror line, kept for rewire
@@ -11297,6 +12769,24 @@ impl Root {
         cx.notify();
     }
 
+    /// CSS background for the live overlay's wrapper document: the same
+    /// field the presentation is drawing (colour or image), so verse text
+    /// sits on the room's picture. Video backgrounds cannot be mirrored into
+    /// a document — those fall back to the theme's projection colour.
+    fn overlay_field_css(&self) -> String {
+        let fallback = format!("background:{}", self.theme().projection_bg);
+        match self.bg_kind {
+            BackgroundKind::Image => match &self.bg_file {
+                Some(p) => format!(
+                    "background:#000 url('file://{}') center/cover no-repeat",
+                    p.display()
+                ),
+                None => fallback,
+            },
+            _ => fallback,
+        }
+    }
+
     /// Keep the live browser window in step with the pushed slide. Runs at
     /// the end of every [`Self::push_projection`]: spawn on website slides,
     /// die the moment they leave, never fetch anything itself.
@@ -11387,7 +12877,11 @@ impl Root {
             cx.notify();
             return;
         };
-        if self.live_view.show(&bin, &kind, &url, geometry, room_fullscreen) {
+        // The overlay sits on the presentation's own background, so a stage
+        // overlay over a colour or image background matches the room instead
+        // of covering it with a black slab.
+        let field_css = self.overlay_field_css();
+        if self.live_view.show(&bin, &kind, &url, geometry, room_fullscreen, &field_css) {
             self.live_view_url = Some(url.clone());
             // Firefox ignores geometry (private window, no placement
             // control), so only a Chromium-family window on a dedicated
@@ -11572,6 +13066,12 @@ impl Root {
             Vec::new()
         };
         let mut kids: Vec<Div> = vec![row(vec![
+            // Visible way home: Stage must never be a trap, whatever the
+            // input path (R-Compression: the menu-row toggle could fail).
+            btn(ui, cx, "‹ Back to control", false, |this, _, window, cx| {
+                this.ui_go(Mode::Control, cx);
+                this.focus_root(window);
+            }),
             label(
                 ui,
                 &format!(
@@ -11625,7 +13125,20 @@ impl Root {
                     ),
             );
         } else if let Some(s) = current {
-            kids.push(self.slide_view(ui, &s, false, rgb(0x000000), rgb(0xFFFFFF), false, None));
+            kids.push(
+                div()
+                    .relative()
+                    .child(self.slide_view(
+                        ui,
+                        &s,
+                        false,
+                        rgb(0x000000),
+                        rgb(0xFFFFFF),
+                        false,
+                        None,
+                    ))
+                    .child(card_caption("STAGE")),
+            );
         }
         kids.push(label(
             ui,
@@ -11637,7 +13150,20 @@ impl Root {
             15.,
         ));
         if let Some(s) = next {
-            kids.push(self.slide_view(ui, &s, false, rgb(0x000000), rgb(0xFFFFFF), false, None));
+            kids.push(
+                div()
+                    .relative()
+                    .child(self.slide_view(
+                        ui,
+                        &s,
+                        false,
+                        rgb(0x000000),
+                        rgb(0xFFFFFF),
+                        false,
+                        None,
+                    ))
+                    .child(card_caption("STAGE — NEXT")),
+            );
         }
         kids.push(
             div()
@@ -11646,12 +13172,19 @@ impl Root {
                 .text_size(px(52.))
                 .child(self.clock_display()),
         );
+        // min_h_0 + overflow_hidden keep the stage content inside its own
+        // band: without them a tall card could claim space over the chrome
+        // and swallow menu-row clicks (R-Compression: Stage-OFF dead).
         div()
             .flex()
             .flex_col()
             .gap_2()
             .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .p(px(8.))
+            .track_focus(&self.focus_handle(cx))
             .children(kids)
     }
 }
@@ -11735,13 +13268,18 @@ fn main() {
             let bounds = Bounds::centered(None, size(px(boot_w), px(boot_h)), cx);
             // OS chrome carries the agenda name, like the original's
             // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
-            // Same sample Root::build opens, so the two can never disagree.
-            let boot_title: String = serde_json::from_str::<serde_json::Value>(AGENDA_SAMPLE)
-                .ok()
-                .and_then(|v| v.get("title")?.as_str().map(str::to_string))
-                .unwrap_or_else(|| "New agenda".to_string());
+            // Same agenda Root::build opens, so the two can never disagree.
+            let boot_title: String = {
+                let db = open_boot_db();
+                let (agenda, _) = boot_agenda_from_lib(&db);
+                if agenda.title.trim().is_empty() {
+                    "New agenda".to_string()
+                } else {
+                    agenda.title
+                }
+            };
             let window_title: gpui::SharedString =
-                format!("{boot_title} - VideoPsalm").into();
+                format!("{boot_title} - Perez RS").into();
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -11763,8 +13301,224 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_ui_theme_carries_the_brand_tokens() {
+        // E0063 regression: every builtin skin must build a complete `UI`
+        // (all fields, including `live`/`live_ink`), with the sheet brand
+        // layer intact — selection is signal red, live is lime, on all 5
+        // (Electron parity gap: the port has not landed the Onyx skin yet).
+        for t in vp_core::themes::builtin_themes() {
+            let ui = UI::from_theme(&t, None);
+            assert_eq!(ui.selection, SELECTION_RED, "skin {}", t.id);
+            assert_eq!(ui.selection_ink, ink_on(SELECTION_RED), "skin {}", t.id);
+            assert_eq!(ui.live, LIVE_LIME, "skin {}", t.id);
+            assert_eq!(ui.live_ink, ink_on(LIVE_LIME), "skin {}", t.id);
+            assert_ne!(ui.selection, ui.live, "skin {}", t.id);
+        }
+    }
+
+    #[test]
     fn boot_size_keeps_default_on_large_display() {
         assert_eq!(clamp_boot_size((1500., 950.), (1920., 1080.)), (1500., 950.));
+    }
+
+    #[test]
+    fn f5_passes_while_editing_but_lyrics_keys_do_not() {
+        // "F5 start" is a global promise (status bar): it must survive
+        // field focus. Slide vocabulary must not leak into lyric edits.
+        assert!(pres_key_passes_while_editing(PresKey::StartPres));
+        assert!(pres_key_passes_while_editing(PresKey::KeyTips));
+        assert!(!pres_key_passes_while_editing(PresKey::Next));
+        assert!(!pres_key_passes_while_editing(PresKey::Digit(1)));
+        assert!(!pres_key_passes_while_editing(PresKey::Section('V')));
+    }
+
+    #[test]
+    fn the_wall_never_shows_the_address_while_the_overlay_is_live() {
+        // FreeShow-matching: page on the wall, no URL string underneath it.
+        let u = Some("http://localhost:4000/#/output1");
+        assert!(overlay_covers_slide(true, u, u), "live + showing it -> tile suppressed");
+        // Everything else keeps the offline tile (honest fallback).
+        assert!(!overlay_covers_slide(false, u, u), "live off keeps the tile");
+        assert!(!overlay_covers_slide(true, None, u), "nothing showing keeps the tile");
+        assert!(!overlay_covers_slide(true, u, None), "non-website slide untouched");
+        assert!(
+            !overlay_covers_slide(
+                true,
+                Some("http://localhost:4000/#/output1"),
+                Some("http://localhost:4000/#/output2")
+            ),
+            "a different page showing must not blank this slide"
+        );
+    }
+
+    #[test]
+    fn browser_song_click_toggles_the_selection() {
+        // Regression: select → click the same row → no song open (the
+        // editor is free) → click again → reselected. Toggle semantics, not
+        // a Close button: the browser list is the selection surface.
+        assert_eq!(song_click_target(None, 3, false), Some(3), "first click selects");
+        assert_eq!(song_click_target(Some(3), 3, false), None, "second click clears");
+        assert_eq!(
+            song_click_target(Some(3), 4, false),
+            Some(4),
+            "another row moves the selection"
+        );
+        assert_eq!(
+            song_click_target(None, 0, false),
+            Some(0),
+            "row 0 selects like any other"
+        );
+        // The whole cycle, as the operator performs it.
+        let mut sel = None;
+        for (clicked, want) in [(2, Some(2)), (2, None), (2, Some(2))] {
+            sel = song_click_target(sel, clicked, false);
+            assert_eq!(sel, want);
+        }
+    }
+
+    #[test]
+    fn dirty_editor_vetoes_the_deselect_toggle() {
+        // Regression (data loss): typed lyrics with the `*` showing must
+        // survive a re-click on the selected row — the toggle keeps the
+        // song open until the operator saves, then re-clicks to close.
+        assert_eq!(
+            song_click_target(Some(3), 3, true),
+            Some(3),
+            "dirty re-click keeps the song open"
+        );
+        assert_eq!(
+            song_click_target(Some(3), 4, true),
+            Some(4),
+            "dirty never blocks moving to another row"
+        );
+        assert_eq!(
+            song_click_target(None, 5, true),
+            Some(5),
+            "dirty never blocks a fresh selection"
+        );
+    }
+
+    #[test]
+    fn f5_reaches_the_show_past_the_background_loop() {
+        // Regression: the background VideoLoop must never swallow F5 —
+        // only a launched standalone clip owns the press. `false` falls
+        // through to `start_presentation`.
+        assert!(f5_hands_to_motion(true, true), "standalone clip owns F5");
+        assert!(!f5_hands_to_motion(false, true), "background loop yields F5");
+        assert!(!f5_hands_to_motion(true, false), "nothing live: F5 starts");
+        assert!(!f5_hands_to_motion(false, false), "idle: F5 starts");
+    }
+
+    #[test]
+    fn stage_url_flag_is_read_only_when_asked() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert_eq!(
+            stage_url_arg(&a(&["perez-rs", "--stage-url", "http://localhost:4000/#/output1"])),
+            Some("http://localhost:4000/#/output1".to_string())
+        );
+        assert_eq!(stage_url_arg(&a(&["perez-rs"])), None);
+        assert_eq!(stage_url_arg(&a(&["perez-rs", "--stage-url"])), None);
+    }
+
+    #[test]
+    fn agenda_file_and_url_metas_stay_readable() {
+        // Sheet meta sublines: kind word + extension / host.
+        assert_eq!(file_kind_label("mp4"), "video");
+        assert_eq!(file_kind_label("MP3".to_lowercase().as_str()), "audio");
+        assert_eq!(file_kind_label("pptx"), "slides");
+        assert_eq!(file_kind_label("xyz"), "file");
+        assert_eq!(url_host("https://example.com/live"), "example.com");
+        assert_eq!(url_host("notaurl"), "");
+    }
+
+    #[test]
+    fn lyric_chord_detector_reads_bracket_markers_in_order() {
+        assert_eq!(lyric_chords("[C] hello [G] world [C]"), vec!["C", "G"]);
+        assert_eq!(lyric_chords("[Am7] x [F#m]"), vec!["Am7", "F#m"]);
+        assert!(lyric_chords("no markers here").is_empty());
+        assert!(lyric_chords("[not a chord!] x").is_empty());
+    }
+
+    #[test]
+    fn cold_enter_projects_the_click_context_first() {
+        let owner = |vid: &str| match vid {
+            "V2" => Some(2),
+            _ => None,
+        };
+        // Agenda cursor wins.
+        assert_eq!(cold_start_index(Some(1), Some("V2"), 3, &owner), Some(1));
+        // Clicked verse's item when no cursor.
+        assert_eq!(cold_start_index(None, Some("V2"), 3, &owner), Some(2));
+        // Unknown verse falls back to the first item.
+        assert_eq!(cold_start_index(None, Some("V9"), 3, &owner), Some(0));
+        // No context falls back to the first item.
+        assert_eq!(cold_start_index(None, None, 3, &owner), Some(0));
+        // Empty agenda stays a status message, never a panic.
+        assert_eq!(cold_start_index(None, None, 0, &owner), None);
+        assert_eq!(cold_start_index(None, Some("V2"), 0, &owner), None);
+    }
+
+    #[test]
+    fn f6_round_trips_the_single_screen_projector() {
+        // Out: visit the room screen. Back: control, live snapshot intact.
+        assert_eq!(focus_slides_target(Mode::Control), Mode::Projector);
+        assert_eq!(focus_slides_target(Mode::Projector), Mode::Control);
+        // Stage is a view, not a trap: F6 leaves it for Control too.
+        assert_eq!(focus_slides_target(Mode::Stage), Mode::Control);
+    }
+
+    #[test]
+    fn stage_view_round_trips_from_and_to_control() {
+        // R-Compression fail: Stage ON fired but OFF never returned. The
+        // toggle is a pure round trip, and no non-UI path may ever *enter*
+        // Stage (so a boot restore cannot strand the operator there).
+        assert_eq!(stage_toggle_target(Mode::Control), Mode::Stage);
+        assert_eq!(stage_toggle_target(Mode::Stage), Mode::Control);
+        assert_eq!(stage_toggle_target(Mode::Projector), Mode::Stage);
+        // The live path may keep the current view (a projector window is
+        // open), but it must never *introduce* Stage — so no boot/projection
+        // restore can ever strand the operator there.
+        // No window: show_live always visits the Projector tab. Window open:
+        // it stays where the operator is. Stage is never *entered* either way.
+        for from in [Mode::Control, Mode::Projector, Mode::Stage] {
+            assert_eq!(live_mode_target(from, false), Mode::Projector);
+            assert_eq!(live_mode_target(from, true), from);
+            assert_ne!(
+                live_mode_target(from, false),
+                Mode::Stage,
+                "live path must never enter Stage"
+            );
+        }
+    }
+
+    #[test]
+    fn control_window_chrome_stays_under_160px() {
+        // Conductor order: panes start at <= y190 on an 800px window, i.e.
+        // chrome (title strip + menu row + file strip + ribbon) <= 160px,
+        // without dropping controls or reordering the position contract.
+        const TITLE_STRIP: f32 = 19.0; // 11px text, zero padding
+        const MENU_ROW: f32 = 22.0; // one 13px control row + border
+        const FILE_STRIP: f32 = 22.0; // one 13px control row + border
+        // Ribbon: one merged tab+groups band, at most two group rows on a
+        // 1280px window, each row RIBBON_LINE_PX plus the group's 9px
+        // caption and 1px borders.
+        let group_row = crate::ux::RIBBON_LINE_PX + 2.0 + 11.0;
+        let ribbon = 2.0 * crate::ux::RIBBON_OUTER_PY + 2.0 * group_row;
+        let chrome = TITLE_STRIP + MENU_ROW + FILE_STRIP + ribbon;
+        assert!(
+            chrome <= 160.0,
+            "chrome {chrome}px over the 160px budget (panes must start <= y190)"
+        );
+    }
+
+    #[test]
+    fn center_column_holds_1_55fr_over_both_sides() {
+        // Sheet page 01: the lyrics center dominates. Defaults must keep it
+        // at least 1.55x wider than either side on a 1280px window.
+        let (left, right) = (320.0, 300.0);
+        let center = center_width(1280.0, left, right);
+        assert!(center / left >= 1.55, "center {center} vs left {left}");
+        assert!(center / right >= 1.55, "center {center} vs right {right}");
     }
 
     #[test]
@@ -11815,6 +13569,20 @@ mod tests {
             web_row_key("https://example.com/live"),
             "web:https://example.com/live"
         );
+        // Wrapped-URL regression: rows key on the full rejoined URL, so two
+        // pages sharing a 40-char prefix (the wrap width) never share a key
+        // — hiding one must not hide the other.
+        let long_a = "https://example.com/averylongpath/segment-one";
+        let long_b = "https://example.com/averylongpath/segment-two";
+        assert!(long_a.len() > 40 && long_b.len() > 40);
+        assert_eq!(&long_a[..40], &long_b[..40], "fixture shares the prefix");
+        let key_a = web_row_key(
+            &vp_core::verse_splitter::wrap_caption(long_a, 40).join(""),
+        );
+        let key_b = web_row_key(
+            &vp_core::verse_splitter::wrap_caption(long_b, 40).join(""),
+        );
+        assert_ne!(key_a, key_b, "prefix-sharing URLs collide: {key_a}");
         let lyric = Slide::text("T — V1", vec!["x".to_string()], "Song");
         let card = Slide::text(
             "Card",
@@ -11846,6 +13614,31 @@ mod tests {
         assert_eq!(kind, ItemKind::YouTube);
         assert!(website_agenda_item("  ").is_none());
         assert!(website_agenda_item("javascript:alert(1)").is_none());
+    }
+
+    #[test]
+    fn web_field_shows_the_normalised_url_the_card_stores() {
+        // R2-VIDEO-02: the add-web arm seeds the Website field with the
+        // normalised URL (not the raw clipboard text), so a schemeless
+        // paste shows exactly what the card stores.
+        let raw = "example.com/live";
+        let field = vp_core::schema::normalize_website_url(raw).expect("http gate");
+        assert_eq!(field, "https://example.com/live");
+        assert_ne!(field, raw.trim(), "guards the pre-fix raw-field behaviour");
+        let (kind, _, stored) = website_agenda_item(&field).expect("re-validates");
+        assert_eq!(kind, ItemKind::WebSite);
+        assert_eq!(stored, field);
+        // Other reasonable pastes agree too (field == stored after one
+        // normalisation pass through the constructor).
+        let yt = vp_core::schema::normalize_website_url("www.youtube.com/watch?v=x")
+            .expect("http gate");
+        let (kind, _, stored) = website_agenda_item(&yt).expect("re-validates");
+        assert_eq!(kind, ItemKind::YouTube);
+        assert_eq!(stored, yt);
+        let https = vp_core::schema::normalize_website_url("https://example.com/live")
+            .expect("http gate");
+        let (_, _, stored) = website_agenda_item(&https).expect("re-validates");
+        assert_eq!(stored, https);
     }
 
     #[test]
@@ -12039,6 +13832,98 @@ mod tests {
         let again = bible_agenda_item(&r, Some("ASV".to_string()));
         assert_eq!(bi.title, again.title);
         assert_eq!(bi.kind, again.kind);
+    }
+
+    #[test]
+    fn boot_agenda_restores_most_recent_then_falls_back() {
+        let dir = std::env::temp_dir().join(format!("vp-boot-agenda-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = library::open_memory().unwrap();
+        // No recents: bundled sample, no restored path.
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        // Most recent points at a missing file: still the sample.
+        library::push_recent(&db, dir.join("gone.json").to_str().unwrap(), 10).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        // Most recent is a valid agenda file: restored, path reported.
+        let good = dir.join("sunday.json");
+        std::fs::write(
+            &good,
+            r#"{"version":1,"title":"Easter Service","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, good.to_str().unwrap(), 20).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(good.to_str().unwrap()));
+        assert_eq!(a.title, "Easter Service");
+        // Corrupt newest shadows the good one (newest-or-sample rule).
+        library::push_recent(&db, dir.join("bad.json").to_str().unwrap(), 30).unwrap();
+        std::fs::write(dir.join("bad.json"), "{not json").unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        // R2-S2-01: valid agenda with an empty title restores retitled
+        // "New agenda" (path still reported) — never a blank header.
+        let untitled = dir.join("untitled.json");
+        std::fs::write(
+            &untitled,
+            r#"{"version":1,"title":"","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, untitled.to_str().unwrap(), 40).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(untitled.to_str().unwrap()));
+        assert_eq!(a.title, "New agenda");
+        // A blank/whitespace title takes the same arm.
+        let blank = dir.join("blank.json");
+        std::fs::write(
+            &blank,
+            r#"{"version":1,"title":"   ","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, blank.to_str().unwrap(), 50).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(blank.to_str().unwrap()));
+        assert_eq!(a.title, "New agenda");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boot_agenda_ignores_legacy_song_recent() {
+        // R2-SONG-01: pre-fix builds pushed song exports into the same
+        // recents table; a song path as newest must degrade to the sample
+        // (never a crash, never song content as agenda), and a newer agenda
+        // save restores normally.
+        let dir = std::env::temp_dir()
+            .join(format!("vp-boot-song-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = library::open_memory().unwrap();
+        let song = dir.join("amazing.json");
+        std::fs::write(
+            &song,
+            r#"{"id":"s1","title":"Amazing Grace","verses":[]}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, song.to_str().unwrap(), 10).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert!(p.is_none());
+        assert_eq!(a.title, "Sunday Service (sample)");
+        let good = dir.join("sunday.json");
+        std::fs::write(
+            &good,
+            r#"{"version":1,"title":"Easter Service","items":[],"settings":{}}"#,
+        )
+        .unwrap();
+        library::push_recent(&db, good.to_str().unwrap(), 20).unwrap();
+        let (a, p) = boot_agenda_from_lib(&db);
+        assert_eq!(p.as_deref(), Some(good.to_str().unwrap()));
+        assert_eq!(a.title, "Easter Service");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

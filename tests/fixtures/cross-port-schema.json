@@ -41,12 +41,21 @@
       "center",
       "right"
     ],
+    "vAligns": [
+      "top",
+      "center",
+      "bottom"
+    ],
     "backgroundKinds": [
       "color",
       "image",
       "videoLoop",
       "camera",
       "website"
+    ],
+    "bgFits": [
+      "cover",
+      "contain"
     ],
     "transitions": [
       "none",
@@ -337,6 +346,7 @@
         "size": 48.0,
         "color": "#FFFFFF",
         "align": "left",
+        "valign": "top",
         "margins": {
           "top": 40.0,
           "right": 60.0,
@@ -451,6 +461,7 @@
         "size": 48.0,
         "color": "#FFFFFF",
         "align": "right",
+        "valign": "bottom",
         "margins": {
           "top": 40.0,
           "right": 60.0,

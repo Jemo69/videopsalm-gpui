@@ -514,6 +514,12 @@ fn parse_verse_list(s: &str) -> Result<Vec<u32>, String> {
             if lo == 0 || hi == 0 || hi < lo {
                 return Err(format!("bad verse range {part:?}"));
             }
+            // Bound the expansion: a hostile/corrupt range must not allocate
+            // gigabytes before chapter-length checks run (176 verses in
+            // Psalm 119, the longest real chapter; 1000 is generous headroom).
+            if hi - lo > 1000 {
+                return Err(format!("verse range too large {part:?}"));
+            }
             verses.extend(lo..=hi);
         } else {
             let v: u32 = part
@@ -541,6 +547,12 @@ pub fn parse_reference(
     versification: Versification,
 ) -> Result<BibleRef, String> {
     let input = input.trim();
+    // Normalize unicode dashes before shape checks: copy-pasted ranges use
+    // en/em dash, which the tail gate would otherwise reject (degrading to
+    // a whole-chapter fallback). Byte-safe: both dashes are multi-byte,
+    // ASCII '-' is single-byte, and replacement happens before any indexing.
+    let dehyphenated = input.replace('\u{2013}', "-").replace('\u{2014}', "-");
+    let input = dehyphenated.as_str();
     // Split the trailing `chapter[:verses]` off the book name.
     //
     // Done by trying every whitespace boundary from the right and taking the
@@ -747,6 +759,21 @@ pub fn merge_bilingual(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn en_dash_range_parses_like_hyphen() {
+        // VC-05: copy-pasted en-dash ranges must not degrade to whole-chapter.
+        let hyphen = parse("John 3:16-18");
+        let endash = parse("John 3:16–18");
+        assert_eq!(hyphen.verses, endash.verses);
+        assert_eq!(endash.verses, &[16, 17, 18][..]);
+    }
+
+    #[test]
+    fn absurd_range_is_rejected_before_allocation() {
+        // VC-06: must Err, not allocate ~4GB of u32s.
+        assert!(parse_verse_list("1-1000000000").is_err());
+    }
 
     fn parse(s: &str) -> BibleRef {
         parse_reference(s, "SAMPLE-EN", Versification::En).unwrap()

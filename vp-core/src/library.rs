@@ -156,7 +156,10 @@ pub fn upsert_song(conn: &Connection, song: &Song) -> Result<(), rusqlite::Error
         .flat_map(|v| v.lines.iter().map(|l| l.as_str()))
         .collect::<Vec<_>>()
         .join("\n");
-    let data = serde_json::to_string(song).unwrap_or_else(|_| "{}".to_string());
+    // Serialize strictly: a corrupt blob must never be stored as "{}"
+    // (it would read back as an empty song and collide on id "").
+    let data = serde_json::to_string(song)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
     conn.execute(
         "INSERT INTO songs (id, title, lyrics, authors, composer, ccli, song_no, songbook_id, data)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -178,15 +181,34 @@ pub fn upsert_song(conn: &Connection, song: &Song) -> Result<(), rusqlite::Error
     Ok(())
 }
 
+/// Insert a song only when its id is absent from the library; returns
+/// `true` when the row was inserted, `false` when an existing row won and
+/// was left untouched. Boot uses this for the bundled samples so operator
+/// edits to a sample survive restarts instead of being overwritten.
+pub fn upsert_song_if_absent(conn: &Connection, song: &Song) -> Result<bool, rusqlite::Error> {
+    if get_song(conn, &song.id)?.is_some() {
+        return Ok(false);
+    }
+    upsert_song(conn, song)?;
+    Ok(true)
+}
+
 fn row_to_song(row: &rusqlite::Row) -> Result<Song, rusqlite::Error> {
     let data: String = row.get("data")?;
-    Ok(serde_json::from_str(&data).unwrap_or_default())
+    // Loud on corrupt blobs: silent empty-song defaults collide on id "".
+    let song: Song = serde_json::from_str(&data).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+    })?;
+    Ok(song)
 }
 
 pub fn get_song(conn: &Connection, id: &str) -> Result<Option<Song>, rusqlite::Error> {
     conn.query_row("SELECT data FROM songs WHERE id = ?1", params![id], |row| {
         let data: String = row.get(0)?;
-        Ok(serde_json::from_str(&data).unwrap_or_default())
+        let song: Song = serde_json::from_str(&data).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+        })?;
+        Ok(song)
     })
     .optional()
 }
@@ -198,17 +220,28 @@ pub fn count_songs(conn: &Connection) -> Result<i64, rusqlite::Error> {
 /// All songs in the library (boot restore). The app's support folder keeps
 /// the SQLite library across runs; the in-memory browser list is rebuilt
 /// from here plus the bundled samples and the VideoPsalm folder scan.
-pub fn all_songs(conn: &Connection) -> Result<Vec<Song>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT data FROM songs")?;
+///
+/// Tolerant of corrupt rows: returns the songs that parse plus the ids
+/// that did not, so one bad blob can never drop (or, via a boot `unwrap`,
+/// crash) the whole stored library. Callers surface `skipped` on the
+/// status line; single-row strict reads stay loud via [`get_song`].
+pub fn all_songs(conn: &Connection) -> Result<(Vec<Song>, Vec<String>), rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT id, data FROM songs")?;
     let rows = stmt.query_map([], |row| {
-        let data: String = row.get(0)?;
-        Ok(serde_json::from_str(&data).unwrap_or_default())
+        let id: String = row.get(0)?;
+        let data: String = row.get(1)?;
+        Ok((id, serde_json::from_str::<Song>(&data).ok()))
     })?;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for row in rows {
-        out.push(row?);
+        let (id, song) = row?;
+        match song {
+            Some(s) => out.push(s),
+            None => skipped.push(id),
+        }
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 /// Strip the spaces from an already-normalized string, producing the
@@ -583,6 +616,21 @@ pub fn list_recents(conn: &Connection, limit: usize) -> Result<Vec<String>, rusq
     rows.collect()
 }
 
+/// Boot-restore rule (pure): the single most recent path counts only when
+/// `exists` reports it still on disk. A missing/unreadable newest entry
+/// yields `None` (the caller keeps the bundled sample agenda) — older
+/// recents are never substituted, so a deleted newest file cannot silently
+/// resurrect a stale plan.
+pub fn recent_agenda_to_restore(
+    recents: &[String],
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    recents
+        .first()
+        .filter(|p| !p.trim().is_empty() && exists(p))
+        .cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,6 +831,71 @@ mod tests {
         assert_eq!(
             list_recents(&conn, 10).unwrap(),
             vec!["/a/sunday.vps".to_string(), "/a/friday.vps".to_string()]
+        );
+    }
+
+    #[test]
+    fn all_songs_skips_corrupt_rows_and_reports_them() {
+        // Regression: one bad blob must never drop (or crash boot over)
+        // the whole stored library — survivors load, the bad id is named.
+        let conn = open_memory().unwrap();
+        upsert_song(&conn, &song("good", "Good", "A", "", "1", "b")).unwrap();
+        conn.execute(
+            "INSERT INTO songs (id, data) VALUES (?1, ?2)",
+            rusqlite::params!["bad", "{not json"],
+        )
+        .unwrap();
+        let (songs, skipped) = all_songs(&conn).unwrap();
+        assert_eq!(songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["good"]);
+        assert_eq!(skipped, vec!["bad".to_string()]);
+    }
+
+    #[test]
+    fn upsert_song_if_absent_keeps_operator_edits() {
+        let conn = open_memory().unwrap();
+        upsert_songbook(
+            &conn,
+            &Songbook {
+                id: "b1".into(),
+                name: "Main".into(),
+                abbrev: "M".into(),
+                read_only: false,
+            },
+        )
+        .unwrap();
+        let pristine = song("s1", "Sample Title", "Old Author", "1", "01", "b1");
+        // Absent id inserts.
+        assert!(upsert_song_if_absent(&conn, &pristine).unwrap());
+        // Operator edits the stored copy.
+        let mut edited = pristine.clone();
+        edited.title = "Operator Title".into();
+        upsert_song(&conn, &edited).unwrap();
+        // Boot re-offers the pristine sample: the edit must survive.
+        assert!(!upsert_song_if_absent(&conn, &pristine).unwrap());
+        assert_eq!(
+            get_song(&conn, "s1").unwrap().unwrap().title,
+            "Operator Title"
+        );
+    }
+
+    #[test]
+    fn recent_agenda_to_restore_takes_newest_existing_only() {
+        let recents = vec!["/new/agenda.json".to_string(), "/old/agenda.json".to_string()];
+        // Newest on disk: restored.
+        assert_eq!(
+            recent_agenda_to_restore(&recents, |p| p == "/new/agenda.json"),
+            Some("/new/agenda.json".to_string())
+        );
+        // Newest deleted: sample fallback, never the older recent.
+        assert_eq!(
+            recent_agenda_to_restore(&recents, |p| p == "/old/agenda.json"),
+            None
+        );
+        // Blank/empty recents: nothing to restore.
+        assert_eq!(recent_agenda_to_restore(&[], |_| true), None);
+        assert_eq!(
+            recent_agenda_to_restore(&["  ".to_string()], |_| true),
+            None
         );
     }
 

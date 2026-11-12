@@ -114,6 +114,9 @@ pub fn verse_shortcut_target(verse_ids: &[&str], key: char) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 /// One-glyph text badge per agenda kind. Original glyphs only.
+/// Test-only since R10: sheet rows carry no icons (the meta subline carries
+/// the kind), so production rendering must not reference these.
+#[cfg(test)]
 pub fn kind_badge(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Song => "♪",
@@ -443,11 +446,14 @@ pub enum PresKey {
     ToggleMode,
     /// Restart the presentation from the beginning (F5).
     ///
-    /// Context-dependent in the original (RESEARCH-weebly §1.6): F5 also
-    /// toggles media play/pause *"when the video/audio player owns focus"*
-    /// (1.27b — the Logitech R400 case). This port has no focusable player
-    /// widget, so F5 always restarts; play/pause stays one click away on the
-    /// Message-tab transport button, which the help row says.
+    /// Context-dependent in the original (RESEARCH-weebly §1.6, Electron's
+    /// presKeys): F5 restarts-from-beginning normally, but toggles media
+    /// play/pause *"when the video/audio player owns focus"* (1.27b — the
+    /// Logitech R400 case). This port has no focusable player widget, so
+    /// "owns focus" is the live in-app media session (pump/loop, held or
+    /// paused); the dispatch toggles it while it lives and restarts only
+    /// when idle — Electron's same two branches with the session as the
+    /// focus proxy.
     StartPres,
     /// Save the document being edited (Ctrl+S).
     ///
@@ -670,6 +676,11 @@ pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
         "ctrl-8" => Some(PresKey::AddResult(8)),
         "ctrl-9" => Some(PresKey::AddResult(9)),
         "f1" => Some(PresKey::Help),
+        // NOTE: no `"?"` arm. GPUI reports Shift+/ as `"shift-/"`
+        // (modifiers + base key, never the shifted character), so a bare
+        // `"?"` never arrives — it would silently shrink the verse range
+        // via `RangeShrinkStart` below while the status bar promised help.
+        // Help lives on F1 (status chip updated to match).
         "ctrl-q" => Some(PresKey::Quit),
         "ctrl-*" => Some(PresKey::RangeExtendEnd),
         "ctrl-/" => Some(PresKey::RangeShrinkEnd),
@@ -721,12 +732,12 @@ pub fn shortcut_help() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B", "arm / disarm the shield"),
         ("Ctrl+R", "freeze / unfreeze the projected slide"),
         ("Ctrl+E", "switch Edit ↔ Viewer mode"),
-        // F5 restarts from the beginning (§1.6); the player-focus play/pause
-        // the changelog adds has no focusable widget in this port, so media
-        // toggling lives on the Message-tab transport button instead.
+        // F5 restarts from the beginning (§1.6); while a video/audio
+        // session owns playback it toggles play/pause instead (the
+        // Logitech R400 branch).
         (
             "F5",
-            "start presentation from the beginning (play/pause: Message-tab transport)",
+            "start from the beginning (play/pause while media plays)",
         ),
         ("X", "next PowerPoint slide"),
         ("F6", "focus the slide panel"),
@@ -796,6 +807,21 @@ pub fn tool_strip() -> [(&'static str, &'static str); 7] {
         ("cmd-project", "project"),
         ("cmd-pencil", "mode"),
     ]
+}
+
+/// Display glyph for a strip command (Signal Room language): the rail is a
+/// column of theme-aware chips, so the mark is drawn in the theme ink rather
+/// than baked into a rainbow SVG. Order and meaning match [`tool_strip`].
+pub fn strip_glyph(action: &str) -> &'static str {
+    match action {
+        "next" => "▾",
+        "base" => "■",
+        "text" => "T",
+        "shield" => "⊘",
+        "freeze" => "❄",
+        "project" => "▶",
+        _ => "✎",
+    }
 }
 
 /// Index of the pencil in [`tool_strip`]. It and everything after it render
@@ -1261,9 +1287,60 @@ impl LayoutPrefs {
 /// tasks, no repaint scheduling — window animation frames repaint.
 pub const CARET_BLINK_MS: u128 = 530;
 
+/// Compact-ribbon metrics (VP1.29 density): single source of truth shared by
+/// the ribbon layout code in `main.rs` and the chrome-budget test below, so
+/// inflating any band fails the test instead of silently taxing the editor
+/// height. All values are pixels.
+pub const RIBBON_TEXT_PX: f32 = 10.5;
+pub const RIBBON_BTN_PY: f32 = 0.0;
+pub const RIBBON_BTN_PX: f32 = 1.5;
+pub const RIBBON_TAB_PY: f32 = 0.5;
+pub const RIBBON_OUTER_PY: f32 = 0.5;
+pub const RIBBON_BAND_GAP: f32 = 0.0;
+pub const RIBBON_GROUP_PY: f32 = 0.5;
+pub const RIBBON_GROUP_PX: f32 = 2.0;
+pub const RIBBON_WRAP_GAP: f32 = 2.0;
+/// Line box of an 10.5px control row, borders included (≈13px box). The
+/// chrome budget (≤160px of bands, panes from y190) is pinned by
+/// `control_window_chrome_stays_compact` below.
+pub const RIBBON_LINE_PX: f32 = 13.0;
+
+/// Estimated height of one ribbon: the tab band plus one wrapped band of
+/// groups whose tallest column holds `control_lines` control rows of
+/// buttons and a caption line. Wide windows keep groups on one band; a
+/// narrow window wraps a second band, which costs another `band` (the
+/// budget covers the one-band case, which the screenshots pin).
+/// Test-side pin for the density budget (see the test below); the layout
+/// itself reads the `RIBBON_*` constants directly.
+#[cfg(test)]
+pub fn ribbon_chrome_budget(control_lines: f32) -> f32 {
+    let tabs = 2.0 * RIBBON_OUTER_PY + (2.0 * RIBBON_TAB_PY + RIBBON_LINE_PX + 2.0);
+    let band = 2.0 * RIBBON_GROUP_PY
+        + control_lines * (2.0 * RIBBON_BTN_PY + RIBBON_LINE_PX + 2.0)
+        + 1.0
+        + RIBBON_LINE_PX;
+    tabs + RIBBON_BAND_GAP + band
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ribbon_chrome_stays_inside_the_density_budget() {
+        // VP1.29 density: 10.5px controls, tabs merged into the groups
+        // band, one wrapped band ≈ 100-124px of total chrome. The budget
+        // must hold for the worst planned group shape (2 stacked control
+        // rows per group: dropdown row + preset row), one band.
+        assert!(RIBBON_TEXT_PX <= 11.0);
+        assert!(RIBBON_BTN_PY <= 1.0);
+        assert!(RIBBON_TAB_PY <= 1.0);
+        let total = ribbon_chrome_budget(2.0);
+        assert!(
+            total <= 110.0,
+            "chrome budget {total}px over the 1.29 target band"
+        );
+    }
 
     #[test]
     fn ribbon_tabs_round_trip() {
@@ -1682,6 +1759,23 @@ mod tests {
     }
 
     #[test]
+    fn strip_glyphs_cover_every_command_distinctly() {
+        // Signal Room rail: one readable mark per command, no shared glyph,
+        // in tool_strip order (the rail draws these in the theme ink).
+        let strip = tool_strip();
+        let mut seen: Vec<&str> = Vec::new();
+        for (_, action) in strip {
+            let g = strip_glyph(action);
+            assert!(!g.is_empty(), "{action} has no glyph");
+            assert!(!seen.contains(&g), "duplicate glyph {g} for {action}");
+            seen.push(g);
+        }
+        assert_eq!(seen.len(), strip.len());
+        // The arm-able command keeps a distinct mark from the mode pencil.
+        assert_ne!(strip_glyph("shield"), strip_glyph("mode"));
+    }
+
+    #[test]
     fn tool_strip_glyphs_are_distinct_text() {
         let strip = tool_strip();
         let mut glyphs: Vec<&str> = strip.iter().map(|(g, _)| *g).collect();
@@ -1907,12 +2001,26 @@ mod tests {
         assert_eq!(route_pres_key("b"), Some(PresKey::Section('B')));
         assert_eq!(route_pres_key("C"), Some(PresKey::Section('C')));
         assert_eq!(route_pres_key("v"), Some(PresKey::Section('V')));
+        // I/O navigate slides via the same section jump (instrumental/other).
+        assert_eq!(route_pres_key("i"), Some(PresKey::Section('I')));
+        assert_eq!(route_pres_key("o"), Some(PresKey::Section('O')));
+        assert_eq!(route_pres_key("I"), Some(PresKey::Section('I')));
+        assert_eq!(route_pres_key("O"), Some(PresKey::Section('O')));
         // Typing letters that are not presentation keys is not routed.
         for k in ["z", "q", "w", "!", "", "shift-a", "ctrl-z"] {
             assert_eq!(route_pres_key(k), None, "{k} must not route");
         }
         // F1 is contextual help in the original (1.7), and it now routes.
         assert_eq!(route_pres_key("f1"), Some(PresKey::Help));
+        // `"?"` never arrives from GPUI (Shift+/ reports as `"shift-/"`,
+        // bound to range-shrink below): it must not route to Help, or the
+        // status chip would promise help while `?` shrinks the range.
+        assert_eq!(route_pres_key("?"), None, "? never arrives bare");
+        assert_eq!(
+            route_pres_key("shift-/"),
+            Some(PresKey::RangeShrinkStart),
+            "Shift+/ keeps its range meaning"
+        );
     }
 
     #[test]

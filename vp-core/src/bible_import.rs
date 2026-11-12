@@ -92,15 +92,25 @@ impl Element {
             .map(|(_, v)| v.as_str())
     }
 
-    /// `GetNodeText` — concatenated **direct text child nodes only**
-    /// (`NodeType == 3`), no element content, no descendants.
-    fn direct_text(&self) -> String {
-        let mut s = String::new();
-        for c in &self.children {
-            if let Node::Text(t) = c {
-                s.push_str(t);
+    /// Verse body text (OSIS): every descendant text node **except**
+    /// `<note>` subtrees (footnotes cross-references are commentary, not
+    /// Scripture text). The original concatenated only direct text children
+    /// (`GetNodeText`, `NodeType == 3`), so verse text wrapped in child
+    /// markup (`<w>` word tags, `<q>`, `<DivineName>`, `<l>`) was
+    /// silently dropped — the import "succeeded" with blank verses that
+    /// `resolve` then skips. Modern OSIS files import with content instead.
+    fn verse_body_text(&self) -> String {
+        fn walk(el: &Element, out: &mut String) {
+            for c in &el.children {
+                match c {
+                    Node::Text(t) => out.push_str(t),
+                    Node::Element(e) if e.name == "note" => {}
+                    Node::Element(e) => walk(e, out),
+                }
             }
         }
+        let mut s = String::new();
+        walk(self, &mut s);
         s
     }
 
@@ -190,6 +200,16 @@ fn parse_doc(xml: &str) -> Result<Element, ImportError> {
                 }
             }
             Ok(Event::Eof) => break,
+            Ok(Event::CData(t)) => {
+                // CDATA is literal text (never entity-decoded): some Zefania
+                // and OSIS exports wrap verse text in it. Dropping it
+                // silently emptied those verses.
+                if let Some(top) = stack.last_mut() {
+                    top.children.push(Node::Text(
+                        String::from_utf8_lossy(t.as_ref()).into_owned(),
+                    ));
+                }
+            }
             Ok(_) => {}
             Err(e) => return Err(ImportError::Bad(format!("XML error: {e}"))),
         }
@@ -417,6 +437,7 @@ pub fn import_bible_xml(xml: &str, fallback_name: &str) -> Result<Translation, I
         "osis" => import_osis(&doc, fallback_name),
         "XMLBIBLE" => import_zefania(&doc, fallback_name),
         "root" => import_local_xml(&doc, fallback_name),
+        "bible" => import_bible(&doc, fallback_name),
         other => Err(ImportError::Faithful(format!(
             "Unrecognised Bible XML root element: {other}"
         ))),
@@ -598,7 +619,7 @@ fn import_osis(doc: &Element, fallback_name: &str) -> Result<Translation, Import
                 }
             }
         }
-        let own = clean_osis_text(&verse.direct_text());
+        let own = clean_osis_text(&verse.verse_body_text());
         let text = if own.is_empty() {
             // Milestone style (<verse …/>text): the original reads nothing
             // here; we take the text run until the next element so modern
@@ -793,6 +814,167 @@ fn import_zefania(doc: &Element, fallback_name: &str) -> Result<Translation, Imp
     Ok(t)
 }
 
+// -------------------------------------------------- `<bible>` dialects
+//
+// Two external `<bible>` roots share dispatch but differ in verse tags:
+// Beblia (`book`/`chapter`/`verse` with full-word `number=`; distinguished
+// by the detector string `verse number=`) and OpenSong (short `b`/`c`/`v`
+// with `n=`, plus long `book`/`chapter`/`verses` aliases). The dispatch
+// order keeps `osis`, `XMLBIBLE`, and `root` first so the new arm cannot
+// steal any of theirs. NIV-style copyrighted files still import via user
+// drop-in here; the app never ships them.
+
+/// Route a `<bible>` root to Beblia or OpenSong by the distinguishing
+/// detector: a `verse` carrying `number=` means Beblia; otherwise OpenSong.
+fn import_bible(doc: &Element, fallback_name: &str) -> Result<Translation, ImportError> {
+    let has_numbered_verse = doc
+        .descendants("verse")
+        .iter()
+        .any(|v| v.attr("number").is_some());
+    if has_numbered_verse {
+        import_beblia(doc, fallback_name)
+    } else {
+        import_opensong(doc, fallback_name)
+    }
+}
+
+/// Beblia: `<bible name="KJV" copyright="…"><book n="1" name="Genesis">
+/// <chapter number="1"><verse number="1">…</verse>`. The `book`/`chapter`
+/// skeleton is identical to the per-book (`<root>`) walker; only the verse
+/// tag differs (`verse` vs `passage`) and the library name lives at
+/// `bible@name`. Missing book names fall back to the canonical 1–66 table
+/// via `Builder::book`.
+fn import_beblia(doc: &Element, fallback_name: &str) -> Result<Translation, ImportError> {
+    let translation_id = doc
+        .attr("name")
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| fallback_name.to_string());
+    let mut builder = Builder::default();
+    let mut any_book = false;
+    for (i, book) in doc.children_named("book").enumerate() {
+        let number_raw = book
+            .attr("n")
+            .or_else(|| book.attr("number"))
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(i as u32 + 1);
+        if number_raw == 0 || number_raw > 66 {
+            continue;
+        }
+        let book_name = book.attr("name").unwrap_or("");
+        let b = builder.book(number_raw as u8, book_name, None);
+        let mut any_chapter = false;
+        for chapter in book.children_named("chapter") {
+            let Some(cid): Option<u32> = chapter
+                .attr("number")
+                .or_else(|| chapter.attr("n"))
+                .and_then(|s| s.parse().ok())
+            else {
+                continue;
+            };
+            for verse in chapter.children_named("verse") {
+                let Some(vid): Option<u32> = verse
+                    .attr("number")
+                    .or_else(|| verse.attr("n"))
+                    .and_then(|s| s.parse().ok())
+                else {
+                    continue;
+                };
+                b.push_verse(cid, vid, verse.inner_text().trim().to_string());
+                any_chapter = true;
+            }
+        }
+        if any_chapter {
+            any_book = true;
+        }
+    }
+    if !any_book {
+        return Err(ImportError::Faithful("No Bible books found.".into()));
+    }
+    let mut t = builder.build(translation_id, String::new());
+    if t.books.is_empty() {
+        return Err(ImportError::Faithful("No Bible books found.".into()));
+    }
+    t.copyright = doc
+        .attr("copyright")
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    t.source = Some("beblia".into());
+    Ok(t)
+}
+
+/// OpenSong: the terse single-letter spine `bible → b → c → v` with `n=`,
+/// plus long aliases (`book`/`chapter`/`verses`). Book numbers come from
+/// `b@n` when present, else positional order; missing names fall back to
+/// the canonical 1–66 table via `Builder::book`.
+fn import_opensong(doc: &Element, fallback_name: &str) -> Result<Translation, ImportError> {
+    let translation_id = doc
+        .attr("name")
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| fallback_name.to_string());
+    let mut builder = Builder::default();
+    let mut books: Vec<&Element> = Vec::new();
+    books.extend(doc.children_named("b"));
+    books.extend(doc.children_named("book"));
+    let mut any_book = false;
+    for (i, book) in books.iter().enumerate() {
+        let number_raw = book
+            .attr("n")
+            .or_else(|| book.attr("number"))
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(i as u32 + 1);
+        if number_raw == 0 || number_raw > 66 {
+            continue;
+        }
+        let book_name = book.attr("name").unwrap_or("");
+        let b = builder.book(number_raw as u8, book_name, None);
+        let mut chapters: Vec<&Element> = Vec::new();
+        chapters.extend(book.children_named("c"));
+        chapters.extend(book.children_named("chapter"));
+        let mut any_chapter = false;
+        for chapter in chapters {
+            let Some(cid): Option<u32> = chapter
+                .attr("n")
+                .or_else(|| chapter.attr("number"))
+                .and_then(|s| s.parse().ok())
+            else {
+                continue;
+            };
+            let mut verses: Vec<&Element> = Vec::new();
+            verses.extend(chapter.children_named("v"));
+            verses.extend(chapter.children_named("verses"));
+            for verse in verses {
+                let Some(vid): Option<u32> = verse
+                    .attr("n")
+                    .or_else(|| verse.attr("number"))
+                    .and_then(|s| s.parse().ok())
+                else {
+                    continue;
+                };
+                b.push_verse(cid, vid, verse.inner_text().trim().to_string());
+                any_chapter = true;
+            }
+        }
+        if any_chapter {
+            any_book = true;
+        }
+    }
+    if !any_book {
+        return Err(ImportError::Faithful("No Bible books found.".into()));
+    }
+    let mut t = builder.build(translation_id, String::new());
+    if t.books.is_empty() {
+        return Err(ImportError::Faithful("No Bible books found.".into()));
+    }
+    t.copyright = doc
+        .attr("copyright")
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    t.source = Some("opensong".into());
+    Ok(t)
+}
+
 // --------------------------------------------------------- local per-book
 
 /// The `bible-translations` per-book XML.
@@ -942,6 +1124,55 @@ mod tests {
     }
 
     #[test]
+    fn osis_verses_with_child_markup_keep_their_words() {
+        // NIV-style OSIS (Zondervan/Biblica export) wraps verse text in
+        // child elements (<w> word markup, <l> poetry lines, <DivineName>);
+        // footnotes live in <note>. `GetNodeText` saw only direct text
+        // children, so these verses imported as EMPTY strings and
+        // `resolve` silently skipped them — "Imported NIV: 66 books"
+        // with blank verses. Word/line content must survive; note content
+        // (commentary) must not leak in.
+        let xml = r#"<osis><osisText xml:lang="en" osisIDWork="NIV">
+          <chapter osisID="Gen.1">
+            <verse osisID="Gen.1.1"><w>In</w> <w>the</w> beginning<note type="footnote">a study note</note> God created.</verse>
+            <verse osisID="Gen.1.2"><l>And the earth was</l> <l>without form.</l></verse>
+          </chapter>
+          <chapter osisID="John.3">
+            <verse osisID="John.3.16">For God so <DivineName>loved</DivineName> the world</verse>
+          </chapter>
+        </osisText></osis>"#;
+        let t = import_osis(&parse_doc(xml).unwrap(), "x").unwrap();
+        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "NIV", Versification::En).unwrap();
+        let lines = t.resolve(&r);
+        assert_eq!(
+            lines,
+            vec![
+                "1 In the beginning God created.".to_string(),
+                "2 And the earth was without form.".to_string()
+            ]
+        );
+        assert!(!lines.iter().any(|l| l.contains("study note")), "{lines:?}");
+        let r = crate::bible_ref::parse_reference("John 3:16", "NIV", Versification::En).unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec!["16 For God so loved the world".to_string()]
+        );
+    }
+
+    #[test]
+    fn osis_cdata_verse_text_is_not_silently_dropped() {
+        // Some OSIS exports wrap verse text in CDATA. `parse_doc` used to
+        // ignore Event::CData entirely, emptying those verses silently.
+        let xml = r#"<osis><osisText xml:lang="en" osisIDWork="X"><verse osisID="Ps.23.1"><![CDATA[The LORD is my shepherd;]]></verse></osisText></osis>"#;
+        let t = import_osis(&parse_doc(xml).unwrap(), "x").unwrap();
+        let r = crate::bible_ref::parse_reference("Psalm 23:1", "X", Versification::En).unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec!["1 The LORD is my shepherd;".to_string()]
+        );
+    }
+
+    #[test]
     fn osis_empty_verse_list_reports_no_books() {
         let xml = r#"<osis><osisText xml:lang="en" osisIDWork="X"/></osis>"#;
         let err = import_osis(&parse_doc(xml).unwrap(), "x").unwrap_err();
@@ -1070,6 +1301,13 @@ mod tests {
         assert!(import_bible_xml(LOCAL, "x").is_ok());
         let err = import_bible_xml("<songs/>", "x").unwrap_err();
         assert!(matches!(err, ImportError::Faithful(_)), "{err}");
+        // New dialects route through the same public entry: Beblia/OpenSong
+        // import ok, but an unknown root still errors loudly (no silent
+        // mis-import as Zefania).
+        let beblia = r#"<bible name="KJV" copyright="Public Domain"><book n="1" name="Genesis"><chapter number="1"><verse number="1">In the beginning God created the heaven and the earth.</verse><verse number="2">And the earth was without form, and void.</verse></chapter></book></bible>"#;
+        assert!(import_bible_xml(beblia, "x").is_ok());
+        let opensong = r#"<bible name="ESV" copyright="Crossway"><b n="1" name="Genesis"><c n="1"><v n="1">In the beginning, God created the heavens and the earth.</v><v n="2">The earth was without form and void.</v></c></b></bible>"#;
+        assert!(import_bible_xml(opensong, "x").is_ok());
     }
 
     #[test]
@@ -1131,6 +1369,57 @@ mod tests {
     #[test]
     fn vpc_bible_rejects_empty_archives() {
         assert!(import_bible_vpc(&[], "Fallback").is_err());
+    }
+
+    const BEBLIA: &str = r#"<bible name="KJV" copyright="Public Domain"><book n="1" name="Genesis"><chapter number="1"><verse number="1">In the beginning God created the heaven and the earth.</verse><verse number="2">And the earth was without form, and void.</verse></chapter></book><book n="43" name="John"><chapter number="3"><verse number="16">For God so loved the world.</verse></chapter></book></bible>"#;
+
+    #[test]
+    fn beblia_imports_books_via_number_attrs() {
+        let t = import_bible_xml(BEBLIA, "Fallback").unwrap();
+        assert_eq!(t.translation_id, "KJV");
+        assert_eq!(t.copyright.as_deref(), Some("Public Domain"));
+        assert_eq!(t.source.as_deref(), Some("beblia"));
+        assert_eq!(t.books.len(), 2);
+        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "KJV", Versification::En).unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec![
+                "1 In the beginning God created the heaven and the earth.".to_string(),
+                "2 And the earth was without form, and void.".to_string()
+            ]
+        );
+        let r = crate::bible_ref::parse_reference("John 3:16", "KJV", Versification::En).unwrap();
+        assert_eq!(t.resolve(&r), vec!["16 For God so loved the world.".to_string()]);
+    }
+
+    const OPENSONG: &str = r#"<bible name="ESV" copyright="Crossway"><b n="1" name="Genesis"><c n="1"><v n="1">In the beginning, God created the heavens and the earth.</v><v n="2">The earth was without form and void.</v></c></b><b n="43" name="John"><c n="3"><v n="16">For God so loved the world.</v></c></b></bible>"#;
+
+    #[test]
+    fn opensong_imports_short_tags_via_n_attrs() {
+        let t = import_bible_xml(OPENSONG, "Fallback").unwrap();
+        assert_eq!(t.translation_id, "ESV");
+        assert_eq!(t.copyright.as_deref(), Some("Crossway"));
+        assert_eq!(t.source.as_deref(), Some("opensong"));
+        assert_eq!(t.books.len(), 2);
+        let r = crate::bible_ref::parse_reference("Genesis 1:1-2", "ESV", Versification::En).unwrap();
+        assert_eq!(
+            t.resolve(&r),
+            vec![
+                "1 In the beginning, God created the heavens and the earth.".to_string(),
+                "2 The earth was without form and void.".to_string()
+            ]
+        );
+        let r = crate::bible_ref::parse_reference("John 3:16", "ESV", Versification::En).unwrap();
+        assert_eq!(t.resolve(&r), vec!["16 For God so loved the world.".to_string()]);
+    }
+
+    #[test]
+    fn opensong_long_aliases_and_positional_names_import() {
+        let xml = r#"<bible name="L"><book n="1"><chapter n="1"><verses n="1">First.</verses></chapter></book></bible>"#;
+        let t = import_bible_xml(xml, "Fallback").unwrap();
+        assert_eq!(t.books[0].name, "Genesis");
+        let r = crate::bible_ref::parse_reference("Genesis 1:1", "L", Versification::En).unwrap();
+        assert_eq!(t.resolve(&r), vec!["1 First.".to_string()]);
     }
 
     #[test]
