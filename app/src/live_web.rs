@@ -319,7 +319,49 @@ pub fn chromium_args(
     // paints only its lyrics, and the room sees our own background/lyrics
     // through it. Both flags are needed — the background colour makes the
     // window alpha-capable, the visuals flag lets X11 honour it.
-    chromium_args_with(url, geometry, fullscreen, profile, true)
+    chromium_args_full(url, geometry, fullscreen, profile, true, true)
+}
+
+/// [`chromium_args`] with both the alpha and the incognito decision explicit.
+///
+/// `incognito` is FALSE only for an operator-owned persistent profile: the
+/// point of that profile is the page's own stored settings (Selah keeps
+/// `transparentBackground` in localStorage), and an incognito window throws
+/// exactly that away. A throwaway profile keeps incognito — belt and braces
+/// on isolation, since the directory dies with the window anyway.
+pub fn chromium_args_full(
+    url: &str,
+    geometry: Option<(i32, i32, i32, i32)>,
+    fullscreen: bool,
+    profile: &std::path::Path,
+    transparent: bool,
+    incognito: bool,
+) -> Vec<std::ffi::OsString> {
+    chromium_args_impl(url, geometry, fullscreen, profile, transparent, incognito)
+}
+
+/// Wrapper page for the transparent overlay (pure, tested).
+///
+/// The stage page paints *transparently* (Selah's `transparentBackground`),
+/// so what shows behind it is whatever the browser window paints. A headed
+/// Chromium window without a compositor paints white there — white text on
+/// white, the failure the conductor saw. This wrapper gives the page the
+/// black field it expects: our own document paints black and frames the
+/// page, so the result is white verse over black with no browser chrome,
+/// with or without a compositor.
+pub fn overlay_wrapper_html(target: &str) -> String {
+    // Attribute-escape the target: it goes into an HTML attribute.
+    let safe = target
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Overlay</title>\
+<style>html,body{{margin:0;height:100%;background:#000;overflow:hidden}}\
+iframe{{border:0;width:100vw;height:100vh;background:transparent}}</style></head>\
+<body><iframe src=\"{safe}\" allow=\"autoplay\"></iframe></body></html>"
+    )
 }
 
 /// Browser profile for a live view (pure, tested).
@@ -362,9 +404,20 @@ pub fn chromium_args_with(
     profile: &std::path::Path,
     transparent: bool,
 ) -> Vec<std::ffi::OsString> {
+    chromium_args_full(url, geometry, fullscreen, profile, transparent, true)
+}
+
+/// Body shared by every variant (see [`chromium_args_full`] for the flags).
+fn chromium_args_impl(
+    url: &str,
+    geometry: Option<(i32, i32, i32, i32)>,
+    fullscreen: bool,
+    profile: &std::path::Path,
+    transparent: bool,
+    incognito: bool,
+) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
     let mut args: Vec<OsString> = vec![
-        "--incognito".into(),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
         "--disable-background-networking".into(),
@@ -388,6 +441,9 @@ pub fn chromium_args_with(
     // Opaque black remains available as a deliberate fallback for desktops
     // without a compositor (VP_LIVE_OPAQUE=1), where an ARGB window would
     // otherwise show the X server's default as a white rectangle.
+    if incognito {
+        args.insert(0, "--incognito".into());
+    }
     let opaque_env = std::env::var("VP_LIVE_OPAQUE").ok();
     if overlay_alpha(transparent, opaque_env.as_deref()) {
         args.push("--default-background-color=00000000".into());
@@ -436,6 +492,9 @@ pub struct LiveView {
     profile: Option<PathBuf>,
     /// Operator-owned profile (VP_LIVE_PROFILE): never deleted on hide.
     profile_persistent: bool,
+    /// Wrapper page the browser is loading; deleted when the view hides
+    /// (deleting it right after spawn races the browser's own read).
+    wrapper: Option<PathBuf>,
     current: Option<(String, Option<(i32, i32, i32, i32)>, bool)>,
 }
 
@@ -445,6 +504,7 @@ impl LiveView {
             child: None,
             profile: None,
             profile_persistent: false,
+            wrapper: None,
             current: None,
         }
     }
@@ -523,11 +583,32 @@ impl LiveView {
                 return false;
             }
         }
+        // Overlay wrapper: the page paints transparent, so the document
+        // around it paints the black field (see overlay_wrapper_html).
+        let wrapper_off = std::env::var("VP_LIVE_WRAPPER").as_deref() == Ok("0");
+        let mut launch_url = url.to_string();
+        let mut wrapper: Option<PathBuf> = None;
+        if !wrapper_off {
+            let path = profile.with_extension("overlay.html");
+            if std::fs::write(&path, overlay_wrapper_html(url)).is_ok() {
+                launch_url = format!("file://{}", path.display());
+                wrapper = Some(path);
+            }
+        }
         let args = match kind {
             BrowserKind::Chromium => {
-                chromium_args(url, geometry, geometry.is_some() || room_fullscreen, &profile)
+                // A persistent profile is only useful with the page's own
+                // stored settings intact, so incognito is off for it.
+                chromium_args_full(
+                    &launch_url,
+                    geometry,
+                    geometry.is_some() || room_fullscreen,
+                    &profile,
+                    true,
+                    !persistent,
+                )
             }
-            BrowserKind::Firefox => firefox_args(url, &profile),
+            BrowserKind::Firefox => firefox_args(&launch_url, &profile),
         };
         match Command::new(bin)
             .args(&args)
@@ -540,6 +621,7 @@ impl LiveView {
                 self.child = Some(child);
                 self.profile = Some(profile);
                 self.profile_persistent = persistent;
+                self.wrapper = wrapper;
                 self.current = Some((url.to_string(), geometry, room_fullscreen));
                 true
             }
@@ -561,6 +643,9 @@ impl LiveView {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
+        }
+        if let Some(w) = self.wrapper.take() {
+            let _ = std::fs::remove_file(w);
         }
         if let Some(profile) = self.profile.take() {
             if !self.profile_persistent {
@@ -694,6 +779,50 @@ mod tests {
         let plain = chromium_args("https://example.com", None, false, profile);
         assert!(!plain.iter().any(|a| a.to_string_lossy().starts_with("--window-position")), "{plain:?}");
         assert!(!plain.iter().any(|a| a == "--start-fullscreen"), "control screen stays windowed: {plain:?}");
+    }
+
+    #[test]
+    fn persistent_profile_keeps_page_settings_incognito_discards_them() {
+        // The seed only survives if the window is NOT incognito: selenium
+        // writes Selah's transparentBackground into the profile's
+        // localStorage, and an incognito window starts empty.
+        let profile = std::path::Path::new("/tmp/p");
+        let throwaway = chromium_args("http://localhost:4000/#/output1", None, false, profile);
+        assert!(throwaway.iter().any(|a| a == "--incognito"), "{throwaway:?}");
+        let persistent = chromium_args_full(
+            "http://localhost:4000/#/output1",
+            None,
+            false,
+            profile,
+            true,
+            false,
+        );
+        assert!(
+            !persistent.iter().any(|a| a == "--incognito"),
+            "persistent profile must keep its stored settings: {persistent:?}"
+        );
+        assert!(
+            persistent.iter().any(|a| a == "--default-background-color=00000000"),
+            "alpha still on: {persistent:?}"
+        );
+    }
+
+    #[test]
+    fn overlay_wrapper_gives_the_page_its_black_field() {
+        // The stage page paints transparent; the wrapper document paints the
+        // black field, so a headed window without a compositor shows white
+        // verse on black instead of white-on-white.
+        let html = overlay_wrapper_html("http://localhost:4000/#/output1");
+        assert!(html.contains("background:#000"), "no black field: {html}");
+        assert!(html.contains("iframe"), "no framing: {html}");
+        assert!(
+            html.contains("src=\"http://localhost:4000/#/output1\""),
+            "target missing or mangled: {html}"
+        );
+        // Attribute-escaping: a quote in the URL must not break out.
+        let escaped = overlay_wrapper_html("http://x/\" onload=\"alert(1)");
+        assert!(!escaped.contains("onload=\"alert"), "attribute injection: {escaped}");
+        assert!(escaped.contains("&quot;"), "quote not escaped: {escaped}");
     }
 
     #[test]
