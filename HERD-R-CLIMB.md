@@ -150,3 +150,11 @@ Status of the still-open R-Compression items:
 - **Stage overlay + pure round-trip toggle + Esc-before-gate + F6→Control + Back button + bounded stage panel + STAGE captions + wrap_note**: all implemented, app 201 + vp-core 253 green, zero warnings.
 - Pixel proofs held: chrome compression (157px / panes y188), font stepper, STAGE / STAGE — NEXT captions with the Back button visible.
 - **Not pixel-proven here**: Stage ON/OFF click, Esc/F6 from Stage, no-song centre. My box's synthetic input became intermittent mid-task (F1, New-agenda and Stage clicks stop registering on some rows while keys/clicks on other rows work), so the remaining proofs are blocked on input, not on code. r-review is re-verifying on their harness (conductor's own ON-click attempt also missed, which matches an input/coordinate issue rather than a dead handler).
+
+---
+
+## 2026-11-12 · Transparent overlay achieved (FreeShow-matched, no compositor needed)
+- FreeShow BTCA (read-only, bbfe980) filed at `docs/FREESHOW-TRANSPARENT-OVERLAY.md`: one output-window `setBackgroundColor(#00000000)` + transparent root CSS; bare `<webview>` with no transparency attributes; third-party pages must be transparent themselves; no per-pixel transparency exists for an external `--app` window.
+- Two real defects found and fixed on our side: (1) we launched Chromium `--incognito`, which discards the profile localStorage the page's settings live in — persistent profiles (`VP_LIVE_PROFILE`) now launch without it; (2) a headed Chromium window without a compositor paints WHITE behind a transparent page — the live view now loads a black wrapper document that frames the page (`overlay_wrapper_html`, escaped, tested). `VP_LIVE_WRAPPER=0` keeps the direct URL.
+- Proof: white verse on black at `localhost:4000/#/output1` through the app — `out/hillclimb/overlay-wrapper/white-verse-on-black.png`, PR #15 comment 6813516279.
+- Suite: app 210 + vp-core 253, zero warnings. e-climb acked: its `--incognito` only pairs with throwaway profiles; its projector stays opaque black by design.
