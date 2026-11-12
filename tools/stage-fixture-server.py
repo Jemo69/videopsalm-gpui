@@ -24,8 +24,9 @@ PAGE = """<!DOCTYPE html>
 <style>
   /* Transparent overlay: the room sees the projector's own background
      through this page; only the verse text paints. */
-  html, body { margin: 0; height: 100%; background: transparent; color: #fff;
-               font-family: Verdana, "DejaVu Sans", sans-serif; }
+  /* No scrollbars: the overlay must never show chrome of any kind. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
+               color: #fff; font-family: Verdana, "DejaVu Sans", sans-serif; }
   #out { height: 100%; display: flex; flex-direction: column;
          align-items: center; justify-content: center; gap: 28px; padding: 40px; }
   .verse { font-size: 58px; font-weight: 700; line-height: 1.25; text-align: center; }

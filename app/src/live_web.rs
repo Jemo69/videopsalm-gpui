@@ -322,6 +322,21 @@ pub fn chromium_args(
     chromium_args_with(url, geometry, fullscreen, profile, true)
 }
 
+/// Whether the live window carries alpha (pure, tested). Transparent by
+/// default — the page is an overlay ON the presentation — with an explicit
+/// opaque fallback for desktops that run no compositor.
+pub fn overlay_alpha(transparent: bool, opaque_env: Option<&str>) -> bool {
+    transparent && opaque_env != Some("1")
+}
+
+/// Window background for the overlay when the page itself paints nothing:
+/// opaque black, so white lyric text always has a black field behind it and
+/// a page that forgets its own transparency can never flash white at the
+/// room (pure, tested).
+pub fn overlay_background() -> &'static str {
+    "FF000000"
+}
+
 /// [`chromium_args`] with the transparency decision explicit (pure, tested).
 pub fn chromium_args_with(
     url: &str,
@@ -347,11 +362,21 @@ pub fn chromium_args_with(
         "--disable-extensions".into(),
         "--disable-features=Translate,OptimizationHints,MediaRouter".into(),
     ];
-    if transparent {
-        // Alpha-capable window: the stage overlay composites over whatever
-        // the projector is drawing instead of covering it with a page.
+    // The overlay is transparent ON THE PRESENTATION: the live page window
+    // carries alpha, so whatever the projector window is drawing (background,
+    // black base, lyrics) stays visible behind the page's own content. That
+    // is the conductor's spec — white page text over the presentation, never
+    // a second opaque screen and never browser chrome.
+    //
+    // Opaque black remains available as a deliberate fallback for desktops
+    // without a compositor (VP_LIVE_OPAQUE=1), where an ARGB window would
+    // otherwise show the X server's default as a white rectangle.
+    let opaque_env = std::env::var("VP_LIVE_OPAQUE").ok();
+    if overlay_alpha(transparent, opaque_env.as_deref()) {
         args.push("--default-background-color=00000000".into());
         args.push("--enable-transparent-visuals".into());
+    } else {
+        args.push(format!("--default-background-color={}", overlay_background()).into());
     }
     if let Some((x, y, w, h)) = geometry {
         args.push(format!("--window-position={x},{y}").into());
@@ -637,10 +662,41 @@ mod tests {
     }
 
     #[test]
+    fn overlay_is_transparent_over_the_presentation_by_default() {
+        // Spec: the page is an overlay ON the presentation window — alpha by
+        // default so the projector's black/background stays visible behind
+        // it. Opaque black is only the explicit no-compositor fallback.
+        let profile = std::path::Path::new("/tmp/p");
+        assert_eq!(overlay_background(), "FF000000");
+        // Alpha is the default: the page overlays the presentation window.
+        assert!(overlay_alpha(true, None), "transparent by default");
+        assert!(!overlay_alpha(true, Some("1")), "VP_LIVE_OPAQUE=1 opts out");
+        assert!(!overlay_alpha(false, None), "explicit opaque wins");
+        let args = chromium_args("http://localhost:4000/#/output1", None, false, profile);
+        assert!(
+            args.iter().any(|a| a == "--default-background-color=00000000"),
+            "overlay must be transparent by default: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "--enable-transparent-visuals"), "{args:?}");
+        // Explicit fallback for compositor-less desktops, via the switch.
+        let opaque = chromium_args_with(
+            "http://localhost:4000/#/output1",
+            None,
+            false,
+            profile,
+            false,
+        );
+        assert!(
+            opaque.iter().any(|a| a == "--default-background-color=FF000000"),
+            "{opaque:?}"
+        );
+    }
+
+    #[test]
     fn live_overlay_window_is_transparent() {
-        // Stage overlays must composite over the projector, not cover it: the
-        // window is alpha-capable and X11 is told to honour it. Both flags
-        // ride every live view, geometry or not.
+        // Opt-in alpha path: with VP_LIVE_TRANSPARENT=1 the window is
+        // alpha-capable and X11 is told to honour it, so the overlay
+        // composites over the projector instead of covering it.
         let profile = std::path::Path::new("/tmp/p");
         for (geom, full) in [
             (None, false),
@@ -656,7 +712,8 @@ mod tests {
                 "no transparent visuals: {args:?}"
             );
         }
-        // Opaque mode stays available (tests/diagnostics): explicit opt-out.
+
+        // Explicit opt-out stays available (tests/diagnostics).
         let opaque = chromium_args_with(
             "http://localhost:4000/#/output1",
             None,
