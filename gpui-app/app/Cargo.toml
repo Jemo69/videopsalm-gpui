@@ -1,0 +1,35 @@
+[package]
+name = "perez-rs"
+version = "0.1.27"
+edition = "2024"
+description = "Perez: clean-room worship presentation (GPUI control window + projector + stage view)"
+license = "MIT"
+
+[[bin]]
+name = "perez-rs"
+path = "src/main.rs"
+
+[dependencies]
+vp-core = { path = "../vp-core" }
+vp-ndi = { path = "../vp-ndi" }
+gpui = "0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+unicode-segmentation = "1"
+# Native file dialogs (Browse buttons). Portal-only on Linux so CI needs no
+# GTK dev packages; Windows/macOS use the OS dialogs unconditionally.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+# JPEG decode for in-app video motion frames (same crate gpui itself uses).
+image = "0.25.10"
+# Single-frame vec for the motion image loader.
+smallvec = "1.16"
+# Local-dev extras (not yet wired to this UI): in-house loop-video
+# backgrounds (pure-Rust MP4 demux + OpenH264 built from source) and the
+# opt-in update checker. Kept so loop_video.rs / updater.rs keep building.
+mp4 = "0.14"
+openh264 = "0.4"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

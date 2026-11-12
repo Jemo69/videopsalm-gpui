@@ -1,0 +1,44 @@
+{
+  "id": "song-holy-holy",
+  "title": "Holy Holy Holy",
+  "verses": [
+    {
+      "id": "V1",
+      "lines": [
+        "[G]Holy, [C]holy, [G]holy, [D]Lord God Al[G]mighty",
+        "[G]Early in the [C]morning our [G]song shall [D]rise to [G]Thee",
+        "[G]Holy, [C]holy, [G]holy, [Em]merciful and [C]mighty",
+        "[G]God in three [D]Persons, [G]blessed [C]Trin[G]ity"
+      ],
+      "order": 1
+    },
+    {
+      "id": "V2",
+      "lines": [
+        "[G]Holy, [C]holy, [G]holy, [D]all the saints a[G]dore Thee",
+        "[G]Casting down their [C]golden crowns a[G]round the [D]glassy [G]sea",
+        "[G]Cherubim and [C]seraphim [G]falling [Em]down be[C]fore Thee",
+        "[G]Who was and [D]is and [G]evermore shall [C]be [G]"
+      ],
+      "order": 2
+    }
+  ],
+  "authors": ["Reginald Heber"],
+  "composer": "John B. Dykes",
+  "ccli": "1142518",
+  "songbookId": "book-main",
+  "color": "#FACC15",
+  "icon": "12",
+  "chords": {
+    "notation": "ABC",
+    "transpose": 0,
+    "overlays": [
+      { "verseId": "V1", "line": 0, "chord": "G", "pos": 0 },
+      { "verseId": "V1", "line": 0, "chord": "C", "pos": 9 },
+      { "verseId": "V1", "line": 0, "chord": "G", "pos": 19 },
+      { "verseId": "V1", "line": 0, "chord": "D", "pos": 29 }
+    ]
+  },
+  "createdAt": "2026-10-06",
+  "updatedAt": "2026-10-06"
+}

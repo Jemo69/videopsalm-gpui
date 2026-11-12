@@ -28,18 +28,26 @@ jobs:
   test:
     name: Tests (Linux)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gpui-app
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install X11 link deps (GPUI links xcb/xkbcommon)
         run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "gpui-app"
       - run: cargo test -p vp-core
       - run: cargo test --workspace
 
   package-linux:
     name: Package + upload (Linux x64)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gpui-app
     needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
@@ -50,6 +58,8 @@ jobs:
       - name: Install X11 link deps (GPUI links xcb/xkbcommon)
         run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "gpui-app"
       - run: cargo build --release -p perez-rs
       - run: cp target/release/perez-rs perez-rs-linux-x64
       - env:
@@ -65,6 +75,9 @@ jobs:
   package-win:
     name: Package + upload (Windows x64)
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gpui-app
     needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
@@ -73,6 +86,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "gpui-app"
       - run: cargo build --release -p perez-rs
       - run: Copy-Item target/release/perez-rs.exe perez-rs-windows-x64.exe
       - env:
@@ -88,6 +103,9 @@ jobs:
   package-macos:
     name: Package + upload (macOS)
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: gpui-app
     needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
@@ -96,11 +114,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "gpui-app"
       - run: cargo build --release -p perez-rs
       - name: Build macOS app bundle and DMG
         run: |
-          chmod +x tools/make-perez-app.sh
-          ./tools/make-perez-app.sh target/release/perez-rs dist/Perez.app dist/Perez.dmg
+          chmod +x ../tools/make-perez-app.sh
+          ../tools/make-perez-app.sh target/release/perez-rs dist/Perez.app dist/Perez.dmg
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

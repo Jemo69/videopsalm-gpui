@@ -1,0 +1,98 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iframe + Live Web vs CEF — Honest Verdict</title>
+<style>
+*{box-sizing:border-box;margin:0}body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#000;max-width:1020px;margin:0 auto;padding:24px;line-height:1.55}
+.label{display:inline-block;background:#000;color:#fff;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:4px 10px;margin-bottom:10px}
+h1{font-size:30px;text-transform:uppercase;letter-spacing:-1px;border-bottom:6px solid #000;padding-bottom:12px;margin-bottom:8px}
+.sub{font-size:14px;margin-bottom:20px}.sub code{background:#eee;padding:1px 5px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}@media(max-width:720px){.grid{grid-template-columns:1fr}}
+.card{border:3px solid #000;padding:16px}.card h2{font-size:14px;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:10px}
+.card p,.card li{font-size:13.5px}ul,ol{padding-left:20px}
+.verdict{border:4px solid #000;padding:18px;margin:16px 0;background:#000;color:#fff}.verdict h2{font-size:16px;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}.verdict p{font-size:14px}.verdict code{background:#333;padding:1px 6px;color:#0f0}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}th{background:#000;color:#fff;text-transform:uppercase;font-size:11px;letter-spacing:1px;padding:8px;text-align:left}td{border:2px solid #000;padding:8px;vertical-align:top}td code{background:#eee;padding:1px 4px}
+pre{background:#000;color:#0f0;padding:14px;font-size:12px;overflow-x:auto;margin:10px 0;white-space:pre-wrap}
+.flow{border:3px solid #000;margin:16px 0}.step{display:grid;grid-template-columns:52px 1fr;border-bottom:2px solid #000}.step:last-child{border-bottom:0}.n{background:#000;color:#fff;font-weight:900;font-size:20px;display:flex;align-items:center;justify-content:center;padding:14px}.b{padding:12px 16px}.b h3{font-size:14px;text-transform:uppercase;margin-bottom:4px}.b p,.b li{font-size:13px}.b code{background:#eee;padding:1px 5px;font-size:12px}
+.warn{border:3px dashed #000;padding:12px 16px;font-size:13px;margin:16px 0}
+.foot{margin-top:24px;border-top:4px solid #000;padding-top:10px;font-size:12px;text-transform:uppercase;letter-spacing:1px}
+</style></head><body>
+<span class="label">Source-grounded // vp-core + app read 2026-11-04</span>
+<h1>iframe + Live Web vs CEF — Honest Verdict</h1>
+<p class="sub">Question: does the FreeShow <code>web</code>-item pipeline work with the <code>&lt;iframe&gt;</code> syntax already in this app, with minimal changes — and is the current external-browser approach better UX than an embedded window (CEF)? Short answer: <b>yes, and yes — for a worship presenter.</b> Details + receipts below.</p>
+
+<div class="verdict">
+<h2>Verdict — 95% sure, not 100% (honestly)</h2>
+<p>Why not 100%: the remaining 5% is OS edge cases (no browser installed, Wayland fullscreen quirks, kiosk lockdown) — all handled by graceful fallback to the offline tile, never a crash. Core path needs <code>~0 new deps, 0 schema changes</code>: <code>extract_website_embeds → Slide{footer:WebSite} → live_url_for_slide → LiveView::show</code> is already wired and tested. CEF is the better choice only if you need <b>composited</b> web-inside-slide (lyrics over a live page, alpha blending). For everything a church operator actually does, the external hardened browser wins.</p>
+</div>
+
+<div class="label">01 — What already exists (receipts)</div>
+<div class="grid">
+<div class="card"><h2>iframe syntax — done</h2><ul>
+<li><code>vp-core/src/slides.rs:32</code> <code>extract_website_embeds()</code> — quote-aware, case-insensitive, swallows <code>&lt;/iframe&gt;</code>, strips tag from lyrics.</li>
+<li>Bad URLs (<code>javascript:</code>, spaces, empty) dropped silently, tag still stripped — projection never shows markup.</li>
+<li>Embeds extracted <b>before</b> chord-stripping (<code>slides.rs:406</code>) so <code>[1]</code> in URLs isn't eaten as a chord.</li>
+<li>Iframe-only lines leave no blank lyric slide; one link-card slide per unique embed, deduped case-insensitively on scheme+host.</li>
+<li>20+ regression tests: <code>iframe_embeds_parse_out_of_lyrics…</code>, byte-safety, quote-awareness, blank-slide, dedup.</li>
+</ul></div>
+<div class="card"><h2>Live web view — done</h2><ul>
+<li><code>app/src/live_web.rs</code> (703 lines) — <code>LiveView</code> spawns a hardened OS browser, kills it on slide-leave and on drop.</li>
+<li>Chromium: <code>--incognito --app=URL</code> in throwaway <code>0700</code> profile, background networking/sync/extensions/translate off. Firefox fallback: private window.</li>
+<li>Loopback exempt, remote needs per-session Allow + TCP-only reachability check — app never fetches HTTP itself.</li>
+<li>Fullscreen geometry <b>only</b> on non-primary projector output; windowed on control screen so the operator is never locked out.</li>
+<li><code>live_url_for_slide()</code> accepts <code>WebSite/YouTube</code> footers, re-validates via <code>normalize_website_url</code>. Wired in <code>main.rs:3192 sync_live_web</code> + <code>ux.rs:1142 live_web</code> toggle (default off).</li>
+</ul></div>
+</div>
+
+<div class="label">02 — FreeShow mapping = minimal diff</div>
+<div class="flow">
+<div class="step"><div class="n">1</div><div class="b"><h3>Add — already done</h3><p>FreeShow <code>Items.svelte + itemHelpers.ts</code> creates <code>web:{url:""}</code>. Ours: typing <code>&lt;iframe src="…" title="…"&gt;</code> in any lyric line is the "add" — zero palette work, works in songs, not just a special item.</p></div></div>
+<div class="step"><div class="n">2</div><div class="b"><h3>Configure — already done</h3><p>FreeShow <code>boxes.ts</code> exposes <code>web.src + noNavigation</code>. Ours: <code>src=</code> attribute is the URL field, <code>title=</code> is the card label, <code>Background &gt; Website &gt; Live</code> toggle is <code>noNavigation</code> inverted (default tiles-only = navigation off).</p></div></div>
+<div class="step"><div class="n">3</div><div class="b"><h3>Dispatch — already done</h3><p>FreeShow <code>SlideItems.svelte</code> switches <code>item.type==="web"</code>. Ours: <code>slides.rs</code> appends <code>Slide::text(header,[url],footer=WebSite)</code> per embed; <code>live_web::live_url_for_slide</code> gates on that footer. Same switch, different spelling.</p></div></div>
+<div class="step"><div class="n">4</div><div class="b"><h3>Sanitize — already done</h3><p>FreeShow <code>checkURL()</code>: unescape, prepend scheme, <code>new URL()</code> validate. Ours: <code>schema.rs:990 normalize_website_url()</code> — identical contract, shared by style backgrounds and embeds. <code>javascript:</code> dies in both.</p></div></div>
+<div class="step"><div class="n">5</div><div class="b"><h3>Scale / interact — intentionally different (better)</h3><p>FreeShow injects <code>body.style.transform:scale()</code> into a <code>&lt;webview&gt;</code> (and skips it for <code>embed</code> URLs because it breaks). Ours skips the problem entirely: the tile stays a tile; the live page opens at native resolution in a real browser with real scroll/keys/video decode. No transform hacks, no mute juggling.</p></div></div>
+</div>
+<pre>Remaining work (small): per-item "allow navigation" override (~1 checkbox plumbed to live_web_confirmed) + back/forward hover bar (optional; the OS browser already has it) + projector-geometry polish on Wayland. No schema migration. No new crates.</pre>
+
+<div class="label">03 — CEF: what it would actually cost here</div>
+<div class="grid">
+<div class="card"><h2>What "embed CEF" means in Rust + GPUI 0.2.2</h2><ul>
+<li>No GPUI web-view element exists. CEF needs offscreen rendering → shared texture → custom GPUI element, plus hand-rolled focus/keyboard/scroll/IME plumbing.</li>
+<li>Candidates: <code>cef</code> crate (thin bindings, version-pinned, build-fragile), <code>wry</code> (WebView2/WKWebView/WebKit — not CEF, still needs a GPUI embed shim), or vendoring Chromium (~150–250&nbsp;MB added to every download, pinned toolchain).</li>
+<li>Linux reality: X11 vs Wayland Ozone flags, GPU sandbox flags per distro, IME/dialog parenting — the exact class of bugs FreeShow never sees because Electron ships its own Chromium.</li>
+<li>Security: you inherit Chromium CVE duty + sandbox config. Today the app holds <b>zero</b> browser CVEs because the browser isn't in the binary.</li>
+</ul></div>
+<div class="card"><h2>Why FreeShow gets away with embedded</h2><p>FreeShow is Electron — Chromium is already paid for (download size, memory, sandbox, updates). <code>&lt;webview&gt;</code> is nearly free <b>for them</b>. In Rust/GPUI you'd pay the full price to re-acquire what Electron bundles: a second Chromium beside the user's already-installed one. That's why the external-window design is cheaper here and not a compromise.</p></div>
+</div>
+
+<div class="label">04 — Head-to-head</div>
+<table><tr><th>Dimension</th><th>Current: iframe + external hardened browser</th><th>CEF embedded</th></tr>
+<tr><td>Binary size / deps</td><td><b>0 new crates.</b> Uses the browser already on the machine.</td><td>+150–250&nbsp;MB, pinned CEF build, update treadmill.</td></tr>
+<tr><td>Video / GPU / codecs</td><td><b>Native.</b> Real Chrome/Edge/Firefox decode, fullscreen, captions.</td><td>Offscreen-texture path; codec/sandbox flags per distro; fullscreen is custom work.</td></tr>
+<tr><td>Crash isolation</td><td><b>Browser crash ≠ presenter crash.</b> <code>LiveView::hide</code> reaps + removes profile (tested with sentinel pid).</td><td>Renderer crash surfaces inside your process tree; you own the recovery UI.</td></tr>
+<tr><td>Focus / keyboard</td><td>OS window owns focus; control screen never stolen (windowed there by rule).</td><td>You re-implement focus, click-through exemption, IME, shortcuts inside a GPUI element.</td></tr>
+<tr><td>Compositing (lyrics <i>over</i> live page)</td><td>Not possible — page is a separate window <b>behind/above</b> the projector tile. Overlay text = projector tile placeholder.</td><td><b>CEF wins.</b> True alpha-composited overlays, per-item transforms, click-through regions.</td></tr>
+<tr><td>Auth / cookies</td><td><b>Throwaway profile per show.</b> No credential bleed between services. (Con: operator logs in every show.)</td><td>Same isolation possible, but you own the cookie store + login UX inside the presenter.</td></tr>
+<tr><td>Offline-first / no telemetry</td><td>Held: tiles never fetched; only a TCP handshake for the reachability check; Chromium launched with pings/metrics/sync/updates off.</td><td>Harder: CEF phones home (component updates, Safe Browsing) unless every switch is exactly right, every release.</td></tr>
+<tr><td>Maintenance</td><td>~700 lines + stdlib. Tested with <code>node:test</code>-style Rust tests incl. <code>/proc</code> reap test.</td><td>Native bindings + Ozone/Wayland matrix + CVE patching. A part-time team feels this monthly.</td></tr>
+<tr><td>No-browser machines / kiosk</td><td>Falls back to offline tile. Honest gap: a bare kiosk with no browser gets tiles only.</td><td><b>CEF wins</b> — self-contained, no external dependency.</td></tr>
+<tr><td>Nav UX (back/forward/scroll)</td><td>Free — it's a real browser. Hover-bar history buttons unnecessary.</td><td>You rebuild them (FreeShow's hover bar exists precisely because <code>webview</code> needs it).</td></tr>
+</table>
+
+<div class="label">05 — Honest review: which is better?</div>
+<div class="grid">
+<div class="card"><h2>Choose current approach when… (this project)</h2><ul>
+<li>Worship presenter: operator drives, congregation watches. Fullscreen-correct + crash-proof beats composited-pretty.</li>
+<li>Offline-first is a selling point (church halls with bad wifi, stage servers on loopback).</li>
+<li>Small team: zero browser CVEs, zero Chromium toolchain, tests stay hermetic.</li>
+<li>License hygiene: no Chromium redistribution, no codec licensing threads.</li>
+</ul></div>
+<div class="card"><h2>Choose CEF when… (not this project, yet)</h2><ul>
+<li>A paying customer demands lyrics-over-live-web compositing or transparent lower-thirds on a stream.</li>
+<li>Kiosk/locked-down PCs with no allowed browser install.</li>
+<li>You need pixel-capture of the page into NDI/record pipeline (external window can't be textured).</li>
+</ul></div>
+</div>
+<div class="warn"><b>Recommendation:</b> ship the FreeShow pipeline on top of the existing <code>&lt;iframe&gt;</code> + <code>LiveView</code> path now (minimal diff, better UX than <code>&lt;webview&gt;</code>: native scroll/keys/video, no transform hacks, crash-isolated, operator never locked out). Gate CEF behind a real compositing requirement — spike it only when someone pays for overlays-over-live-page or NDI-capture-of-page. Until then CEF is 200&nbsp;MB of cost for negative UX.</div>
+
+<div class="foot">Evidence: vp-core/src/slides.rs:18–95 (parser), :404–470 (embed slides), vp-core/src/schema.rs:931–1010 (Website bg + normalize), app/src/live_web.rs:1–703, app/src/main.rs:528–538 + 3190 (sync_live_web), app/src/ux.rs:1142 (toggle). FreeShow refs: src/types/Show.ts, SlideItems.svelte:87–88, views/Website.svelte, MainOutput.svelte:50.</div>
+</body></html>

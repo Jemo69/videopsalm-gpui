@@ -1,0 +1,86 @@
+name: Build
+
+# vp-core tests + app check on every push/PR. Release binaries are built
+# natively per platform on version tags (v*) and attached straight to the
+# GitHub release (no Actions artifacts: the account artifact quota is shared
+# and small; release assets are not counted against it). A manual dispatch
+# can (re)attach them to an existing release.
+# (Windows builds run on windows-latest with stock MSVC — no cross-compile.)
+on:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach artifacts to"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: read
+
+env:
+  TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install X11 link deps (GPUI links xcb/xkbcommon)
+        run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p vp-core
+      - run: cargo test --workspace
+
+  package-linux:
+    name: Package + upload (Linux x64)
+    runs-on: ubuntu-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install X11 link deps (GPUI links xcb/xkbcommon)
+        run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p perez-rs
+      - run: cp target/release/perez-rs perez-rs-linux-x64
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG_NAME" \
+              --notes "Perez (clean-room worship presenter, Rust/GPUI). Offline-first."
+          fi
+          gh release upload "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --clobber perez-rs-linux-x64
+
+  package-win:
+    name: Package + upload (Windows x64)
+    runs-on: windows-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p perez-rs
+      - run: Copy-Item target/release/perez-rs.exe perez-rs-windows-x64.exe
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (!(gh release view "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" 2>$null)) {
+            gh release create "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" `
+              --title "$env:TAG_NAME" `
+              --notes "Perez (clean-room worship presenter, Rust/GPUI). Offline-first."
+          }
+          gh release upload "$env:TAG_NAME" --repo "$env:GITHUB_REPOSITORY" --clobber perez-rs-windows-x64.exe
