@@ -158,3 +158,13 @@ Status of the still-open R-Compression items:
 - Two real defects found and fixed on our side: (1) we launched Chromium `--incognito`, which discards the profile localStorage the page's settings live in — persistent profiles (`VP_LIVE_PROFILE`) now launch without it; (2) a headed Chromium window without a compositor paints WHITE behind a transparent page — the live view now loads a black wrapper document that frames the page (`overlay_wrapper_html`, escaped, tested). `VP_LIVE_WRAPPER=0` keeps the direct URL.
 - Proof: white verse on black at `localhost:4000/#/output1` through the app — `out/hillclimb/overlay-wrapper/white-verse-on-black.png`, PR #15 comment 6813516279.
 - Suite: app 210 + vp-core 253, zero warnings. e-climb acked: its `--incognito` only pairs with throwaway profiles; its projector stays opaque black by design.
+
+---
+
+## 2026-11-12 · Release v0.1.28 shipped
+- Cut from the branch tip in a fresh clone (`/tmp/rel`, branch `release/v0.1.28`) because the shared checkout had been switched to another lane's branch mid-round — no lane's work was disturbed.
+- Version bump `0.1.27 → 0.1.28` (`app/Cargo.toml` + `Cargo.lock`), notes `RELEASE-NOTES-v0.1.28.md`, tag `v0.1.28` → CI built natively and attached binaries.
+- Release: https://github.com/Jemo69/videopsalm-gpui/releases/tag/v0.1.28
+  - assets: `perez-rs-linux-x64`, `perez-rs-windows-x64.exe`, `Perez.dmg`
+  - CI run 43279717869: success in 14m34s (test job green)
+  - body: 10/10 per-surface summary, web-overlay notes, unchanged-functionality list, known limits
