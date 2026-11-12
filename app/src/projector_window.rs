@@ -422,6 +422,21 @@ pub fn apply_transition(inner: Div, snap: &ProjectorSnapshot) -> AnyElement {
 /// a box fitted to the ratio and centered on black bars, so the presets
 /// visibly move the picture instead of only flipping a chip (WI-026). Text
 /// sizes scale from the box height, exactly like the 1080p rule.
+/// Mean glyph advance for the width fit (0.6em): conservative for bold
+/// lyric faces — wider faces only shrink further (safe). Named so the
+/// estimate cannot drift silently between the preview and the room.
+pub(crate) const GLYPH_ADVANCE_EM: f32 = 0.6;
+
+/// Width-fit shrink factor (pure, tested): scale `size` so the longest
+/// line (`max_chars`) fits `frame_w` px. Clamped like the height fit;
+/// degenerate inputs hold the size instead of collapsing it.
+pub(crate) fn width_fit_factor(frame_w: f32, max_chars: usize, size: f32) -> f32 {
+    if max_chars == 0 || size <= 0.0 || frame_w <= 0.0 {
+        return 1.0;
+    }
+    (frame_w / (max_chars as f32 * size * GLYPH_ADVANCE_EM)).clamp(0.2, 1.0)
+}
+
 pub(crate) fn render_snapshot(
     danger: Rgba,
     snap: &ProjectorSnapshot,
@@ -465,11 +480,11 @@ pub(crate) fn render_snapshot(
             .iter()
             .map(|l| l.chars().count())
             .max()
-            .unwrap_or(1) as f32;
-        if max_chars > 0.0 && size > 0.0 {
-            let width_fit = ((fw * target_w) / (max_chars * size * 0.6)).clamp(0.2, 1.0);
-            size *= width_fit;
-        }
+            .unwrap_or(1);
+        // The text frame lives inside the letterbox (`bw`), not the full
+        // target: with a ratio preset the box is narrower, so fitting
+        // against `target_w` over-estimates and long lines still crop.
+        size *= width_fit_factor(fw * bw, max_chars, size);
         let mut lines: Vec<Div> = snap
             .lines
             .iter()
@@ -787,6 +802,22 @@ mod tests {
         // Fill over the full slide is exact and ratio-independent (B-06).
         let full = resolve_percent(Rect::FULL, Viewport::from_pixels(1024, 768), FitMode::Fill);
         assert_eq!(body_fractions(full), (0.0, 0.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn width_fit_uses_the_letterboxed_frame() {
+        // Regression: with a 4x3 ratio on a 1920-wide target the text
+        // frame is narrower than the target — fitting against the target
+        // over-estimates and long lines crop. The factor holds 1.0 when
+        // the line already fits and shrinks (never below the floor) when
+        // it does not; degenerate inputs hold instead of collapsing.
+        assert_eq!(width_fit_factor(1000.0, 10, 50.0), 1.0);
+        let shrink = width_fit_factor(500.0, 40, 50.0);
+        assert!(shrink < 1.0 && shrink >= 0.2, "must shrink: {shrink}");
+        assert_eq!(width_fit_factor(1.0, 1000, 50.0), 0.2, "floor holds");
+        assert_eq!(width_fit_factor(500.0, 0, 50.0), 1.0);
+        assert_eq!(width_fit_factor(500.0, 40, 0.0), 1.0);
+        assert_eq!(width_fit_factor(-10.0, 40, 50.0), 1.0);
     }
 
     #[test]

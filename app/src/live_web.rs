@@ -960,14 +960,14 @@ mod tests {
             profile_dir(throwaway.clone(), Some("persist"), fallback),
             fallback.to_path_buf()
         );
+        // A bare name stays under the app-data fallback, never the CWD.
+        assert_eq!(
+            profile_dir(throwaway.clone(), Some("stage-profile"), fallback),
+            fallback.join("stage-profile")
+        );
         assert_eq!(
             profile_dir(throwaway, Some("/home/operator/stage-profile"), fallback),
             std::path::PathBuf::from("/home/operator/stage-profile")
-        );
-        // A bare name stays under the app-data fallback, never the CWD.
-        assert_eq!(
-            profile_dir(throwaway, Some("stage-profile"), fallback),
-            fallback.join("stage-profile")
         );
     }
 

@@ -418,21 +418,44 @@ fn apply_wrap(content: &mut SharedString, sel: &mut Range<usize>, before: &str, 
     *sel = at..at;
 }
 
+/// Toolbar heading/list prefixes (longest first: `## ` before `# `).
+const LINE_PREFIXES: [&str; 3] = ["## ", "# ", "- "];
+
 /// Pure core of [`DocField::prefix_current_line`]: prefix the line holding
-/// the selection end (the cursor), shifting `sel` right when the prefix
-/// lands at or before it. Returns false (no-op) when the line already
-/// carries the prefix. Offsets must sit on char boundaries (the editor
-/// invariant).
+/// the selection end (the cursor), shifting `sel` by the net change when
+/// the prefix lands at or before it. Re-pressing the same prefix is a
+/// no-op (returns false); switching level (H1 on an H2 line) *replaces*
+/// the old prefix instead of nesting (`# ## text`). Offsets must sit on
+/// char boundaries (the editor invariant).
 fn apply_line_prefix(content: &mut SharedString, sel: &mut Range<usize>, prefix: &str) -> bool {
     let at = sel.end.min(content.len());
     let start = content[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    if content[start..].starts_with(prefix) {
+    let line_end = content[start..]
+        .find('\n')
+        .map(|i| start + i)
+        .unwrap_or(content.len());
+    let line = &content[start..line_end];
+    if line.starts_with(prefix) {
         return false;
     }
-    let shift = (start <= sel.start) as usize * prefix.len();
-    let shift_end = (start <= sel.end) as usize * prefix.len();
-    *content = (content[..start].to_owned() + prefix + &content[start..]).into();
-    *sel = (sel.start + shift)..(sel.end + shift_end);
+    let stripped = LINE_PREFIXES
+        .iter()
+        .find_map(|p| line.strip_prefix(p))
+        .unwrap_or(line);
+    let new_line = format!("{prefix}{stripped}");
+    let delta = new_line.len() as isize - line.len() as isize;
+    *content = (content[..start].to_owned() + &new_line + &content[line_end..]).into();
+    // Only positions on/after the edited line move (a selection reaching
+    // back over earlier lines keeps its start); replacement can shrink
+    // the line (H1 over H2), so shift saturating, never below zero.
+    let shift = |p: usize| {
+        if p < start {
+            p
+        } else {
+            p.saturating_add_signed(delta)
+        }
+    };
+    *sel = shift(sel.start)..shift(sel.end);
     true
 }
 
@@ -919,7 +942,9 @@ impl Render for DocField {
             // text on white.
             .text_color(rgb(0x18181B))
             .text_size(px(self.text_px))
-            .line_height(px(20.))
+            // Line box tracks the zoom: a fixed height clips descenders
+            // and overlaps lines once A+ pushes past 20px text.
+            .line_height(px(self.text_px * 1.35))
             .id("lyrics-document")
             .overflow_y_scroll()
             // Each authored line is its own div, and a blank line stays a real
@@ -1229,6 +1254,17 @@ mod tests {
         assert_eq!(c.as_str(), "one\n# two");
         assert_eq!(sel, 7..7);
         assert!(!apply_line_prefix(&mut c, &mut sel, "# "), "idempotent");
+        // Switching level replaces the old prefix instead of nesting.
+        assert!(apply_line_prefix(&mut c, &mut sel, "## "), "H1 -> H2 upgrades");
+        assert_eq!(c.as_str(), "one\n## two");
+        assert!(apply_line_prefix(&mut c, &mut sel, "# "), "H2 -> H1 replaces");
+        assert_eq!(c.as_str(), "one\n# two");
+        // A list marker over a heading swaps the marker, same rule.
+        let mut d: SharedString = "# two".into();
+        let mut sel_d = 5..5;
+        assert!(apply_line_prefix(&mut d, &mut sel_d, "- "));
+        assert_eq!(d.as_str(), "- two");
+        assert_eq!(sel_d, 5..5);
     }
 
     /// `line_start`/`line_end` are the primitives cursor movement is built on,

@@ -676,8 +676,11 @@ pub fn route_pres_key(keystroke: &str) -> Option<PresKey> {
         "ctrl-8" => Some(PresKey::AddResult(8)),
         "ctrl-9" => Some(PresKey::AddResult(9)),
         "f1" => Some(PresKey::Help),
-        // `?` opens the same contextual help (status-bar hint).
-        "?" => Some(PresKey::Help),
+        // NOTE: no `"?"` arm. GPUI reports Shift+/ as `"shift-/"`
+        // (modifiers + base key, never the shifted character), so a bare
+        // `"?"` never arrives — it would silently shrink the verse range
+        // via `RangeShrinkStart` below while the status bar promised help.
+        // Help lives on F1 (status chip updated to match).
         "ctrl-q" => Some(PresKey::Quit),
         "ctrl-*" => Some(PresKey::RangeExtendEnd),
         "ctrl-/" => Some(PresKey::RangeShrinkEnd),
@@ -2009,8 +2012,15 @@ mod tests {
         }
         // F1 is contextual help in the original (1.7), and it now routes.
         assert_eq!(route_pres_key("f1"), Some(PresKey::Help));
-        // `?` (status-bar hint) opens the same help.
-        assert_eq!(route_pres_key("?"), Some(PresKey::Help));
+        // `"?"` never arrives from GPUI (Shift+/ reports as `"shift-/"`,
+        // bound to range-shrink below): it must not route to Help, or the
+        // status chip would promise help while `?` shrinks the range.
+        assert_eq!(route_pres_key("?"), None, "? never arrives bare");
+        assert_eq!(
+            route_pres_key("shift-/"),
+            Some(PresKey::RangeShrinkStart),
+            "Shift+/ keeps its range meaning"
+        );
     }
 
     #[test]

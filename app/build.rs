@@ -1,7 +1,9 @@
 //! Build script for perez-rs.
 //!
-//! Windows-only icon resource compilation (cfg-gated so Linux and macOS builds
-//! are completely unaffected and do not invoke winres).
+//! Windows-only icon resource compilation. The `cfg(target_os)` gate tests the
+//! HOST, and `winres` is a Windows-only build-dependency, so cross-compiling
+//! for Windows from Linux/macOS skips the icon (native Windows CI covers
+//! releases) — that limitation is deliberate, not an accident of the gate.
 //!
 //! The ico is rendered directly from the vector master `assets/perez.svg`
 //! (`windows/perez.ico`); `assets/icons-dist/*.png` are PNG masters of the

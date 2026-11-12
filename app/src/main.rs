@@ -184,7 +184,7 @@ pub(crate) struct UI {
     /// The **selection** colour: selected agenda item, selected slide row,
     /// active buttons — always signal red, on every skin.
     ///
-    /// This must NOT be `accent`. Two of the four themes use a yellow or amber
+    /// This must NOT be `accent`. Two of the five themes use a yellow or amber
     /// accent, so painting selection with the theme accent made the cue come
     /// out yellow. The projecting row is NOT this token — that is `live`
     /// (lime-only rule).
@@ -1101,7 +1101,12 @@ impl Root {
         // stored copy still reaches the browser via the `all_songs` merge
         // below (known ids replace in place).
         for s in &songs {
-            library::upsert_song_if_absent(&db, s).unwrap();
+            // A corrupt stored row with a sample's id must never kill
+            // boot: skip it loudly (crash log) — the stored copy still
+            // reaches the browser through the `all_songs` merge below.
+            if let Err(e) = library::upsert_song_if_absent(&db, s) {
+                crate::crash_log::log_line(&format!("boot sample skipped: {} ({e})", s.id));
+            }
         }
 
         let mut bibles = BibleLibrary::default();
@@ -1607,7 +1612,17 @@ impl Root {
         // Restore persisted library songs (app support folder) so imports
         // survive restart — the browser list is rebuilt from the database,
         // not just the bundled samples.
-        if let Ok(stored) = library::all_songs(&this.db) {
+        if let Ok((stored, skipped)) = library::all_songs(&this.db) {
+            if !skipped.is_empty() {
+                this.set_status(
+                    cx,
+                    format!(
+                        "Library: {} unreadable song(s) skipped ({}).",
+                        skipped.len(),
+                        skipped.join(", ")
+                    ),
+                );
+            }
             let (added, _) = merge_native_songs(&mut this.songs, stored);
             if added > 0 {
                 let q = this.search_field.read(cx).text();
@@ -3876,6 +3891,17 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// no-song panel; projection is untouched — deselecting is an editing
     /// gesture, never a live-state change.
     fn deselect_song(&mut self, cx: &mut Context<Self>) {
+        if self.song_dirty {
+            // Belt-and-braces behind `song_click_target`'s dirty veto:
+            // never unmount unsaved lyrics — the operator saves (Ctrl+S)
+            // and re-clicks to close the song.
+            self.set_status(
+                cx,
+                "Unsaved lyrics — save first (Ctrl+S), then click again to close the song.",
+            );
+            cx.notify();
+            return;
+        }
         self.sel_song = None;
         self.song_dirty = false;
         self.sel_block = None;
@@ -4089,6 +4115,7 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             "Export song",
             &[("Song JSON", &["json"])],
             &suggested,
+            None,
         );
         let Some(path) = picked else { return };
         match serde_json::to_string_pretty(&song)
@@ -4546,15 +4573,25 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
 
     fn save_agenda(&mut self, cx: &mut Context<Self>) {
         let typed = self.path_field.read(cx).text();
-        let suggested = crate::file_picker::suggested_file_name(&typed, "agenda.json");
-        let picked = crate::file_picker::pick_save(
-            "Save agenda",
-            &[("Agenda JSON", &["json"])],
-            &suggested,
-        );
-        let path = crate::file_picker::resolve_save_path(&typed, picked, "agenda.json")
-            .to_string_lossy()
-            .to_string();
+        let trimmed = typed.trim();
+        // Known path = plain Save (a modal Save-As every Ctrl+S steals
+        // focus mid-service while the room keeps the previous file).
+        // Unknown path opens the picker; headless cancel falls back via
+        // `resolve_save_path` (typed path, then the default).
+        let path = if trimmed.ends_with(".json") {
+            trimmed.to_string()
+        } else {
+            let suggested = crate::file_picker::suggested_file_name(&typed, "agenda.json");
+            let picked = crate::file_picker::pick_save(
+                "Save agenda",
+                &[("Agenda JSON", &["json"])],
+                &suggested,
+                crate::file_picker::typed_parent_dir(&typed).as_deref(),
+            );
+            crate::file_picker::resolve_save_path(&typed, picked, "agenda.json")
+                .to_string_lossy()
+                .to_string()
+        };
         let json = self
             .agenda
             .validate()
@@ -5466,6 +5503,7 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             "Export booklet",
             &[("HTML", &["html"])],
             crate::file_picker::BOOKLET_FALLBACK_FILENAME,
+            None,
         );
         let path = crate::file_picker::resolve_save_path(
             "",
@@ -5804,10 +5842,12 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             &typed,
             &crate::file_picker::vpagd_fallback_path(&self.agenda.title),
         );
+        let start = crate::file_picker::typed_parent_dir(&typed);
         let picked = crate::file_picker::pick_save(
             "Export native plan (.vpagd)",
             &[("VideoPsalm plan", &["vpagd"])],
             &suggested,
+            start.as_deref(),
         );
         let path =
             crate::file_picker::resolve_vpagd_path(&typed, picked, &self.agenda.title)
@@ -5943,7 +5983,17 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             // show from the beginning (startPres), exactly as Electron's
             // mediaFocused=false branch does.
             PresKey::StartPres => {
-                if !self.motion_toggle_pause(cx) {
+                // Only a launched standalone clip owns the press (see
+                // `f5_hands_to_motion`): the background VideoLoop must
+                // never swallow F5 — the status bar promises "F5 start".
+                let motion_live = self.motion.as_mut().is_some_and(|m| m.alive())
+                    || self.loop_player.is_some()
+                    || self.loop_paused.is_some();
+                let hand_to_motion = f5_hands_to_motion(
+                    self.media_launched_for.is_some(),
+                    motion_live,
+                );
+                if !(hand_to_motion && self.motion_toggle_pause(cx)) {
                     self.start_presentation(cx);
                 }
             }
@@ -6155,13 +6205,31 @@ fn overlay_covers_slide(live_on: bool, showing: Option<&str>, slide_url: Option<
     live_on && matches!((showing, slide_url), (Some(a), Some(b)) if a == b)
 }
 
+/// Whether F5 hands the press to in-app motion first (pure, tested): only
+/// a launched standalone clip owns it — never the background VideoLoop,
+/// never silence. The background loop has its own transport button; F5 is
+/// the show-start key (see `PresKey::StartPres` + `motion_toggle_pause`).
+fn f5_hands_to_motion(standalone_launched: bool, motion_live: bool) -> bool {
+    standalone_launched && motion_live
+}
+
 /// Browser-list selection after a click on row `clicked` (pure, tested).
 /// Clicking the row that is already selected toggles it OFF — the browser is
 /// the selection surface, and deselecting is the only gesture that reaches
 /// the empty-editor state (no song open). Any other row selects normally.
-fn song_click_target(current: Option<usize>, clicked: usize) -> Option<usize> {
+/// A dirty editor vetoes the toggle: re-clicking keeps the song open until
+/// the operator saves, so typed lyrics are never silently discarded.
+fn song_click_target(
+    current: Option<usize>,
+    clicked: usize,
+    song_dirty: bool,
+) -> Option<usize> {
     if current == Some(clicked) {
-        None
+        if song_dirty {
+            current
+        } else {
+            None
+        }
     } else {
         Some(clicked)
     }
@@ -6713,8 +6781,8 @@ fn document_wrap(doc: gpui::Entity<DocField>) -> Div {
     // (sheet page 01): never shorter than 340px, even on short windows.
     div()
         .flex_1()
-        .min_h(px(340.))
         .min_h_0()
+        .min_h(px(340.))
         .overflow_hidden()
         .child(doc)
 }
@@ -6899,7 +6967,7 @@ impl Render for Root {
                 .child(div().text_size(px(10.5)).child("slides".to_string()))
                 .child(kbd(&ui, "Ctrl+S"))
                 .child(div().text_size(px(10.5)).child("save".to_string()))
-                .child(kbd(&ui, "?"))
+                .child(kbd(&ui, "F1"))
                 .child(div().text_size(px(10.5)).child("shortcuts".to_string()))
                 .child(div().flex_1())
                 // FreeShow shows the time prominently; VP1.29 keeps it in the
@@ -7054,7 +7122,7 @@ impl Root {
             .gap_2()
             .px_2()
             .py(px(0.))
-            .bg(rgb(0xED1216))
+            .bg(ui.selection)
             .text_color(rgb(0xFFFFFF))
             .text_size(px(10.))
             .font_weight(FontWeight::BOLD)
@@ -8801,7 +8869,13 @@ impl Root {
             },
             ItemRef::Bible { bible_ref } => format_header(bible_ref),
             ItemRef::File { file } => {
-                let ext = file.rsplit('.').next().unwrap_or("").to_lowercase();
+                // `Path::extension` (not `rsplit('.')`, which returns the
+                // whole path for extensionless files like `/home/op/README`).
+                let ext = std::path::Path::new(file)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
                 format!("{} · {ext}", file_kind_label(ext.as_str()))
             }
             ItemRef::Url { url } => {
@@ -8886,8 +8960,8 @@ impl Root {
             }
             return div()
                 .flex_1()
-                .min_h(px(340.))
                 .min_h_0()
+                .min_h(px(340.))
                 .overflow_hidden()
                 .p(px(10.))
                 .text_size(px(12.5))
@@ -9895,7 +9969,7 @@ impl Root {
                             // Toggle: re-clicking the selected row clears
                             // it (reaches the no-song panel); any other row
                             // selects.
-                            match song_click_target(this.sel_song, i) {
+                            match song_click_target(this.sel_song, i, this.song_dirty) {
                                 Some(idx) => this.select_song(cx, idx),
                                 None => this.deselect_song(cx),
                             }
@@ -13223,7 +13297,8 @@ mod tests {
     fn default_ui_theme_carries_the_brand_tokens() {
         // E0063 regression: every builtin skin must build a complete `UI`
         // (all fields, including `live`/`live_ink`), with the sheet brand
-        // layer intact — selection is signal red, live is lime, on all 4.
+        // layer intact — selection is signal red, live is lime, on all 5
+        // (Electron parity gap: the port has not landed the Onyx skin yet).
         for t in vp_core::themes::builtin_themes() {
             let ui = UI::from_theme(&t, None);
             assert_eq!(ui.selection, SELECTION_RED, "skin {}", t.id);
@@ -13274,16 +13349,57 @@ mod tests {
         // Regression: select → click the same row → no song open (the
         // editor is free) → click again → reselected. Toggle semantics, not
         // a Close button: the browser list is the selection surface.
-        assert_eq!(song_click_target(None, 3), Some(3), "first click selects");
-        assert_eq!(song_click_target(Some(3), 3), None, "second click clears");
-        assert_eq!(song_click_target(Some(3), 4), Some(4), "another row moves the selection");
-        assert_eq!(song_click_target(None, 0), Some(0), "row 0 selects like any other");
+        assert_eq!(song_click_target(None, 3, false), Some(3), "first click selects");
+        assert_eq!(song_click_target(Some(3), 3, false), None, "second click clears");
+        assert_eq!(
+            song_click_target(Some(3), 4, false),
+            Some(4),
+            "another row moves the selection"
+        );
+        assert_eq!(
+            song_click_target(None, 0, false),
+            Some(0),
+            "row 0 selects like any other"
+        );
         // The whole cycle, as the operator performs it.
         let mut sel = None;
         for (clicked, want) in [(2, Some(2)), (2, None), (2, Some(2))] {
-            sel = song_click_target(sel, clicked);
+            sel = song_click_target(sel, clicked, false);
             assert_eq!(sel, want);
         }
+    }
+
+    #[test]
+    fn dirty_editor_vetoes_the_deselect_toggle() {
+        // Regression (data loss): typed lyrics with the `*` showing must
+        // survive a re-click on the selected row — the toggle keeps the
+        // song open until the operator saves, then re-clicks to close.
+        assert_eq!(
+            song_click_target(Some(3), 3, true),
+            Some(3),
+            "dirty re-click keeps the song open"
+        );
+        assert_eq!(
+            song_click_target(Some(3), 4, true),
+            Some(4),
+            "dirty never blocks moving to another row"
+        );
+        assert_eq!(
+            song_click_target(None, 5, true),
+            Some(5),
+            "dirty never blocks a fresh selection"
+        );
+    }
+
+    #[test]
+    fn f5_reaches_the_show_past_the_background_loop() {
+        // Regression: the background VideoLoop must never swallow F5 —
+        // only a launched standalone clip owns the press. `false` falls
+        // through to `start_presentation`.
+        assert!(f5_hands_to_motion(true, true), "standalone clip owns F5");
+        assert!(!f5_hands_to_motion(false, true), "background loop yields F5");
+        assert!(!f5_hands_to_motion(true, false), "nothing live: F5 starts");
+        assert!(!f5_hands_to_motion(false, false), "idle: F5 starts");
     }
 
     #[test]

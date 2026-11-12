@@ -52,16 +52,32 @@ pub fn suggested_file_name(typed: &str, fallback: &str) -> String {
 /// or fallback); `filters` are `(label, &[extensions])` pairs like
 /// [`pick_file`]. Returns `None` on cancel / headless — callers resolve
 /// via [`resolve_save_path`] so `--smoke` stays dialog-free.
+/// Dialog start directory (pure, tested): the typed path's parent when it
+/// names one — a typed `/tmp/shows/easter.json` opens in `/tmp/shows`, not
+/// the VideoPsalm documents folder (only the basename used to travel).
+/// Falls back to `None` (the shared-folder default below) otherwise.
+pub fn typed_parent_dir(typed: &str) -> Option<PathBuf> {
+    let parent = std::path::Path::new(typed.trim()).parent()?;
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    Some(parent.to_path_buf())
+}
+
 pub fn pick_save(
     title: &str,
     filters: &[(&str, &[&str])],
     suggested: &str,
+    start_dir: Option<&std::path::Path>,
 ) -> Option<PathBuf> {
     let mut dlg = rfd::FileDialog::new().set_title(title);
     for (label, exts) in filters {
         dlg = dlg.add_filter(*label, exts);
     }
-    if let Some(start) = videopsalm_start_dir() {
+    let start = start_dir
+        .map(|p| p.to_path_buf())
+        .or_else(videopsalm_start_dir);
+    if let Some(start) = start {
         dlg = dlg.set_directory(start);
     }
     let suggested = suggested.trim();
@@ -346,5 +362,18 @@ mod tests {
         );
         assert_eq!(suggested_file_name("", "agenda.json"), "agenda.json");
         assert_eq!(suggested_file_name("   ", "x.vpagd"), "x.vpagd");
+    }
+
+    #[test]
+    fn typed_parent_dir_stays_home_for_bare_names() {
+        // A typed path with a parent opens the dialog there; a bare name
+        // keeps the shared-folder default (None = default below).
+        assert_eq!(
+            typed_parent_dir("/tmp/shows/easter.json"),
+            Some(PathBuf::from("/tmp/shows"))
+        );
+        assert_eq!(typed_parent_dir("easter.json"), None);
+        assert_eq!(typed_parent_dir(""), None);
+        assert_eq!(typed_parent_dir("   "), None);
     }
 }

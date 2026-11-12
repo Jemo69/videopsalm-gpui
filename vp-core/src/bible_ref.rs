@@ -515,8 +515,8 @@ fn parse_verse_list(s: &str) -> Result<Vec<u32>, String> {
                 return Err(format!("bad verse range {part:?}"));
             }
             // Bound the expansion: a hostile/corrupt range must not allocate
-            // gigabytes before chapter-length checks run (150 verses is the
-            // longest real chapter; 1000 is generous headroom).
+            // gigabytes before chapter-length checks run (176 verses in
+            // Psalm 119, the longest real chapter; 1000 is generous headroom).
             if hi - lo > 1000 {
                 return Err(format!("verse range too large {part:?}"));
             }

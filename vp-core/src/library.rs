@@ -220,20 +220,28 @@ pub fn count_songs(conn: &Connection) -> Result<i64, rusqlite::Error> {
 /// All songs in the library (boot restore). The app's support folder keeps
 /// the SQLite library across runs; the in-memory browser list is rebuilt
 /// from here plus the bundled samples and the VideoPsalm folder scan.
-pub fn all_songs(conn: &Connection) -> Result<Vec<Song>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT data FROM songs")?;
+///
+/// Tolerant of corrupt rows: returns the songs that parse plus the ids
+/// that did not, so one bad blob can never drop (or, via a boot `unwrap`,
+/// crash) the whole stored library. Callers surface `skipped` on the
+/// status line; single-row strict reads stay loud via [`get_song`].
+pub fn all_songs(conn: &Connection) -> Result<(Vec<Song>, Vec<String>), rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT id, data FROM songs")?;
     let rows = stmt.query_map([], |row| {
-        let data: String = row.get(0)?;
-        let song: Song = serde_json::from_str(&data).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
-        })?;
-        Ok(song)
+        let id: String = row.get(0)?;
+        let data: String = row.get(1)?;
+        Ok((id, serde_json::from_str::<Song>(&data).ok()))
     })?;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for row in rows {
-        out.push(row?);
+        let (id, song) = row?;
+        match song {
+            Some(s) => out.push(s),
+            None => skipped.push(id),
+        }
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 /// Strip the spaces from an already-normalized string, producing the
@@ -824,6 +832,22 @@ mod tests {
             list_recents(&conn, 10).unwrap(),
             vec!["/a/sunday.vps".to_string(), "/a/friday.vps".to_string()]
         );
+    }
+
+    #[test]
+    fn all_songs_skips_corrupt_rows_and_reports_them() {
+        // Regression: one bad blob must never drop (or crash boot over)
+        // the whole stored library — survivors load, the bad id is named.
+        let conn = open_memory().unwrap();
+        upsert_song(&conn, &song("good", "Good", "A", "", "1", "b")).unwrap();
+        conn.execute(
+            "INSERT INTO songs (id, data) VALUES (?1, ?2)",
+            rusqlite::params!["bad", "{not json"],
+        )
+        .unwrap();
+        let (songs, skipped) = all_songs(&conn).unwrap();
+        assert_eq!(songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["good"]);
+        assert_eq!(skipped, vec!["bad".to_string()]);
     }
 
     #[test]
