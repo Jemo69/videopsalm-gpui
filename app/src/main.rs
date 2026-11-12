@@ -1614,12 +1614,21 @@ impl Root {
         // not just the bundled samples.
         if let Ok((stored, skipped)) = library::all_songs(&this.db) {
             if !skipped.is_empty() {
+                // Bound the status: a long corrupt-id list must not blow
+                // out the narrow status bar — name the first few, count
+                // the rest (full ids are in the crash log via boot skip).
+                let shown: Vec<&str> =
+                    skipped.iter().take(3).map(String::as_str).collect();
+                let rest = skipped.len().saturating_sub(shown.len());
+                let more =
+                    if rest > 0 { format!(" +{rest} more") } else { String::new() };
                 this.set_status(
                     cx,
                     format!(
-                        "Library: {} unreadable song(s) skipped ({}).",
+                        "Library: {} unreadable song(s) skipped ({}{}).",
                         skipped.len(),
-                        skipped.join(", ")
+                        shown.join(", "),
+                        more
                     ),
                 );
             }
@@ -2142,13 +2151,10 @@ impl Root {
         // row key (`web:{url}`, content-stable) is hidden.
         let hide = self.hidden_for(&item.id);
         if hide.iter().any(|h| h.starts_with("web:")) {
+            // Key on the full rejoined URL (see `live_url_for_slide`): the
+            // wrapped first line alone collides for URLs sharing a prefix.
             slides.retain(|s| {
-                !(s.footer == "WebSite"
-                    && s
-                        .lines
-                        .first()
-                        .map(|u| hide.contains(&web_row_key(u)))
-                        .unwrap_or(false))
+                !(s.footer == "WebSite" && hide.contains(&web_row_key(&s.lines.join(""))))
             });
         }
         slides
@@ -4577,8 +4583,9 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
         // Known path = plain Save (a modal Save-As every Ctrl+S steals
         // focus mid-service while the room keeps the previous file).
         // Unknown path opens the picker; headless cancel falls back via
-        // `resolve_save_path` (typed path, then the default).
-        let path = if trimmed.ends_with(".json") {
+        // `resolve_save_path` (typed path, then the default). The match is
+        // case-insensitive (`SONG.JSON` from Explorer is still a save).
+        let path = if trimmed.to_lowercase().ends_with(".json") {
             trimmed.to_string()
         } else {
             let suggested = crate::file_picker::suggested_file_name(&typed, "agenda.json");
@@ -10845,7 +10852,7 @@ impl Root {
             // an em dash inside an embed title must never fabricate a verse.
             let web = slide.footer == "WebSite";
             let vid = if web {
-                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+                web_row_key(&slide.lines.join(""))
             } else {
                 slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
             };
@@ -10996,7 +11003,7 @@ impl Root {
             // key survives reordering.
             let web = slide.footer == "WebSite";
             let vid = if web {
-                web_row_key(&slide.lines.first().cloned().unwrap_or_default())
+                web_row_key(&slide.lines.join(""))
             } else {
                 slide_verse_id(&slide.header).unwrap_or_else(|| format!("slide{i}"))
             };
@@ -12762,9 +12769,6 @@ impl Root {
         cx.notify();
     }
 
-    /// Keep the live browser window in step with the pushed slide. Runs at
-    /// the end of every [`Self::push_projection`]: spawn on website slides,
-    /// die the moment they leave, never fetch anything itself.
     /// CSS background for the live overlay's wrapper document: the same
     /// field the presentation is drawing (colour or image), so verse text
     /// sits on the room's picture. Video backgrounds cannot be mirrored into
@@ -12783,6 +12787,9 @@ impl Root {
         }
     }
 
+    /// Keep the live browser window in step with the pushed slide. Runs at
+    /// the end of every [`Self::push_projection`]: spawn on website slides,
+    /// die the moment they leave, never fetch anything itself.
     fn sync_live_web(&mut self, cx: &mut Context<Self>) {
         let desired = self
             .projected_slides
@@ -13562,6 +13569,20 @@ mod tests {
             web_row_key("https://example.com/live"),
             "web:https://example.com/live"
         );
+        // Wrapped-URL regression: rows key on the full rejoined URL, so two
+        // pages sharing a 40-char prefix (the wrap width) never share a key
+        // — hiding one must not hide the other.
+        let long_a = "https://example.com/averylongpath/segment-one";
+        let long_b = "https://example.com/averylongpath/segment-two";
+        assert!(long_a.len() > 40 && long_b.len() > 40);
+        assert_eq!(&long_a[..40], &long_b[..40], "fixture shares the prefix");
+        let key_a = web_row_key(
+            &vp_core::verse_splitter::wrap_caption(long_a, 40).join(""),
+        );
+        let key_b = web_row_key(
+            &vp_core::verse_splitter::wrap_caption(long_b, 40).join(""),
+        );
+        assert_ne!(key_a, key_b, "prefix-sharing URLs collide: {key_a}");
         let lyric = Slide::text("T — V1", vec!["x".to_string()], "Song");
         let card = Slide::text(
             "Card",

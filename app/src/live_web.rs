@@ -364,6 +364,11 @@ pub enum OverlayField {
 /// desktop gets the real thing (alpha — the presentation background shows
 /// through the transparent page); without a compositor an ARGB window shows
 /// the X default, so we paint black instead and say so.
+///
+/// Precedence note: this picks the *page* field. `VP_LIVE_OPAQUE=1` is a
+/// separate, stronger switch read later by `chromium_args_impl` — it forces
+/// the *window* opaque no matter what this returns, for compositor-less
+/// desktops where even an alpha page would sit on a white X default.
 pub fn overlay_field(has_compositor: bool, env: Option<&str>) -> OverlayField {
     match env {
         Some("alpha") => OverlayField::Alpha,
@@ -371,6 +376,14 @@ pub fn overlay_field(has_compositor: bool, env: Option<&str>) -> OverlayField {
         _ if has_compositor => OverlayField::Alpha,
         _ => OverlayField::Black,
     }
+}
+
+/// Wrapper-document decision (pure, tested): no wrapper when the operator
+/// opts out (`VP_LIVE_WRAPPER=0`), or when the field is alpha — the page is
+/// transparent and the compositor shows the presentation through it, so a
+/// black wrapper document would only cover the room's picture.
+pub fn wrapper_off_for(env_off: bool, field: OverlayField) -> bool {
+    env_off || field == OverlayField::Alpha
 }
 
 /// Whether a compositing manager is present, by process name — the cheap,
@@ -668,8 +681,10 @@ impl LiveView {
         // can honour it; otherwise the wrapper's black field.
         let field_env = std::env::var("VP_LIVE_FIELD").ok();
         let field = overlay_field(has_compositor(), field_env.as_deref());
-        let wrapper_off = std::env::var("VP_LIVE_WRAPPER").as_deref() == Ok("0")
-            || field == OverlayField::Alpha;
+        let wrapper_off = wrapper_off_for(
+            std::env::var("VP_LIVE_WRAPPER").as_deref() == Ok("0"),
+            field,
+        );
         let mut launch_url = url.to_string();
         let mut wrapper: Option<PathBuf> = None;
         if !wrapper_off {
@@ -927,6 +942,16 @@ mod tests {
         assert_eq!(overlay_field(false, Some("alpha")), OverlayField::Alpha);
         assert_eq!(overlay_field(true, Some("black")), OverlayField::Black);
         assert_eq!(overlay_field(true, Some("nonsense")), OverlayField::Alpha);
+    }
+
+    #[test]
+    fn wrapper_decision_skips_black_on_the_alpha_path() {
+        // The alpha path shows the presentation through the page: a black
+        // wrapper document would cover the room's picture, so it is off —
+        // on black or by explicit operator opt-out it stays on.
+        assert!(wrapper_off_for(false, OverlayField::Alpha));
+        assert!(!wrapper_off_for(false, OverlayField::Black));
+        assert!(wrapper_off_for(true, OverlayField::Black));
     }
 
     #[test]
