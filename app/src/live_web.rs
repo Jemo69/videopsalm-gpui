@@ -322,6 +322,23 @@ pub fn chromium_args(
     chromium_args_with(url, geometry, fullscreen, profile, true)
 }
 
+/// Browser profile for a live view (pure, tested).
+///
+/// Default is a throwaway directory: no history, no cookies, nothing
+/// survives the show. A stage page may keep its own settings in the
+/// browser profile (localStorage) — e.g. Selah's `transparentBackground`,
+/// which decides whether the page paints transparent — so an operator can
+/// opt into a persistent profile with `VP_LIVE_PROFILE=<dir>` (or
+/// `VP_LIVE_PROFILE=persist` for the default location): flip the page's own
+/// toggle once in that profile and every later show keeps it.
+pub fn profile_dir(throwaway: PathBuf, persist: Option<&str>, fallback_dir: &std::path::Path) -> PathBuf {
+    match persist {
+        None | Some("") => throwaway,
+        Some("persist") | Some("1") => fallback_dir.to_path_buf(),
+        Some(dir) => PathBuf::from(dir),
+    }
+}
+
 /// Whether the live window carries alpha (pure, tested). Transparent by
 /// default — the page is an overlay ON the presentation — with an explicit
 /// opaque fallback for desktops that run no compositor.
@@ -417,6 +434,8 @@ pub fn firefox_args(url: &str, profile: &std::path::Path) -> Vec<std::ffi::OsStr
 pub struct LiveView {
     child: Option<Child>,
     profile: Option<PathBuf>,
+    /// Operator-owned profile (VP_LIVE_PROFILE): never deleted on hide.
+    profile_persistent: bool,
     current: Option<(String, Option<(i32, i32, i32, i32)>, bool)>,
 }
 
@@ -425,6 +444,7 @@ impl LiveView {
         LiveView {
             child: None,
             profile: None,
+            profile_persistent: false,
             current: None,
         }
     }
@@ -465,7 +485,7 @@ impl LiveView {
             return true;
         }
         self.hide();
-        let profile = std::env::temp_dir().join(format!(
+        let throwaway = std::env::temp_dir().join(format!(
             "videopsalm-live-web-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -473,6 +493,12 @@ impl LiveView {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let persist_env = std::env::var("VP_LIVE_PROFILE").ok();
+        let persist_dir = std::env::temp_dir().join("videopsalm-live-web-profile");
+        let profile = profile_dir(throwaway, persist_env.as_deref(), &persist_dir);
+        // Persistent profiles already exist: create-or-keep, and never
+        // `hide()` (delete) what the operator owns.
+        let persistent = persist_env.as_deref().is_some_and(|v| !v.is_empty());
         // The 0700 throwaway profile is the isolation: refuse to spawn
         // into a dir we did not just lock down.
         let created = {
@@ -490,7 +516,12 @@ impl LiveView {
             }
         };
         if !created {
-            return false;
+            // A persistent profile may already exist (that is the point:
+            // the page's own settings live in it). Only a fresh throwaway
+            // directory must be ours.
+            if !(persistent && profile.is_dir()) {
+                return false;
+            }
         }
         let args = match kind {
             BrowserKind::Chromium => {
@@ -508,6 +539,7 @@ impl LiveView {
             Ok(child) => {
                 self.child = Some(child);
                 self.profile = Some(profile);
+                self.profile_persistent = persistent;
                 self.current = Some((url.to_string(), geometry, room_fullscreen));
                 true
             }
@@ -531,8 +563,11 @@ impl LiveView {
             }
         }
         if let Some(profile) = self.profile.take() {
-            let _ = std::fs::remove_dir_all(profile);
+            if !self.profile_persistent {
+                let _ = std::fs::remove_dir_all(profile);
+            }
         }
+        self.profile_persistent = false;
     }
 }
 
@@ -659,6 +694,25 @@ mod tests {
         let plain = chromium_args("https://example.com", None, false, profile);
         assert!(!plain.iter().any(|a| a.to_string_lossy().starts_with("--window-position")), "{plain:?}");
         assert!(!plain.iter().any(|a| a == "--start-fullscreen"), "control screen stays windowed: {plain:?}");
+    }
+
+    #[test]
+    fn live_profile_is_throwaway_unless_the_operator_opts_in() {
+        // Privacy default: a fresh throwaway dir per show, deleted on hide.
+        // Opt-in persistence exists because a stage page may keep its own
+        // settings (Selah's transparentBackground) in the browser profile.
+        let throwaway = std::path::PathBuf::from("/tmp/live-abc");
+        let fallback = std::path::Path::new("/tmp/persist-default");
+        assert_eq!(profile_dir(throwaway.clone(), None, fallback), throwaway);
+        assert_eq!(profile_dir(throwaway.clone(), Some(""), fallback), throwaway);
+        assert_eq!(
+            profile_dir(throwaway.clone(), Some("persist"), fallback),
+            fallback.to_path_buf()
+        );
+        assert_eq!(
+            profile_dir(throwaway, Some("/home/operator/stage-profile"), fallback),
+            std::path::PathBuf::from("/home/operator/stage-profile")
+        );
     }
 
     #[test]
