@@ -73,6 +73,12 @@ pub struct ProjectorSnapshot {
     pub blank: bool,
     pub header: String,
     pub lines: Vec<String>,
+    /// Rendered body lines: lyric slides carry `lines` verbatim; website
+    /// tiles carry the FreeShow-formatted URL rewrapped at the slide width
+    /// (see `live_web::format_tile_text`). Render reads this; logic paths
+    /// (slide-URL reconstruction, the overlay-cover rule) always use raw
+    /// `lines` so display can never corrupt navigation.
+    pub display_lines: Vec<String>,
     pub footer: String,
     pub alert_visible: bool,
     pub alert_text: String,
@@ -467,8 +473,11 @@ pub(crate) fn render_snapshot(
         )
     } else {
         let (fx, fy, fw, fh) = body_fractions(snap.body_pct);
+        // Website tiles arrive pre-formatted (FreeShow `formatUrl`, rewrapped
+        // at the slide width — see `ProjectorSnapshot::display_lines`);
+        // lyric slides carry `lines` verbatim.
         let fit =
-            vp_core::media::fit_text_factor(snap.lines.len(), snap.font_size * scale, fh * bh);
+            vp_core::media::fit_text_factor(snap.display_lines.len(), snap.font_size * scale, fh * bh);
         let mut size = snap.font_size * scale * fit;
         // Width fit (R3 worst surface): the height fit above lets long
         // lyric lines overflow the frame sideways, cropping them at the
@@ -476,7 +485,7 @@ pub(crate) fn render_snapshot(
         // frame width too — 0.6em mean glyph width is conservative for
         // bold lyric faces; wider faces only shrink further (safe).
         let max_chars = snap
-            .lines
+            .display_lines
             .iter()
             .map(|l| l.chars().count())
             .max()
@@ -486,7 +495,7 @@ pub(crate) fn render_snapshot(
         // against `target_w` over-estimates and long lines still crop.
         size *= width_fit_factor(fw * bw, max_chars, size);
         let mut lines: Vec<Div> = snap
-            .lines
+            .display_lines
             .iter()
             .map(|l| {
                 rich_view::rich_line(

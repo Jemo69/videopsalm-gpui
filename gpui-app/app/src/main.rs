@@ -3137,6 +3137,11 @@ impl Root {
     /// Display flags (blank / text-hidden) use [`Self::republish`] instead:
     /// the wall must obey them even under a freeze hold.
     fn republish(&mut self, cx: &mut Context<Self>) {
+        // A browser killed outside the app leaves a stale showing (blank
+        // wall, lit chip) until the next push respawns it — reap on every
+        // republish so ticks and display flags heal it sooner. Reap only:
+        // no spawn, no probe, safe in render-adjacent paths.
+        self.reap_dead_browser(cx);
         crate::presentation::publish(self, cx);
         let snap = self.projector_snapshot(cx);
         self.push_ndi_still(&snap);
@@ -3432,12 +3437,17 @@ impl Root {
         };
         self.projected_slides = live;
         self.projected_chord = self.proj_chord_line();
+        // Live web view follows the pushed slide (spawn on website slides,
+        // die the moment they leave) — synced BEFORE publish so the
+        // published snapshot already reflects the overlay state. Otherwise
+        // the first push to a website slide ships the URL tile while the
+        // browser is already opening behind it, and the wall disagrees with
+        // the overlay for a beat. Loopback stage pages render even with the
+        // toggle off (FreeShow parity); remote pages keep the Live gate.
+        self.sync_live_web(cx);
         crate::presentation::publish(self, cx);
         let snap = self.projector_snapshot(cx);
         self.push_ndi_still(&snap);
-        // Live web view follows the pushed slide (spawn on website slides,
-        // die the moment they leave). No-op while the toggle is off.
-        self.sync_live_web(cx);
     }
 
     /// The **projector's** slides: always the pushed snapshot, frozen or
@@ -3491,16 +3501,20 @@ impl Root {
         // also draw the URL tile underneath — the overlay carries the content
         // and the projector carries the background only. FreeShow never puts
         // a URL on the wall either: remote pages only ever appear in their
-        // hover/navigation controls.
+        // hover/navigation controls. The Live flag here is the *effective*
+        // one: loopback stage pages render with the toggle off.
+        let slide_url = live_web::live_url_for_slide(&Slide::text(
+            header.clone(),
+            lines.clone(),
+            footer.clone(),
+        ));
+        let live_eff = slide_url
+            .as_deref()
+            .is_some_and(|u| live_effective(self.live_web_on, u));
         if overlay_covers_slide(
-            self.live_web_on,
+            live_eff,
             self.live_view_url.as_deref(),
-            live_web::live_url_for_slide(&Slide::text(
-                header.clone(),
-                lines.clone(),
-                footer.clone(),
-            ))
-            .as_deref(),
+            slide_url.as_deref(),
         ) {
             header.clear();
             lines.clear();
@@ -3578,7 +3592,15 @@ impl Root {
             frame,
             blank: self.blank,
             header,
-            lines,
+            lines: lines.clone(),
+            // Rendered body lines: website tiles show the FreeShow-formatted
+            // URL rewrapped at the slide width; logic paths (slide-URL
+            // reconstruction, the overlay-cover rule) use raw `lines`.
+            display_lines: if footer == "WebSite" || footer == "YouTube" {
+                live_web::format_tile_text(&lines, self.max_chars)
+            } else {
+                lines.clone()
+            },
             footer,
             standalone,
             video_poster,
@@ -6212,6 +6234,15 @@ fn overlay_covers_slide(live_on: bool, showing: Option<&str>, slide_url: Option<
     live_on && matches!((showing, slide_url), (Some(a), Some(b)) if a == b)
 }
 
+/// Effective Live state for one website URL (pure, tested). FreeShow renders
+/// its `<webview>` unconditionally; the safe subset ports here: loopback
+/// pages are our own machine (the stage server — no packet ever leaves it),
+/// so they render without the Live gate. Remote pages stay behind Live +
+/// Allow (offline-first rule, unchanged) — the toggle still governs them.
+fn live_effective(live_on: bool, url: &str) -> bool {
+    live_on || live_web::is_loopback(url)
+}
+
 /// Whether F5 hands the press to in-app motion first (pure, tested): only
 /// a launched standalone clip owns it — never the background VideoLoop,
 /// never silence. The background loop has its own transport button; F5 is
@@ -7944,13 +7975,13 @@ impl Root {
             "paste a page URL, Set shows it behind the lyrics".to_string()
         };
         // Live web view: one toggle, invisible until wanted. Default off =
-        // today's offline tiles; on = website slides open in a hardened
-        // browser window on the projector display (loopback exempt, remote
-        // asks Allow first, dead servers keep the tile).
+        // remote offline tiles; loopback stage pages render regardless
+        // (FreeShow parity — no packet leaves the machine), remote asks
+        // Allow first, dead servers keep the tile.
         let live_on = self.live_web_on;
         let live_pending = self.live_web_pending.clone();
         let live_status = if !live_on {
-            "Live view off — tiles only (default).".to_string()
+            "Live view off — loopback stage pages still render, remote stays tiled.".to_string()
         } else if let Some(u) = live_pending.as_deref() {
             format!("Live view: remote page waiting — Allow: {u}")
         } else {
@@ -12729,25 +12760,42 @@ impl Root {
     }
 
     /// Live web view toggle: one click on, one click off. Persisted like
-    /// every other layout choice; default off so the offline tiles rule
-    /// until the operator asks for more.
+    /// every other layout choice; default off so remote offline tiles rule
+    /// until the operator asks for more. Loopback stage pages render
+    /// regardless (FreeShow parity) — the toggle never governed them.
     fn toggle_live_web(&mut self, cx: &mut Context<Self>) {
         self.live_web_on = !self.live_web_on;
         if !self.live_web_on {
-            self.live_view.hide();
-            self.live_web_pending = None;
-            self.live_web_confirmed.clear();
-            self.set_status(cx, "Live web view off — website slides are offline tiles again.");
+            // Remote pages go dark at once; loopback stage pages re-sync
+            // instead of hiding — killing their browser here would blank
+            // the wall until the next push resurrects it, contradicting the
+            // panel copy. Sync first so the published snapshot below
+            // already reflects the outcome (no tile flash either way).
+            let loopback_live = self
+                .projected_slides
+                .get(self.projected_slide)
+                .and_then(live_web::live_url_for_slide)
+                .is_some_and(|u| live_web::is_loopback(&u));
+            if loopback_live {
+                self.sync_live_web(cx);
+            } else {
+                self.live_view.hide();
+                // Drop the stale showing too, or the published snapshot
+                // keeps suppressing a tile no browser paints.
+                self.live_view_url = None;
+                self.live_web_pending = None;
+                self.live_web_confirmed.clear();
+            }
+            self.set_status(cx, "Live web view off — remote pages are offline tiles again (loopback stage pages still render).");
         } else {
             self.set_status(cx, "Live web view on — website slides open in a browser window on the projector display.");
+            // Toggling on while a website slide is already live must take
+            // effect at once, not on the next navigation — and the published
+            // snapshot must already carry the suppression (no tile flash).
+            self.sync_live_web(cx);
         }
         self.persist_layout_quiet();
         crate::presentation::publish(self, cx);
-        // Toggling on while a website slide is already live must take
-        // effect at once, not on the next navigation.
-        if self.live_web_on {
-            self.sync_live_web(cx);
-        }
         cx.notify();
     }
 
@@ -12769,6 +12817,10 @@ impl Root {
                 self.set_status(cx, format!("Live web view allowed for this show: {url}"));
                 self.sync_live_web(cx);
             }
+            // The browser may be live now while the published snapshot still
+            // carries the tile — republish at once, like every other path
+            // that changes the showing state.
+            crate::presentation::publish(self, cx);
         }
         cx.notify();
     }
@@ -12794,6 +12846,19 @@ impl Root {
         }
     }
 
+    /// Reap a browser the operator closed (or that crashed) outside the app:
+    /// liveness only, never a spawn or probe — so render-adjacent ticks may
+    /// call it. Clears the stale showing so the next repaint re-tiles
+    /// instead of holding a blank wall under a lit LIVE WEB chip. Spawning
+    /// stays push-gated (see `sync_live_web`): the next push respawns.
+    fn reap_dead_browser(&mut self, cx: &mut Context<Self>) {
+        if self.live_view_url.is_some() && !self.live_view.is_alive() {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.set_status(cx, "Live web view: the browser window closed — tile stays.");
+        }
+    }
+
     /// Keep the live browser window in step with the pushed slide. Runs at
     /// the end of every [`Self::push_projection`]: spawn on website slides,
     /// die the moment they leave, never fetch anything itself.
@@ -12803,16 +12868,23 @@ impl Root {
             .get(self.projected_slide)
             .and_then(live_web::live_url_for_slide);
         if desired.is_none() {
-            // Not a website slide: make sure nothing lingers, quietly.
+            // Not a website slide: make sure nothing lingers, quietly. The
+            // Allow offer clears unconditionally — a blocked remote (never
+            // shown, `live_view_url` empty) must not linger as an offer for
+            // a slide that is already gone.
             if self.live_view_url.is_some() {
                 self.live_view.hide();
                 self.live_view_url = None;
-                self.live_web_pending = None;
             }
+            self.live_web_pending = None;
             return;
         }
         let url = desired.unwrap();
-        if !self.live_web_on {
+        // FreeShow parity for the safe subset (`live_effective`): a loopback
+        // stage page renders even with the toggle off — like FreeShow's
+        // unconditional webview — while remote pages keep the Live gate and
+        // the per-session Allow below.
+        if !live_effective(self.live_web_on, &url) {
             self.live_view.hide();
             self.live_view_url = None;
             self.live_web_pending = None;
@@ -13360,6 +13432,18 @@ mod tests {
             ),
             "a different page showing must not blank this slide"
         );
+    }
+
+    #[test]
+    fn loopback_pages_render_without_the_live_gate() {
+        // FreeShow ports its unconditional `<webview>` for the safe subset
+        // only: loopback is our own stage server, so the toggle never gates
+        // it; remote pages follow the toggle exactly.
+        assert!(live_effective(false, "http://localhost:4000/#/output1"));
+        assert!(live_effective(false, "http://127.0.0.1:4000/x"));
+        assert!(!live_effective(false, "https://example.com/live"));
+        assert!(live_effective(true, "https://example.com/live"));
+        assert!(live_effective(true, "http://localhost:4000/#/output1"));
     }
 
     #[test]
