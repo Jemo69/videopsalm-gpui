@@ -1432,6 +1432,10 @@ pub(crate) fn explore_folder(root: &mut Root, cx: &mut Context<Root>, kind: Medi
         c.args(["/C", "start", ""]);
         c
     };
+    // Windows GUI app: `cmd /C start` without CREATE_NO_WINDOW flashes a
+    // terminal every time the gallery folder is opened.
+    #[cfg(target_os = "windows")]
+    vp_core::media::hide_console(&mut cmd);
     match cmd.arg(&folder).spawn() {
         Ok(_) => root.set_status(cx, format!("Opened {folder}.")),
         Err(e) => root.set_status(cx, format!("Explore: cannot open {folder}: {e}")),

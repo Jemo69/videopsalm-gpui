@@ -390,22 +390,35 @@ pub fn wrapper_off_for(env_off: bool, field: OverlayField) -> bool {
 /// dependency-free check available to us. Unknown desktops default to "no",
 /// which selects the safe black field (never a white window).
 pub fn has_compositor() -> bool {
-    const NAMES: [&str; 10] = [
-        "picom", "compton", "xcompmgr", "mutter", "kwin_x11", "kwin_wayland",
-        "gnome-shell", "sway", "weston", "compiz",
-    ];
-    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
-    let mut found = false;
-    entries.flatten().any(|e| {
-        let comm = e.path().join("comm");
-        let Ok(name) = std::fs::read_to_string(comm) else { return false };
-        let name = name.trim();
-        if NAMES.contains(&name) {
-            // Mutter/KWin are compositing WMs: a hit means alpha is safe.
-            found = true;
-        }
-        false
-    }) || found
+    // Windows (DWM) always composites: an alpha overlay window shows the
+    // presentation behind it, so the transparent stage page (white text,
+    // no background) renders over the room's own background. The `/proc`
+    // scan below is Linux-only — on Windows it always missed, forcing the
+    // opaque black wrapper and hiding video backgrounds behind a black
+    // slab, so the wall fell back to the URL tile.
+    #[cfg(target_os = "windows")]
+    {
+        return true;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        const NAMES: [&str; 10] = [
+            "picom", "compton", "xcompmgr", "mutter", "kwin_x11", "kwin_wayland",
+            "gnome-shell", "sway", "weston", "compiz",
+        ];
+        let Ok(entries) = std::fs::read_dir("/proc") else { return false };
+        let mut found = false;
+        entries.flatten().any(|e| {
+            let comm = e.path().join("comm");
+            let Ok(name) = std::fs::read_to_string(comm) else { return false };
+            let name = name.trim();
+            if NAMES.contains(&name) {
+                // Mutter/KWin are compositing WMs: a hit means alpha is safe.
+                found = true;
+            }
+            false
+        }) || found
+    }
 }
 
 /// Wrapper page for the transparent overlay (pure, tested).
@@ -690,7 +703,12 @@ impl LiveView {
         if !wrapper_off {
             let path = profile.with_extension("overlay.html");
             if std::fs::write(&path, overlay_wrapper_html_with_bg(url, field_css)).is_ok() {
-                launch_url = format!("file://{}", path.display());
+                // `Path::display` yields backslashes on Windows
+                // (`C:\Temp\...`), which browsers reject as a `file://`
+                // URL — the overlay then loads an error page and the wall
+                // falls back to the URL tile. Normalize via the shared
+                // helper (forward slashes, `file:///` prefix).
+                launch_url = vp_core::media::file_url_for_path(&path);
                 wrapper = Some(path);
             }
         }
@@ -709,7 +727,11 @@ impl LiveView {
             }
             BrowserKind::Firefox => firefox_args(&launch_url, &profile),
         };
-        match Command::new(bin)
+        let mut cmd = Command::new(bin);
+        // Windows GUI app: never flash a terminal when the live page opens.
+        #[cfg(target_os = "windows")]
+        vp_core::media::hide_console(&mut cmd);
+        match cmd
             .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -1143,5 +1165,38 @@ mod tests {
         assert_eq!(live_url_for_slide(&lyric), None);
         let bad = Slide::text("X", vec!["not a url at all -->".to_string()], "WebSite");
         assert_eq!(live_url_for_slide(&bad), None);
+    }
+
+    #[test]
+    fn compositor_is_always_on_for_windowed_desktops() {
+        // Windows (DWM) always composites: the transparent stage page
+        // (white text, no background) must render over the room's own
+        // background (rainbow video in the report). The old `/proc` scan
+        // always missed there, forcing the opaque black wrapper and hiding
+        // the video behind a black slab — the wall then fell back to the
+        // URL tile.
+        #[cfg(target_os = "windows")]
+        assert!(has_compositor(), "DWM always composites");
+        // Alpha + wrapper-off go together: no black document covering the
+        // presentation when the compositor can show through.
+        assert!(wrapper_off_for(false, overlay_field(true, None)));
+    }
+
+    #[test]
+    fn wrapper_file_url_is_browser_loadable() {
+        // The wrapper document is loaded via a `file://` URL. `Path::display`
+        // on Windows yields backslashes (`C:\Temp\...`) which browsers
+        // reject — the overlay then shows an error page and the wall keeps
+        // the URL tile. The shared helper normalizes to `file:///C:/...`.
+        assert_eq!(
+            vp_core::media::file_url_from_display("/tmp/videopsalm-live-web-1.overlay.html"),
+            "file:///tmp/videopsalm-live-web-1.overlay.html"
+        );
+        assert_eq!(
+            vp_core::media::file_url_from_display(
+                r"C:\Users\op\AppData\Local\Temp\videopsalm-live-web-1.overlay.html"
+            ),
+            "file:///C:/Users/op/AppData/Local/Temp/videopsalm-live-web-1.overlay.html"
+        );
     }
 }

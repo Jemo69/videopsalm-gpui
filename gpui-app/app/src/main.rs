@@ -8917,6 +8917,10 @@ impl Root {
         let mut cmd = std::process::Command::new("xdg-open");
         #[cfg(target_os = "macos")]
         let mut cmd = std::process::Command::new("open");
+        // Windows GUI app: `cmd /C start` without CREATE_NO_WINDOW flashes
+        // a terminal every time a video/file is opened — the complaint.
+        #[cfg(target_os = "windows")]
+        vp_core::media::hide_console(&mut cmd);
         match cmd.arg(path).spawn() {
             Ok(_) => self.set_status(cx, format!("Opening {path}.")),
             Err(e) => self.set_status(cx, format!("Cannot open {path}: {e}")),
@@ -12777,9 +12781,12 @@ impl Root {
         let fallback = format!("background:{}", self.theme().projection_bg);
         match self.bg_kind {
             BackgroundKind::Image => match &self.bg_file {
+                // `Path::display` yields backslashes on Windows; normalize
+                // to a real `file:///` URL so the overlay wrapper can load
+                // the picture instead of falling back to black.
                 Some(p) => format!(
-                    "background:#000 url('file://{}') center/cover no-repeat",
-                    p.display()
+                    "background:#000 url('{}') center/cover no-repeat",
+                    vp_core::media::file_url_for_path(p)
                 ),
                 None => fallback,
             },
@@ -12908,31 +12915,35 @@ impl Root {
         };
         // Windows launches without a shell round-trip: `rundll32` hands the
         // URL straight to the protocol handler, so there is no `cmd`
-        // metacharacter surface at all (no blocklist to maintain).
+        // metacharacter surface at all (no blocklist to maintain). This is
+        // the only Windows path — the `cmd /C start` fallback is gone, so
+        // no unreachable Windows spawn can ever miss `hide_console`.
         #[cfg(target_os = "windows")]
         {
             let mut cmd = std::process::Command::new("rundll32.exe");
+            vp_core::media::hide_console(&mut cmd);
             cmd.args(["url.dll,FileProtocolHandler", &url]);
             return match cmd.spawn() {
                 Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
                 Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
             };
         }
-        #[cfg(target_os = "linux")]
-        let mut cmd = std::process::Command::new("xdg-open");
-        #[cfg(target_os = "macos")]
-        let mut cmd = std::process::Command::new("open");
-        #[cfg(target_os = "windows")]
-        let mut cmd = {
-            let mut c = std::process::Command::new("cmd");
-            c.args(["/C", "start", ""]);
-            c
-        };
-        match cmd.arg(&url).spawn() {
-            Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
-            Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
+        // Unreachable on Windows (early return above): the whole tail is
+        // non-Windows, so every `Command` here needs no console hiding.
+        #[cfg(not(target_os = "windows"))]
+        {
+            #[cfg(target_os = "linux")]
+            let mut cmd = std::process::Command::new("xdg-open");
+            #[cfg(target_os = "macos")]
+            let mut cmd = std::process::Command::new("open");
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let mut cmd = std::process::Command::new("xdg-open");
+            match cmd.arg(&url).spawn() {
+                Ok(_) => self.set_status(cx, format!("Opening {url} in the browser.")),
+                Err(e) => self.set_status(cx, format!("Cannot open {url}: {e}")),
+            }
+            cx.notify();
         }
-        cx.notify();
     }
 
     /// Note shown when the style asks for a background kind v1 cannot fully
