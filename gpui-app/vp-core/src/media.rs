@@ -17,7 +17,80 @@
 //! `audio-sink` channel selection) and select it in the app's projector
 //! controls. GStreamer is deliberately NOT required to build v1.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Hide the console window for child processes on Windows (GUI app).
+/// Without `CREATE_NO_WINDOW` every `ffmpeg` probe/grab and every
+/// `cmd /C start` flashes a terminal — the "terminal opens when video
+/// is chosen" complaint. No-op elsewhere.
+#[cfg(target_os = "windows")]
+pub fn hide_console(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// `file://` URL for a local path (pure, tested).
+///
+/// Unix paths already display with `/`, so `file://` + display is a valid
+/// URL (`/tmp/x` → `file:///tmp/x`). Windows displays with `\`
+/// (`C:\Temp\x` → `file://C:\Temp\x`), which browsers reject — the
+/// live overlay then loads an error page instead of the stage, and the
+/// wall falls back to the URL tile. Normalize to forward slashes with
+/// the `file:///` prefix (`C:/Temp/x` → `file:///C:/Temp/x`).
+pub fn file_url_for_path(path: &Path) -> String {
+    file_url_from_display(&path.display().to_string())
+}
+
+/// String form of [`file_url_for_path`] so tests pin the mapping without
+/// touching the filesystem (pure, tested).
+///
+/// Callers pass absolute paths (the overlay wrapper next to the temp dir,
+/// image backgrounds from the file picker), so relative inputs are treated
+/// Windows-style (separators); a Unix absolute path (leading `/`) keeps
+/// backslashes as data.
+pub fn file_url_from_display(s: &str) -> String {
+    // `%` first so later introductions of `%` (the `%5C` below) are never
+    // double-encoded.
+    let s = s.replace('%', "%25");
+    // `\\server\share` (UNC) is detected on the original prefix, before
+    // normalization, so a rare Unix `//...` path never misreads as authority.
+    let is_unc = s.starts_with("\\\\");
+    // Windows-style separators become `/` — including rooted (`\foo`) and
+    // relative (`foo\bar`) forms, which never occur for Unix absolutes. A
+    // literal backslash is a valid Unix filename char, so under a Unix
+    // absolute path (leading `/`) it is data (`%5C`), never a separator.
+    // (`\` is illegal in Windows filenames, so no real Windows name is
+    // corrupted by normalization.)
+    let s = if s.starts_with('/') {
+        s.replace('\\', "%5C")
+    } else {
+        s.replace('\\', "/")
+    };
+    // `#` (fragment), `?` (query), spaces and `'` (closes the single-quoted
+    // `url('...')` CSS string in the overlay wrapper) would change the URL's
+    // meaning; separators (`/`), drive colons (`C:`) and the UNC authority
+    // (`//server/share`) are preserved by construction below.
+    let s = s
+        .replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('?', "%3F")
+        .replace('\'', "%27");
+    // UNC is a Windows `\\` prefix — decided before normalization, so a
+    // rare Unix `//...` path never misreads as a `//host/...` authority.
+    if is_unc && s.starts_with("//") {
+        // UNC (`//server/share`) — `file:` + `//server/share`.
+        format!("file:{s}")
+    } else if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        // Drive letter (`C:/...`) — `file:///C:/...`.
+        format!("file:///{s}")
+    } else if s.starts_with('/') {
+        // Unix absolute (`/tmp/...`, including `//...`) — `file://` + path.
+        format!("file://{s}")
+    } else {
+        format!("file:///{}", s.trim_start_matches('/'))
+    }
+}
 
 /// Which media slot this player handles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -152,6 +225,8 @@ impl ExternalPlayer {
             c.args(["/C", "start", ""]);
             c
         };
+        #[cfg(target_os = "windows")]
+        hide_console(&mut cmd);
         let res = cmd.arg(&path).spawn();
         match res {
             Ok(_) => {
@@ -301,7 +376,10 @@ pub fn ensure_video_poster(path: &std::path::Path) -> Option<PathBuf> {
     }
     for seek in [1u32, 0u32] {
         let args = poster_ffmpeg_args(path, &out, seek);
-        let ok = std::process::Command::new("ffmpeg")
+        let mut cmd = std::process::Command::new("ffmpeg");
+        #[cfg(target_os = "windows")]
+        hide_console(&mut cmd);
+        let ok = cmd
             .args(&args)
             .output()
             .map(|o| o.status.success() && out.is_file())
@@ -386,8 +464,10 @@ pub fn split_first_jpeg(buf: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 
 impl MotionPump {
     fn ffmpeg_present() -> bool {
-        std::process::Command::new("ffmpeg")
-            .arg("-version")
+        let mut cmd = std::process::Command::new("ffmpeg");
+        #[cfg(target_os = "windows")]
+        hide_console(&mut cmd);
+        cmd.arg("-version")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -403,7 +483,10 @@ impl MotionPump {
             return Err("ffmpeg not found — install ffmpeg for in-app video motion.".to_string());
         }
         let args = motion_ffmpeg_args(path, fps, loop_play, start_secs);
-        let mut child = std::process::Command::new("ffmpeg")
+        let mut cmd = std::process::Command::new("ffmpeg");
+        #[cfg(target_os = "windows")]
+        hide_console(&mut cmd);
+        let mut child = cmd
             .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -884,6 +967,65 @@ mod tests {
         p.open(PathBuf::from("song.mp3"));
         p.set_range(None, Some(9000));
         assert_eq!(p.range(), (None, Some(9000)));
+    }
+
+    #[test]
+    fn file_url_uses_forward_slashes_for_windows_paths() {
+        // Unix absolute: `file://` + `/tmp/...` = `file:///tmp/...`.
+        assert_eq!(
+            file_url_from_display("/tmp/videopsalm-live-web-1.overlay.html"),
+            "file:///tmp/videopsalm-live-web-1.overlay.html"
+        );
+        // Windows drive-letter path with backslashes (what `Path::display`
+        // yields on Windows): must become `file:///C:/...`, never
+        // `file://C:\\...` which browsers reject — the overlay then loads
+        // an error page and the wall falls back to the URL tile.
+        assert_eq!(
+            file_url_from_display(r"C:\Users\op\AppData\Local\Temp\videopsalm-live-web-1.overlay.html"),
+            "file:///C:/Users/op/AppData/Local/Temp/videopsalm-live-web-1.overlay.html"
+        );
+        assert_eq!(
+            file_url_from_display(r"C:\Temp\bg.png"),
+            "file:///C:/Temp/bg.png"
+        );
+        // UNC network share: `\\server\share` → `file://server/share`.
+        assert_eq!(
+            file_url_from_display(r"\\server\share\stage.html"),
+            "file://server/share/stage.html"
+        );
+        // URL-significant characters in real file names must not change the
+        // URL's meaning: spaces, `#` (fragment), `?` (query) and `%`
+        // (escape) are percent-encoded while separators survive.
+        assert_eq!(
+            file_url_from_display("/tmp/my still #1.mp4"),
+            "file:///tmp/my%20still%20%231.mp4"
+        );
+        assert_eq!(
+            file_url_from_display(r"C:\Temp\a b?c#d%e.mp4"),
+            "file:///C:/Temp/a%20b%3Fc%23d%25e.mp4"
+        );
+        // Single quotes close the `url('...')` CSS string in the overlay
+        // wrapper, so a real file name like `King's.png` must encode.
+        assert_eq!(
+            file_url_from_display(r"C:\Media\King's Song.png"),
+            "file:///C:/Media/King%27s%20Song.png"
+        );
+        // A literal backslash is a valid Unix filename char: it is data
+        // (`%5C`), never a separator.
+        assert_eq!(
+            file_url_from_display("/tmp/a\\b.png"),
+            "file:///tmp/a%5Cb.png"
+        );
+        // A rare Unix `//...` path is still a path (empty authority), never
+        // a `//host/...` UNC authority.
+        assert_eq!(
+            file_url_from_display("//tmp/x.png"),
+            "file:////tmp/x.png"
+        );
+        // Windows rooted (`\foo`) and relative (`foo\bar`) forms use
+        // backslashes as separators too.
+        assert_eq!(file_url_from_display(r"\foo\bar.png"), "file:///foo/bar.png");
+        assert_eq!(file_url_from_display(r"foo\bar.png"), "file:///foo/bar.png");
     }
 
     #[test]
