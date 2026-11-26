@@ -154,6 +154,27 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
   library preview) is driving the centre; clicking it drops the transient
   selection and returns to the agenda.
 
+## Round 4b fixes (user audit reopened: CHANGES 5/10)
+
+- **Font size UX.** Ribbon reads `Sans ▾` (caret after the family), the
+  projection size is an interactive `44 px` readout between A−/A+ (click
+  resets 44), both steppers carry "Projection lyric size" tooltips. The editor
+  toolbar now carries its own `A− 15 px A+` group with "Editor text size (does
+  not change projection)" wording, wrapped as one unit so A+ is never orphaned.
+- **Unified SVG icon library.** Added 19 Lucide-style UI icons
+  (`assets/icons/ui-*.svg`, 24×24, one 1.75 stroke, mid-gray #8A8A8A so they
+  read on every skin) and replaced the glyph soup: search, book, music, save,
+  clock, go-live, grip, more, chevrons, close, plus, trash, arrows, alignment,
+  check. Agenda rail, search boxes, songbook headers, song rows, splitter
+  grips, title strip, status clock, rename/delete controls and options now all
+  use the same drawn family. Manifest + tests cover the new ids.
+- **Browser balance.** Removed the "Browser" title row; Songbooks/Bibles/+Add
+  are flat icon+text tabs with a rule; the search row is a single hairline
+  field; Abbr/Num/sort are flat toggles and + Agenda / + New are flat actions
+  (no bordered pills, consistent spacing). Songbook headers are one line
+  (icon + name + count); song rows are icon + title with 6px indent. The song
+  list now starts roughly 100px higher and reads as the pane's content.
+
 ## Verification
 
 - `cargo test --workspace`: app **223** + vp-core 255 + misc 5 = **483 passed,

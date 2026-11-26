@@ -52,7 +52,7 @@ macro_rules! icon_table {
     };
 }
 
-// The manifest's 24 icons: 7 strip commands + 17 agenda kind badges.
+// The manifest: 7 strip commands + 17 agenda kind badges + UI icons.
 icon_table! {
     "cmd-next" => "cmd-next.svg",
     "cmd-base" => "cmd-base.svg",
@@ -78,7 +78,37 @@ icon_table! {
     "kind-ccli" => "kind-ccli.svg",
     "kind-alert" => "kind-alert.svg",
     "kind-clock" => "kind-clock.svg",
+    "ui-search" => "ui-search.svg",
+    "ui-book" => "ui-book.svg",
+    "ui-music" => "ui-music.svg",
+    "ui-save" => "ui-save.svg",
+    "ui-clock" => "ui-clock.svg",
+    "ui-go-live" => "ui-go-live.svg",
+    "ui-grip" => "ui-grip.svg",
+    "ui-more" => "ui-more.svg",
+    "ui-chevron-right" => "ui-chevron-right.svg",
+    "ui-chevron-down" => "ui-chevron-down.svg",
+    "ui-close" => "ui-close.svg",
+    "ui-plus" => "ui-plus.svg",
+    "ui-trash" => "ui-trash.svg",
+    "ui-arrow-up" => "ui-arrow-up.svg",
+    "ui-arrow-down" => "ui-arrow-down.svg",
+    "ui-align-left" => "ui-align-left.svg",
+    "ui-align-center" => "ui-align-center.svg",
+    "ui-align-right" => "ui-align-right.svg",
+    "ui-check" => "ui-check.svg",
 }
+
+/// The chrome icon set (Lucide-style, one 1.75 stroke): search, book, music,
+/// save, clock, go-live, grips, chevrons/arrows, align. Kept as a list so the
+/// manifest test can account for every bundled file.
+#[cfg_attr(not(test), allow(dead_code))] // test checklist; runtime ids are used at call sites
+pub const UI_ICONS: &[&str] = &[
+    "ui-search", "ui-book", "ui-music", "ui-save", "ui-clock", "ui-go-live",
+    "ui-grip", "ui-more", "ui-chevron-right", "ui-chevron-down", "ui-close",
+    "ui-plus", "ui-trash", "ui-arrow-up", "ui-arrow-down", "ui-align-left",
+    "ui-align-center", "ui-align-right", "ui-check",
+];
 
 /// File backing a manifest id, if it is one of ours.
 pub fn file_for(icon_id: &str) -> Option<&'static str> {
@@ -178,8 +208,13 @@ impl AssetSource for VpIconAssets {
 /// family for the command rail (rendered grayscale so it matches the theme
 /// ink); the manifest stays the reference artwork.
 pub fn art(icon_id: &str) -> gpui::Img {
+    art_px(icon_id, 20.)
+}
+
+/// [`art`] at an explicit optical size (chrome icons sit at 13-16px).
+pub fn art_px(icon_id: &str, size: f32) -> gpui::Img {
     let path = asset_path(icon_id).unwrap_or_else(|| "icons/cmd-next.svg".to_string());
-    gpui::img(path).w(px(20.)).h(px(20.))
+    gpui::img(path).w(px(size)).h(px(size))
 }
 
 #[cfg(test)]
@@ -223,9 +258,9 @@ mod tests {
     #[test]
     fn manifest_covers_the_table_and_nothing_else() {
         let entries = manifest_entries();
-        // 7 strip commands + 17 agenda kinds.
+        // 7 strip commands + 17 agenda kinds + the UI icon set.
         assert_eq!(entries.len(), ICON_TABLE.len());
-        assert_eq!(entries.len(), 7 + ItemKind::ALL.len());
+        assert_eq!(entries.len(), 7 + ItemKind::ALL.len() + UI_ICONS.len());
         for (id, file) in &entries {
             assert!(
                 ICON_TABLE.contains(&(id.as_str(), file.as_str())),

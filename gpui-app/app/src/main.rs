@@ -991,10 +991,9 @@ impl Root {
         } else {
             strip.bg(ui.panel).hover(|s| s.bg(ui.hover))
         };
-        let grip_color = if grabbed { ui.fg } else { ui.muted };
         strip
             .id(if col == 0 { "vp-col-split-l" } else { "vp-col-split-r" })
-            .child(div().text_size(px(12.)).text_color(grip_color).child("⋮⋮".to_string()))
+            .child(icon_el("ui-grip", 12.))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
@@ -1090,10 +1089,9 @@ impl Root {
         } else {
             strip.bg(ui.panel).hover(|s| s.bg(ui.hover))
         };
-        let grip_color = if grabbed { ui.fg } else { ui.muted };
         strip
             .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
-            .child(div().text_size(px(12.)).text_color(grip_color).child("⋯".to_string()))
+            .child(icon_el("ui-more", 12.))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
@@ -6288,6 +6286,132 @@ fn btn_stop(
     )
 }
 
+/// One bundled SVG icon at an optical size (grayscale so it matches ink).
+pub(crate) fn icon_el(icon_id: &str, size: f32) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .child(crate::icons::art_px(icon_id, size).grayscale(true))
+}
+
+/// Icon-only control with a hover tooltip and the standard active outline.
+pub(crate) fn icon_button(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    icon_id: &'static str,
+    tip: &'static str,
+    size: f32,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(4.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(if active { ui.fg } else { rgba(0x00000000) })
+        .bg(if active { ui.hover } else { rgba(0x00000000) })
+        .cursor_pointer()
+        .when(!active, |d| d.hover(|s| s.bg(ui.hover)))
+        .child(icon_el(icon_id, size));
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Icon + text control (icon first, one text voice).
+pub(crate) fn icon_text_button(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    icon_id: &'static str,
+    text: &str,
+    tip: &'static str,
+    size: f32,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .px(px(4.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .border_b_2()
+        .border_color(if active { ui.accent } else { rgba(0x00000000) })
+        .text_size(px(12.))
+        .text_color(if active { ui.fg } else { ui.muted })
+        .cursor_pointer()
+        .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .when(!active, |d| d.hover(|s| s.text_color(ui.fg)))
+        .child(icon_el(icon_id, size))
+        .child(text.to_string());
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Flat text toggle (browser filters): no box, active = ink + accent rule.
+fn text_toggle(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    text: &str,
+    active: bool,
+    tip: &'static str,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .px(px(3.))
+        .py(px(1.))
+        .border_b_2()
+        .border_color(if active { ui.fg } else { rgba(0x00000000) })
+        .text_size(px(11.))
+        .text_color(if active { ui.fg } else { ui.muted })
+        .cursor_pointer()
+        .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .when(!active, |d| d.hover(|s| s.text_color(ui.fg)))
+        .child(text.to_string());
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Flat text action (browser quick actions): no box, no active state.
+fn text_action(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    text: &str,
+    tip: &'static str,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .px(px(4.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .text_size(px(11.))
+        .text_color(ui.muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(ui.hover).text_color(ui.fg))
+        .child(text.to_string());
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
 /// Menu-strip setting trigger: current value + `▾`, opens the option list.
 fn setting_trigger(
     ui: &UI,
@@ -6387,16 +6511,33 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 /// Live value between the A− / A+ stepper keys: fixed-width, centred, so the
 /// number never drifts as digits change and reads as the control's value
 /// rather than a caption beside it.
-fn font_size_readout(ui: &UI, value: i32) -> Div {
-    div()
-        .w(px(26.))
+/// Projection lyric size readout: unit included, click resets to 44px. The
+/// number is intentionally a control, not a label between two steppers.
+fn font_size_readout(
+    ui: &UI,
+    value: i32,
+    cx: &mut Context<Root>,
+    reset: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .min_w(px(44.))
         .min_h(px(crate::ux::RIBBON_LINE_PX))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(11.))
+        .rounded(px(3.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(ui.fg)
-        .child(value.to_string())
+        .cursor_pointer()
+        .hover(|s| s.bg(ui.hover))
+        .child(format!("{value} px"))
+        .on_mouse_up(MouseButton::Left, cx.listener(reset));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel("Projection lyric size; click to reset to 44 px".to_string()))
+            .into()
+    });
+    d
 }
 
 /// True when the live web overlay is painting the slide that is on the wall
@@ -7223,7 +7364,15 @@ impl Render for Root {
                     div()
                         .text_size(px(11.))
                         .text_color(ui.fg)
-                        .child(format!("◷ {}", self.clock_display())),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(icon_el("ui-clock", 12.))
+                                .child(self.clock_display()),
+                        ),
                 ),
         )
         // Menu-strip option list (Lang / Theme / Monitor / Ratio): floats
@@ -7384,7 +7533,7 @@ impl Root {
                     .flex_row()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().text_size(px(13.5)).child("♪".to_string()))
+                    .child(icon_el("ui-music", 14.))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -7403,7 +7552,15 @@ impl Root {
                     .text_color(ui.selection_surface)
                     .font_weight(FontWeight::SEMIBOLD)
                     .cursor_pointer()
-                    .child("⛶ Go live".to_string())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon_el("ui-go-live", 13.))
+                            .child("Go live".to_string()),
+                    )
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
@@ -8590,14 +8747,7 @@ impl Root {
         let mut presets: Vec<Div> = Vec::new();
         for level in style_preset_levels() {
             let active = self.style_level == level;
-            let glyph = match level {
-                "Base" => "●",
-                "Songbooks" => "▤",
-                "Song" => "♪",
-                "Verse" => "◈",
-                _ => "▫",
-            };
-            let caption = format!("{glyph} {level}");
+            let caption = level.to_string();
             presets.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
                 this.style_level = level.into();
                 this.style_menu_open = false;
@@ -8619,7 +8769,7 @@ impl Root {
         font_kids.push(btn_stop(
             ui,
             cx,
-            &format!("▾ {}", self.font_family),
+            &format!("{} ▾", self.font_family),
             self.font_menu_open,
             |this, _, _, cx| {
                 if !this.font_menu_open {
@@ -8649,23 +8799,43 @@ impl Root {
         // steps (it read as a static caption hanging off the left before).
         // Same strip position, same handlers.
         let size_value = self.font_size.round() as i32;
-        font_kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
-            this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+        font_kids.push(btn_tip(
+            ui,
+            cx,
+            "A−",
+            "Projection lyric size: -2 px",
+            false,
+            |this, _, _, cx| {
+                this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+                this.mirror_font_to_style();
+                let sz = this.font_size;
+                this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                    v.size = Some(sz);
+                });
+            },
+        ));
+        font_kids.push(font_size_readout(ui, size_value, cx, |this, _, _, cx| {
+            this.font_size = 44.0;
             this.mirror_font_to_style();
-            let sz = this.font_size;
-            this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
-                v.size = Some(sz);
+            this.write_style_attr(cx, "Size 44", move |v| {
+                v.size = Some(44.0);
             });
         }));
-        font_kids.push(font_size_readout(ui, size_value));
-        font_kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
-            this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
-            this.mirror_font_to_style();
-            let sz = this.font_size;
-            this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
-                v.size = Some(sz);
-            });
-        }));
+        font_kids.push(btn_tip(
+            ui,
+            cx,
+            "A+",
+            "Projection lyric size: +2 px",
+            false,
+            |this, _, _, cx| {
+                this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
+                this.mirror_font_to_style();
+                let sz = this.font_size;
+                this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                    v.size = Some(sz);
+                });
+            },
+        ));
         font_kids.push(btn(ui, cx, "B", self.bold, |this, _, _, cx| {
             this.bold = !this.bold;
             let on = this.bold;
@@ -8692,10 +8862,10 @@ impl Root {
         // Alignment is a style-level setting (like vertical align), so it
         // lives in `More`; the working Font row stays to one line.
         let mut set_once_kids: Vec<Div> = Vec::new();
-        for (glyph, want) in [
-            ("⇤", Align::Left),
-            ("⇔", Align::Center),
-            ("⇥", Align::Right),
+        for (icon, want) in [
+            ("ui-align-left", Align::Left),
+            ("ui-align-center", Align::Center),
+            ("ui-align-right", Align::Right),
         ] {
             let active = self.align == want;
             let label = match want {
@@ -8703,15 +8873,16 @@ impl Root {
                 Align::Center => "Center",
                 Align::Right => "Right",
             };
-            set_once_kids.push(btn_tip(
+            set_once_kids.push(icon_button(
                 ui,
                 cx,
-                glyph,
+                icon,
                 match want {
                     Align::Left => "Align left",
                     Align::Center => "Center",
                     Align::Right => "Align right",
                 },
+                13.,
                 active,
                 move |this, _, _, cx| {
                     this.align = want;
@@ -8919,11 +9090,12 @@ impl Root {
             // Set-once groups fold behind ONE disclosure control (RESEARCH
             // P-15). It is deliberately a bare button, not a group with a
             // "More" caption and a "More" label inside it.
-            .child(btn_tip(
+            .child(icon_button(
                 ui,
                 cx,
-                "⋯",
+                "ui-more",
                 "More controls — colors, slide layout, animation, chords, text colour",
+                16.,
                 self.ribbon_more_open,
                 |this, _, _, cx| {
                     this.ribbon_more_open = !this.ribbon_more_open;
@@ -9516,15 +9688,23 @@ impl Root {
                     .child(btn(ui, cx, "Open", false, move |this, _, _, cx| {
                         this.open_path_with_os(&open_path, cx);
                     }))
-                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
-                        if let Some(si) = this.sel_song {
-                            if let Some(song) = this.songs.get_mut(si) {
-                                song.files.retain(|f| f != &drop_path);
-                                this.song_dirty = true;
+                    .child(icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Detach this file",
+                        11.,
+                        false,
+                        move |this, _, _, cx| {
+                            if let Some(si) = this.sel_song {
+                                if let Some(song) = this.songs.get_mut(si) {
+                                    song.files.retain(|f| f != &drop_path);
+                                    this.song_dirty = true;
+                                }
                             }
-                        }
-                        cx.notify();
-                    })),
+                            cx.notify();
+                        },
+                    )),
             );
         }
         col.child(
@@ -9669,12 +9849,28 @@ impl Root {
                     .items_center()
                     .flex_1()
                     .child(div().flex_1().child(self.rename_field.clone()))
-                    .child(btn(ui, cx, "✓", false, move |this, _, _, cx| {
-                        this.commit_agenda_rename(cx);
-                    }))
-                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
-                        this.cancel_agenda_rename(cx);
-                    }))
+                    .child(icon_button(
+                        ui,
+                        cx,
+                        "ui-check",
+                        "Apply the new name",
+                        12.,
+                        false,
+                        move |this, _, _, cx| {
+                            this.commit_agenda_rename(cx);
+                        },
+                    ))
+                    .child(icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Cancel renaming",
+                        12.,
+                        false,
+                        move |this, _, _, cx| {
+                            this.cancel_agenda_rename(cx);
+                        },
+                    ))
             } else {
                 // Sheet rows pair the title with a small meta line
                 // ("4 verses · key G", "Image · Cover"). It inherits
@@ -9810,7 +10006,7 @@ impl Root {
         let empty = self.agenda.items.is_empty();
         let icon_btn = |ui: &UI,
                         cx: &mut Context<Root>,
-                        glyph: &str,
+                        icon: &'static str,
                         tip: &str,
                         enabled: bool,
                         f: fn(&mut Root, &mut Context<Root>)| {
@@ -9833,8 +10029,7 @@ impl Root {
                 .rounded(px(4.))
                 .bg(if enabled { ui.sunken } else { rgba(0x00000000) })
                 .text_color(if enabled { ui.fg } else { ui.muted })
-                .text_size(px(15.))
-                .child(glyph.to_string());
+                .child(icon_el(icon, 14.));
             if enabled {
                 b = b
                     .cursor_pointer()
@@ -9881,8 +10076,7 @@ impl Root {
                 } else {
                     ui.muted
                 })
-                .text_size(px(11.))
-                .child("▾".to_string());
+                .child(icon_el("ui-chevron-down", 10.));
             if enabled {
                 b = b
                     .cursor_pointer()
@@ -9921,35 +10115,35 @@ impl Root {
         debug_assert_eq!(agenda_rail_buttons().len(), 5);
         let rail = vec![
             rail_row(
-                icon_btn(ui, cx, "+", "add", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-plus", "add", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.add_current_to_agenda(cx);
                 }),
                 menu_btn(ui, cx, true, "add"),
             ),
             rail_row(
-                icon_btn(ui, cx, "S", "save", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-save", "save", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.save_agenda(cx);
                 }),
                 menu_btn(ui, cx, true, "save"),
             ),
             rail_row(
-                icon_btn(ui, cx, "✕", "delete", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-trash", "delete", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.remove_selected_agenda_item(cx);
                 }),
                 menu_btn(ui, cx, true, "delete"),
             ),
             rail_row(
-                icon_btn(ui, cx, "⬆", "move up", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-arrow-up", "move up", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.nudge_selected_agenda(cx, -1, false);
                 }),
                 menu_btn(ui, cx, true, "move up"),
             ),
             rail_row(
-                icon_btn(ui, cx, "⬇", "move down", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-arrow-down", "move down", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.nudge_selected_agenda(cx, 1, false);
                 }),
@@ -10114,10 +10308,13 @@ impl Root {
     fn browser_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let songs_active = self.left_tab == LeftTab::Songs;
         let mut kids: Vec<Div> = vec![row_wrap(vec![
-            btn(
+            icon_text_button(
                 ui,
                 cx,
+                "ui-book",
                 &self.t("songbooks"),
+                "Songbooks and their songs",
+                13.,
                 songs_active,
                 |this, _, _, cx| {
                     this.left_tab = LeftTab::Songs;
@@ -10127,10 +10324,13 @@ impl Root {
                     cx.notify();
                 },
             ),
-            btn(
+            icon_text_button(
                 ui,
                 cx,
+                "kind-bible",
                 &self.t("bibles_tab"),
+                "Bible translations and references",
+                13.,
                 !songs_active,
                 |this, _, _, cx| {
                     this.left_tab = LeftTab::Bibles;
@@ -10140,11 +10340,11 @@ impl Root {
                     cx.notify();
                 },
             ),
-            btn(
+            text_action(
                 ui,
                 cx,
                 &format!("+ {}", self.t("add")),
-                false,
+                "Add the current document to the agenda",
                 |this, _, _, cx| {
                     this.add_current_to_agenda(cx);
                 },
@@ -10155,18 +10355,34 @@ impl Root {
             // LAYOUT.md / song-search-box.png: magnifier + scope `▾` at the
             // LEFT inside the box, clear `✕` at the right.
             kids.push(row_wrap(vec![
-                label(ui, "⌕", 14.),
-                btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
-                    this.show_scope_grid = !this.show_scope_grid;
-                    cx.notify();
-                }),
+                icon_el("ui-search", 13.),
+                icon_button(
+                    ui,
+                    cx,
+                    "ui-chevron-down",
+                    "Search scope: title, lyrics, author, CCLI…",
+                    11.,
+                    self.show_scope_grid,
+                    |this, _, _, cx| {
+                        this.show_scope_grid = !this.show_scope_grid;
+                        cx.notify();
+                    },
+                ),
                 div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
                 if !self.search_field.read(cx).text().is_empty() {
-                    btn(ui, cx, "×", false, |this, _, _, cx| {
-                        this.search_field
-                            .update(cx, |field, cx| field.set_text("", cx));
-                        this.refresh_search("", cx);
-                    })
+                    icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Clear the search",
+                        11.,
+                        false,
+                        |this, _, _, cx| {
+                            this.search_field
+                                .update(cx, |field, cx| field.set_text("", cx));
+                            this.refresh_search("", cx);
+                        },
+                    )
                 } else {
                     div().w(px(0.))
                 },
@@ -10214,11 +10430,13 @@ impl Root {
                 "Select verses by their reference"
             };
             kids.push(row_wrap(vec![
-                btn_tip(
+                icon_el("ui-search", 13.),
+                icon_button(
                     ui,
                     cx,
-                    "⌕",
+                    "ui-chevron-down",
                     mode_tip,
+                    11.,
                     self.bible_search == BibleSearch::Keyword,
                     |this, _, _, cx| {
                         this.cycle_bible_search(cx);
@@ -10226,11 +10444,19 @@ impl Root {
                 ),
                 div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
                 if !self.search_field.read(cx).text().is_empty() {
-                    btn(ui, cx, "×", false, |this, _, _, cx| {
-                        this.search_field
-                            .update(cx, |field, cx| field.set_text("", cx));
-                        this.apply_bible_search("", cx);
-                    })
+                    icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Clear the search",
+                        11.,
+                        false,
+                        |this, _, _, cx| {
+                            this.search_field
+                                .update(cx, |field, cx| field.set_text("", cx));
+                            this.apply_bible_search("", cx);
+                        },
+                    )
                 } else {
                     div().w(px(0.))
                 },
@@ -10260,7 +10486,24 @@ impl Root {
                     ),
             );
         }
-        section(ui, &self.t("browser"), kids)
+        // No "Browser" title row: the tabs name the pane. Removing that
+        // header is one of the five stacked chrome rows the audit flagged.
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .p(px(8.))
+            .min_h_0()
+            .flex_1()
+            .overflow_hidden()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel);
+        for k in kids {
+            card = card.child(k);
+        }
+        card
     }
 
     fn search_scope_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
@@ -10359,16 +10602,13 @@ impl Root {
             .px_1()
             .min_w_0()
             .text_size(px(11.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(ui.muted)
-            .child(btn(
+            .child(icon_text_button(
                 ui,
                 cx,
-                if books_open {
-                    "▾ Songbooks"
-                } else {
-                    "▸ Songbooks"
-                },
+                "ui-book",
+                "Songbooks",
+                "Show or hide the songbook tree",
+                12.,
                 books_open,
                 |this, _, _, cx| {
                     this.songbooks_open = !this.songbooks_open;
@@ -10377,21 +10617,21 @@ impl Root {
             ));
         if books_open {
             header = header
-                .child(btn_tip(
+                .child(text_action(
                     ui,
                     cx,
                     "+ Songbook",
                     "Create an empty songbook to group new songs",
-                    false,
                     |this, _, _, cx| {
                         this.create_songbook(cx);
                     },
                 ))
-                .child(btn(
+                .child(text_toggle(
                     ui,
                     cx,
                     "all",
                     self.excluded_books.is_empty(),
+                    "Include every songbook in instant find",
                     |this, _, _, cx| {
                         this.excluded_books.clear();
                         let q = this.search_field.read(cx).text();
@@ -10399,11 +10639,12 @@ impl Root {
                         this.persist_layout_quiet();
                     },
                 ))
-                .child(btn(
+                .child(text_toggle(
                     ui,
                     cx,
-                    if all_excluded { "⊘ none" } else { "⊘ off" },
+                    if all_excluded { "none" } else { "off" },
                     !self.excluded_books.is_empty(),
+                    "Exclude the main songbook from instant find",
                     |this, _, _, cx| {
                         if this.excluded_books.len() == 1
                             && this.excluded_books.contains("book-main")
@@ -10530,17 +10771,19 @@ impl Root {
                         },
                     ))
                     .child(
-                        btn_tip(
-                        ui,
-                        cx,
-                        "×",
-                        "Hide this songbook (Show all restores it)",
-                        false,
-                        move |this, _, _, cx| {
-                            this.hidden_books.insert(id_hide.clone());
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        })
+                        icon_button(
+                            ui,
+                            cx,
+                            "ui-close",
+                            "Hide this songbook (Show all restores it)",
+                            11.,
+                            false,
+                            move |this, _, _, cx| {
+                                this.hidden_books.insert(id_hide.clone());
+                                this.persist_layout_quiet();
+                                cx.notify();
+                            },
+                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|_, _, _, cx| cx.stop_propagation()),
@@ -10555,10 +10798,15 @@ impl Root {
     fn song_row_div(&mut self, ui: &UI, cx: &mut Context<Root>, i: usize) -> Option<Div> {
         let song = self.songs.get(i)?;
         let selected = self.sel_song == Some(i);
-        let title = format!("♪ {}", self.song_row_title(song));
+        let title = self.song_row_title(song);
         Some(
             div()
-                .px_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(4.))
+                .py(px(2.))
                 .rounded(px(4.))
                 .border_1()
                 .border_color(if selected { ui.accent } else { rgba(0x00000000) })
@@ -10567,6 +10815,7 @@ impl Root {
                 .text_color(ui.fg)
                 .cursor_pointer()
                 .when(!selected, |d| d.hover(|s| s.bg(ui.hover)))
+                .child(icon_el("ui-music", 12.))
                 .child(title)
                 .on_mouse_up(
                     MouseButton::Left,
@@ -10621,14 +10870,30 @@ impl Root {
                 let unit = if self.lang == "fr" { "chants" } else { "songs" };
                 rows.push(
                     div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(4.))
+                        .pt(px(3.))
                         .text_size(px(12.))
-                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(ui.fg)
-                        .child(format!("▤ {} ({} {})", book.name, mine.len(), unit)),
+                        .child(icon_el("ui-book", 12.))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(book.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(ui.muted)
+                                .child(format!("{} {}", mine.len(), unit)),
+                        ),
                 );
                 for i in mine {
                     if let Some(d) = self.song_row_div(ui, cx, i) {
-                        rows.push(div().pl(px(14.)).child(d));
+                        rows.push(div().pl(px(6.)).child(d));
                     }
                 }
             }
@@ -10672,88 +10937,81 @@ impl Root {
                     .child(hint),
             )
             .child(div().flex_1())
-            .child(btn(
+            .child(icon_text_button(
                 ui,
                 cx,
-                if self.songbooks_open {
-                    "▾ Books"
-                } else {
-                    "▸ Books"
-                },
+                "ui-book",
+                "Books",
+                "Show or hide the songbook tree",
+                12.,
                 self.songbooks_open,
                 |this, _, _, cx| {
                     this.songbooks_open = !this.songbooks_open;
                     cx.notify();
                 },
             ));
+        // Flat filter/action row: no boxes, no heavy pills. Abbr/Num/sort
+        // are toggles (accent rule when on); + Agenda / + New are actions.
         let mut out = vec![
             title_row,
-                row_wrap(vec![
-                    btn_tip(
-                        ui,
-                        cx,
-                        &self.t("abbrev"),
-                        "Show the songbook abbreviation before each title",
-                        self.show_abbrev,
-                        |this, _, _, cx| {
-                            this.show_abbrev = !this.show_abbrev;
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        &self.t("numbers"),
-                        "Show the song number (or CCLI id) before each title",
-                        self.show_number,
-                        |this, _, _, cx| {
-                            this.show_number = !this.show_number;
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        },
-                    ),
-                    btn(
-                        ui,
-                        cx,
-                        if self.sort_by_number {
-                            "№ Sort"
-                        } else {
-                            "A-Z Sort"
-                        },
-                        self.sort_by_number,
-                        |this, _, _, cx| {
-                            this.sort_by_number = !this.sort_by_number;
-                            let q = this.search_field.read(cx).text();
-                            this.refresh_search(&q, cx);
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "+Agenda",
-                        "Add the selected song to the agenda",
-                        false,
-                        |this, _, _, cx| {
-                            this.add_song_to_agenda(cx);
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "＋ New",
-                        "Create a new song in the selected songbook",
-                        false,
-                        |this, _, _, cx| {
-                            this.create_song(cx);
-                        },
-                    ),
-                    // No `+ Book` here: the songbooks header and the New /
-                    // Import ribbon group already own that door. Removing the
-                    // duplicate lets this row stay one line at 360px.
-                ]),
+            row_wrap(vec![
+                text_toggle(
+                    ui,
+                    cx,
+                    &self.t("abbrev"),
+                    self.show_abbrev,
+                    "Show the songbook abbreviation before each title",
+                    |this, _, _, cx| {
+                        this.show_abbrev = !this.show_abbrev;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
+                text_toggle(
+                    ui,
+                    cx,
+                    &self.t("numbers"),
+                    self.show_number,
+                    "Show the song number (or CCLI id) before each title",
+                    |this, _, _, cx| {
+                        this.show_number = !this.show_number;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
+                text_toggle(
+                    ui,
+                    cx,
+                    if self.sort_by_number { "№" } else { "A–Z" },
+                    self.sort_by_number,
+                    "Sort by song number instead of title",
+                    |this, _, _, cx| {
+                        this.sort_by_number = !this.sort_by_number;
+                        let q = this.search_field.read(cx).text();
+                        this.refresh_search(&q, cx);
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
+                text_action(
+                    ui,
+                    cx,
+                    "+ Agenda",
+                    "Add the selected song to the agenda",
+                    |this, _, _, cx| {
+                        this.add_song_to_agenda(cx);
+                    },
+                ),
+                text_action(
+                    ui,
+                    cx,
+                    "+ New",
+                    "Create a new song in the selected songbook",
+                    |this, _, _, cx| {
+                        this.create_song(cx);
+                    },
+                ),
+            ]),
         ];
         out.extend(rows);
         out
@@ -11280,7 +11538,7 @@ impl Root {
                         .unwrap_or_default(),
                     _ => String::new(),
                 };
-                format!("♪ {}{}", it.title, book)
+                format!("{}{}", it.title, book)
             })
             .unwrap_or_else(|| self.t("slides"));
         let kind = self.agenda.items.get(item_idx).map(|it| it.kind);
@@ -11421,7 +11679,7 @@ impl Root {
             .filter(|n| !n.is_empty())
             .map(|n| format!(" ({n})"))
             .unwrap_or_default();
-        let title = format!("♪ {}{}", song.title, book);
+        let title = format!("{}{}", song.title, book);
         let tags: std::collections::HashMap<String, String> = song
             .verses
             .iter()
@@ -12366,24 +12624,75 @@ impl Root {
                 doc.update(cx, |d, cx| d.prefix_current_line(prefix, cx));
             }));
         }
-        kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
-            this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
-            let size = this.lyrics_text_size;
-            this.lyrics_doc.update(cx, |d, cx| {
-                d.text_px = size;
-                cx.notify();
+        // Editor zoom travels as ONE unit: stepper, readout, stepper. Wrapping
+        // the row must never orphan A+ on its own line.
+        kids.push({
+            let mut d = div().flex().flex_row().items_center().gap(px(1.));
+            d = d.child(btn_tip(
+                ui,
+                cx,
+                "A−",
+                "Editor text size: -1 px (does not change projection)",
+                false,
+                |this, _, _, cx| {
+                    this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
+                    let size = this.lyrics_text_size;
+                    this.lyrics_doc.update(cx, |d, cx| {
+                        d.text_px = size;
+                        cx.notify();
+                    });
+                    cx.notify();
+                },
+            ));
+            d = d.child({
+                let mut chip = div()
+                    .min_w(px(40.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ui.hover))
+                    .child(format!("{} px", self.lyrics_text_size.round() as i32))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.lyrics_text_size = 15.0;
+                            this.lyrics_doc.update(cx, |d, cx| {
+                                d.text_px = 15.0;
+                                cx.notify();
+                            });
+                            cx.notify();
+                        }),
+                    );
+                chip.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+                    cx.new(|_| {
+                        TooltipLabel("Editor text size; click to reset to 15 px".to_string())
+                    })
+                    .into()
+                });
+                chip
             });
-            cx.notify();
-        }));
-        kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
-            this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
-            let size = this.lyrics_text_size;
-            this.lyrics_doc.update(cx, |d, cx| {
-                d.text_px = size;
-                cx.notify();
-            });
-            cx.notify();
-        }));
+            d = d.child(btn_tip(
+                ui,
+                cx,
+                "A+",
+                "Editor text size: +1 px (does not change projection)",
+                false,
+                |this, _, _, cx| {
+                    this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
+                    let size = this.lyrics_text_size;
+                    this.lyrics_doc.update(cx, |d, cx| {
+                        d.text_px = size;
+                        cx.notify();
+                    });
+                    cx.notify();
+                },
+            ));
+            d
+        });
         row_wrap(kids)
     }
 
@@ -12499,7 +12808,7 @@ impl Root {
                     .text_size(px(13.5))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(div().flex_1().child(format!(
-                        "♪ {}{}",
+                        "{}{}",
                         if self.song_dirty { "*" } else { "" },
                         song.title
                     )))
@@ -12707,17 +13016,25 @@ impl Root {
                         }
                         col
                     },
-                    btn(ui, cx, "×", false, move |this, _, _, cx| {
-                        if let Some(id) = owner_clear.clone() {
-                            if let Some(it) =
-                                this.agenda.items.iter_mut().find(|it| it.id == id)
-                            {
-                                it.overrides.verse_order = None;
-                                this.agenda_dirty = true;
-                                cx.notify();
+                    icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Clear the custom verse order",
+                        11.,
+                        false,
+                        move |this, _, _, cx| {
+                            if let Some(id) = owner_clear.clone() {
+                                if let Some(it) =
+                                    this.agenda.items.iter_mut().find(|it| it.id == id)
+                                {
+                                    it.overrides.verse_order = None;
+                                    this.agenda_dirty = true;
+                                    cx.notify();
+                                }
                             }
-                        }
-                    }),
+                        },
+                    ),
                     btn(ui, cx, "⌃", false, move |this, _, _, cx| {
                         if let Some(id) = owner_up.clone() {
                             if let Some(it) =
