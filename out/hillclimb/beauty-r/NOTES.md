@@ -56,6 +56,17 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
   selection; P-10 two-line rows; P-11 prev/next + progress under the live
   preview; P-15 set-once groups collapse behind `More` so the ribbon does not
   wrap into a mystery third band; P-01 active mode as rule/weight, not fill.
+- **Real option lists.** Lang / Theme / Monitor / Ratio open a floating list
+  with a selected marker instead of silently cycling (review P1.8).
+- **Dark first-run.** `LayoutPrefs` + `Root` default to the dark skin
+  (PRODUCT principle 5); the editor page and every text field retune on boot,
+  including when no layout file exists. Placeholder ink is `ui.muted`, not a
+  0.5-alpha gray.
+- **Preview height floor.** 240px minimum so the output never collapses to two
+  labels on a tall window; the empty-state caption that collided with
+  "nothing live" is gone (it only labels a real rendered slide now).
+- **Browser header.** "Songs" title is ink, not red; the redundant pager
+  arrow chips are gone; the hint is muted 10.5px.
 - **Density.** Agenda cap is 30% of window height (180–300px), so the library
   list keeps a viewport at 768px and 900px. Ribbon at 1500px is a single group
   band.
@@ -79,8 +90,9 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
 
 ## Known gaps for the next pass
 
-- Theme/Monitor/Ratio/Lang still cycle on click; they are not dropdowns yet.
-- Default skin follows the persisted workspace; first-run is still light, not
-  dark-by-default.
+- Lang / Theme / Monitor / Ratio now open a real option list (the old
+  click-to-cycle paths are gone).
+- First-run skin is dark (PRODUCT principle 5); a persisted choice still wins,
+  and the light skin is one click away in the Theme list.
 - Glyph family is still text glyphs (no icon set), though the dead `▾` under
   every rail chip is gone and tooltips name each command.

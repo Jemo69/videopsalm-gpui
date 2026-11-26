@@ -1205,7 +1205,10 @@ fn d_aspect_ratio() -> String {
 impl Default for LayoutPrefs {
     fn default() -> Self {
         LayoutPrefs {
-            theme_id: "light".to_string(),
+            // Dim-booth default (PRODUCT principle 5): a control room should
+            // not open as a 71%-white screen. Light stays one click away and
+            // a persisted choice always wins.
+            theme_id: "dark".to_string(),
             lang: "en".to_string(),
             ribbon: "agenda".to_string(),
             accent_override: None,
@@ -1454,7 +1457,7 @@ mod tests {
     #[test]
     fn layout_prefs_defaults_match_app_boot() {
         let p = LayoutPrefs::default();
-        assert_eq!(p.theme_id, "light");
+        assert_eq!(p.theme_id, "dark");
         assert_eq!(p.lang, "en");
         assert_eq!(p.max_lines, 4);
         assert_eq!(p.max_chars, 40);

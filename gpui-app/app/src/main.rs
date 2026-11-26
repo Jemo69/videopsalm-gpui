@@ -160,6 +160,16 @@ enum Testament {
     NT,
 }
 
+/// Which menu-strip setting has its option list open. A cycle button with no
+/// visible choices was the review's P1.8; these four now open a real list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuKind {
+    Lang,
+    Theme,
+    Monitor,
+    Ratio,
+}
+
 fn hex(color: &str) -> Rgba {
     match themes::parse_hex(color) {
         Some((r, g, b)) => rgb((r as u32) << 16 | (g as u32) << 8 | b as u32),
@@ -491,6 +501,8 @@ pub(crate) struct Root {
     /// animation, chord notation) fold under one labelled button instead of
     /// wrapping into a third band. Session-only, like the other disclosures.
     ribbon_more_open: bool,
+    /// Menu-strip option list (Lang / Theme / Monitor / Ratio). Session-only.
+    menu_popup: Option<MenuKind>,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
     /// Agenda file rows (path New/Open/Save + native folder/plan) hidden
@@ -1272,7 +1284,7 @@ impl Root {
         let mut this = Root {
             focus: cx.focus_handle(),
             mode: Mode::Control,
-            theme_id: "light".into(),
+            theme_id: "dark".into(),
             lang: "en".into(),
             locales,
             status: "Ready.".into(),
@@ -1345,6 +1357,7 @@ impl Root {
             ribbon_collapsed: false,
             ribbon_more_open: false,
             frames_on: false,
+            menu_popup: None,
             show_keytips: false,
             agenda_file_open: false,
             rail_menu: None,
@@ -1635,12 +1648,12 @@ impl Root {
         // File-backed layout persistence (View ribbon → Save layout).
         if let Some(layout) = LayoutPrefs::load_file(LayoutPrefs::FILE) {
             this.apply_layout_prefs(&layout);
-            // The restored skin also retunes the editor page; the prefs are
-            // applied after construction, so this cannot wait for the next
-            // republish.
-            this.sync_doc_surface(cx);
             this.status = format!("Layout restored from {}.", LayoutPrefs::FILE);
         }
+        // Retune the editor page + every field to the active skin on EVERY
+        // boot, not only when a layout file exists: the first-run skin is
+        // dark, so skipping this would open a dark window around white pages.
+        this.sync_doc_surface(cx);
         // Restore persisted library songs (app support folder) so imports
         // survive restart — the browser list is rebuilt from the database,
         // not just the bundled samples.
@@ -2535,10 +2548,12 @@ impl Root {
         open |= self.style_menu_open;
         open |= self.font_menu_open;
         open |= self.show_scope_grid;
+        open |= self.menu_popup.is_some();
         self.rail_menu = None;
         self.style_menu_open = false;
         self.font_menu_open = false;
         self.show_scope_grid = false;
+        self.menu_popup = None;
         if open {
             cx.notify();
         }
@@ -3212,12 +3227,7 @@ impl Root {
                     ui.fg,
                     ui.border,
                     ui.accent,
-                    gpui::Rgba {
-                        r: ui.fg.r,
-                        g: ui.fg.g,
-                        b: ui.fg.b,
-                        a: 0.5,
-                    },
+                    ui.muted,
                     cx,
                 );
             });
@@ -6239,6 +6249,48 @@ fn btn_stop(
     )
 }
 
+/// Menu-strip setting trigger: current value + `▾`, opens the option list.
+fn setting_trigger(
+    ui: &UI,
+    text: String,
+    open: bool,
+    kind: MenuKind,
+    cx: &mut Context<Root>,
+) -> Div {
+    div()
+        .px(px(6.))
+        .py(px(2.))
+        .min_h(px(crate::ux::RIBBON_LINE_PX))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(if open { ui.fg } else { rgba(0x00000000) })
+        .bg(if open { ui.hover } else { rgba(0x00000000) })
+        .text_color(ui.fg)
+        .cursor_pointer()
+        .when(open, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .when(!open, |d| d.hover(|s| s.bg(ui.hover)))
+        .child(format!("{text} ▾"))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.menu_popup = if this.menu_popup == Some(kind) {
+                    None
+                } else {
+                    Some(kind)
+                };
+                this.rail_menu = None;
+                this.style_menu_open = false;
+                this.font_menu_open = false;
+                this.show_scope_grid = false;
+                cx.notify();
+            }),
+        )
+}
+
 /// One-line floating help: dark chip, light text, small.
 pub(crate) struct TooltipLabel(pub String);
 
@@ -6994,6 +7046,7 @@ impl Render for Root {
             .flex()
             .flex_col()
             .size_full()
+            .relative()
             .bg(ui.bg)
             .text_color(ui.fg)
             .text_size(px(14.));
@@ -7130,6 +7183,11 @@ impl Render for Root {
                         .child(format!("◷ {}", self.clock_display())),
                 ),
         )
+        // Menu-strip option list (Lang / Theme / Monitor / Ratio): floats
+        // under the menu row, above the panes.
+        .when(self.menu_popup.is_some(), |d| {
+            d.child(self.settings_menu(&ui, cx))
+        })
         // Settings modal paints last: topmost, over ribbon, panels and
         // the status line.
         .when(self.show_message_settings, |d| {
@@ -7312,6 +7370,150 @@ impl Root {
             })
     }
 
+    /// The option list opened by a menu-strip setting chip.
+    fn settings_menu(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let Some(kind) = self.menu_popup else {
+            return div();
+        };
+        let (title, options): (&str, Vec<(String, String, bool)>) = match kind {
+            MenuKind::Lang => (
+                "Language",
+                [("English", "en"), ("Français", "fr")]
+                    .into_iter()
+                    .map(|(label, value)| {
+                        (label.to_string(), value.to_string(), self.lang == value)
+                    })
+                    .collect(),
+            ),
+            MenuKind::Theme => {
+                let mut opts = Vec::new();
+                for t in vp_core::themes::builtin_themes() {
+                    opts.push((
+                        t.name.to_string(),
+                        t.id.to_string(),
+                        self.theme_id == t.id,
+                    ));
+                }
+                ("Theme", opts)
+            }
+            MenuKind::Monitor => ("Projector monitor", {
+                (0..3)
+                    .map(|i| {
+                        (
+                            format!("Display {}", i + 1),
+                            i.to_string(),
+                            self.projector_display == i,
+                        )
+                    })
+                    .collect()
+            }),
+            MenuKind::Ratio => (
+                "Aspect ratio",
+                ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"]
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            if r == "current" {
+                                "Window".to_string()
+                            } else {
+                                r.to_string()
+                            },
+                            r.to_string(),
+                            self.aspect_ratio == r,
+                        )
+                    })
+                    .collect(),
+            ),
+        };
+        let mut items: Vec<Div> = Vec::new();
+        for (label, value, selected) in options {
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(4.))
+                .text_size(px(12.5))
+                .text_color(ui.fg)
+                .cursor_pointer()
+                .when(!selected, |d| d.hover(|s| s.bg(ui.hover)))
+                .when(selected, |d| d.bg(ui.hover).font_weight(FontWeight::SEMIBOLD))
+                .child(
+                    div()
+                        .w(px(12.))
+                        .text_size(px(10.))
+                        .text_color(ui.accent)
+                        .child(if selected { "●" } else { "" }),
+                )
+                .child(label);
+            row = row.on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.apply_menu_choice(kind, &value, cx);
+                }),
+            );
+            items.push(row);
+        }
+        div()
+            .absolute()
+            .top(px(58.))
+            .right(px(18.))
+            .w(px(240.))
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .p(px(6.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel)
+            .shadow_lg()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(3.))
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.muted)
+                    .child(title.to_string()),
+            )
+            .children(items)
+    }
+
+    /// Apply one choice from the option list, close it, and persist.
+    fn apply_menu_choice(&mut self, kind: MenuKind, value: &str, cx: &mut Context<Root>) {
+        match kind {
+            MenuKind::Lang => {
+                self.lang = value.to_string();
+                let hint = self.bible_search.placeholder(&self.lang).to_string();
+                let f = self.search_field.clone();
+                f.update(cx, |field, cx| field.set_placeholder(&hint, cx));
+            }
+            MenuKind::Theme => {
+                self.theme_id = value.to_string();
+            }
+            MenuKind::Monitor => {
+                if let Ok(i) = value.parse::<usize>() {
+                    self.set_projector_display(cx, i.min(2));
+                }
+            }
+            MenuKind::Ratio => {
+                self.aspect_ratio = value.to_string();
+            }
+        }
+        self.menu_popup = None;
+        self.persist_layout_quiet();
+        // Theme and ratio are wall content; republish also retunes the doc.
+        self.republish(cx);
+        cx.notify();
+    }
+
     /// Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/View
     /// menu row. Each item drives existing workspace state (ribbon tab,
     /// browser tab, disclosures, viewer mode) — no dead wires.
@@ -7405,63 +7607,45 @@ impl Root {
             .child(div().w(px(8.)))
             .child(divider())
             .child(div().w(px(6.)))
-            // Right cluster: live indicators (each cycles on click) plus the
-            // secondary workspace actions. Values ride in the labels so no
-            // extra chrome is needed to read them.
+            // Right cluster: live values that open a real option list. The
+            // old buttons silently cycled on click with no visible choices
+            // (R-REVIEW P1.8); `▾` now promises the list it delivers.
             .child({
-                let label = format!("Lang: {}", self.lang.to_uppercase());
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    this.lang = if this.lang == "fr" { "en".into() } else { "fr".into() };
-                    this.persist_layout_quiet();
-                    cx.notify();
-                })
+                let open = self.menu_popup == Some(MenuKind::Lang);
+                setting_trigger(
+                    ui,
+                    format!("Lang: {}", self.lang.to_uppercase()),
+                    open,
+                    MenuKind::Lang,
+                    cx,
+                )
             })
             .child({
-                // Current values ride in the label; the button cycles.
-                let label = format!(
-                    "Theme: {}",
-                    vp_core::themes::theme_by_id(&self.theme_id)
-                        .map(|t| t.name)
-                        .unwrap_or("Light")
-                );
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    let ids: Vec<&str> = vp_core::themes::builtin_themes()
-                        .iter()
-                        .map(|t| t.id)
-                        .collect();
-                    let next = ids
-                        .iter()
-                        .position(|id| **id == this.theme_id)
-                        .map(|i| ids[(i + 1) % ids.len()])
-                        .unwrap_or("light");
-                    this.theme_id = next.into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                })
+                let name = vp_core::themes::theme_by_id(&self.theme_id)
+                    .map(|t| t.name)
+                    .unwrap_or("Light");
+                let open = self.menu_popup == Some(MenuKind::Theme);
+                setting_trigger(ui, format!("Theme: {name}"), open, MenuKind::Theme, cx)
             })
             .child({
-                let label = format!("Monitor {}", self.projector_display + 1);
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    this.set_projector_display(cx, (this.projector_display + 1) % 3);
-                    cx.notify();
-                })
+                let open = self.menu_popup == Some(MenuKind::Monitor);
+                setting_trigger(
+                    ui,
+                    format!("Monitor {}", self.projector_display + 1),
+                    open,
+                    MenuKind::Monitor,
+                    cx,
+                )
             })
             .child({
-                let label = format!("Ratio {}", self.aspect_ratio);
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    const RATIOS: [&str; 6] =
-                        ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"];
-                    let i = RATIOS
-                        .iter()
-                        .position(|r| *r == this.aspect_ratio)
-                        .map(|i| (i + 1) % RATIOS.len())
-                        .unwrap_or(0);
-                    this.aspect_ratio = RATIOS[i].into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                })
+                let open = self.menu_popup == Some(MenuKind::Ratio);
+                setting_trigger(
+                    ui,
+                    format!("Ratio {}", self.aspect_ratio),
+                    open,
+                    MenuKind::Ratio,
+                    cx,
+                )
             })
             .child(div().w(px(6.)))
             .child(divider())
@@ -7476,10 +7660,12 @@ impl Root {
                     .py(px(2.))
                     .min_h(px(crate::ux::RIBBON_LINE_PX))
                     .rounded(px(4.))
-                    .bg(if active { ui.fg } else { rgba(0x00000000) })
-                    .text_color(if active { ui.bg } else { ui.fg })
+                    .border_1()
+                    .border_color(if active { ui.fg } else { rgba(0x00000000) })
+                    .bg(if active { ui.hover } else { rgba(0x00000000) })
+                    .text_color(ui.fg)
                     .cursor_pointer()
-                    .when(active, |d| d.font_weight(FontWeight::MEDIUM))
+                    .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child("Stage view".to_string());
                 if !active {
                     b = b.hover(|s| s.bg(ui.hover));
@@ -9368,7 +9554,10 @@ impl Root {
         let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
         wrap = match self.preview_h {
             Some(h) => wrap.h(px(h)),
-            None => wrap.flex_none(),
+            // A preview that collapses to the height of two labels is not a
+            // preview. 240px keeps a usable picture while the slide list above
+            // still scrolls on a 768px window.
+            None => wrap.flex_none().min_h(px(240.)),
         };
         wrap.child(self.preview_big_panel(ui, cx, vw, vh))
     }
@@ -10358,11 +10547,14 @@ impl Root {
         // windows (no nested fixed header squeezing the list to zero).
         let mut out = vec![
             div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(ui.accent)
-                .child(format!("▤ {} ▤", self.t("songs"))),
-            label(ui, &hint, 12.),
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(ui.fg)
+                .child(self.t("songs")),
+            div()
+                .text_size(px(10.5))
+                .text_color(ui.muted)
+                .child(hint),
                 row_wrap(vec![
                     btn_tip(
                         ui,
@@ -10435,31 +10627,9 @@ impl Root {
                             this.import_songbook_file(cx);
                         },
                     ),
-                    // Pager (WI-031): wheel scrolls, but nothing on screen says so.
-                    btn_tip(
-                        ui,
-                        cx,
-                        "▲",
-                        "Scroll the song list up",
-                        false,
-                        |this, _, _, cx| {
-                            let h = this.scroll_songs.clone();
-                            h.scroll_to_item(h.top_item().saturating_sub(8));
-                            cx.notify();
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "▼",
-                        "Scroll the song list down",
-                        false,
-                        |this, _, _, cx| {
-                            let h = this.scroll_songs.clone();
-                            h.scroll_to_item(h.top_item().saturating_add(8));
-                            cx.notify();
-                        },
-                    ),
+                    // No pager arrows: the wheel and the scrollbar already
+                    // move this list, and two more glyph chips were the
+                    // difference between a one-line and a two-line header.
                 ]),
         ];
         out.extend(rows);
@@ -11658,7 +11828,6 @@ impl Root {
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
-                .child(card_caption("Output"))
         } else if snap.frame.item.is_none() {
             // No slide live: background still shows, with a note naming
             // the way back.
@@ -11676,8 +11845,7 @@ impl Root {
                             .text_size(px(13.))
                             .text_color(hex("#BBBBBB"))
                             .child("(nothing live — press Show)".to_string()),
-                    )
-                    .child(card_caption("Output")),
+                    ),
             )
         } else {
             // The projector render itself, in an output-ratio box sized to
