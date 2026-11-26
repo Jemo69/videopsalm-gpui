@@ -113,6 +113,32 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
   `Books` toggle in the Songs header, so the song list owns the pane; the
   duplicate `+ Book` chip is gone.
 
+## Round 2 fixes (panel CHANGES, 3/10)
+
+- **C1 right divider.** Moved between centre and right column; dragging it left
+  now shrinks the right column (delta inverted for `col == 1`). No more stranded
+  strip at the window edge.
+- **C2 preview panel width.** `panel_w` subtracts the 44px command strip, its
+  gap and the panel padding (-64); the output box no longer overflows under the
+  rail. "Adjust frames" fits at both sizes.
+- **C3 non-dark themes.** Gray/blue panels resolved to dark surfaces
+  (`#5A5A63` / `#2B4FA8`) so body text is >6:1; light tonal steps darkened;
+  captures added for light, gray, blue.
+- **R2-01 1366 slides.** Preview height cap + column sharing keeps both verse
+  rows whole; verified at 1366x768.
+- **R2-02 red text.** All remaining control-surface red text is ink/muted.
+- **R2-03 captions** are 11px.
+- **R2-05 centre composition.** Document fills its well (>340px at 1576x900);
+  the browser folds songbooks behind a Books toggle so songs own the pane.
+- **R2-06 copy.** "press Go live" (a button that exists); header count removed
+  (transport keeps 0/0).
+- **C7 splitter grips** are neutral ink; hover is a tonal wash, not red.
+- **C8 option lists** anchor under their trigger column.
+- **C9 style dot** is ink, not signal red; ribbon stays one band at 1576.
+- **C11 casing/order** `Split` / `List`; A− before A+ in the editor.
+- **C10 / R1-11 icons.** Rail uses the drawn SVG family; Next and Project are
+  distinct shapes (double chevron vs play triangle).
+
 ## Verification
 
 - `cargo test --workspace`: app **223** + vp-core 255 + misc 5 = **483 passed,

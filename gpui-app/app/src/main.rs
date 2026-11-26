@@ -194,12 +194,6 @@ pub(crate) struct UI {
     /// Recessed strip: menu bar, status bar, seated rows.
     sunken: Rgba,
     accent: Rgba,
-    /// Text color guaranteed readable on `accent` backgrounds (black or
-    /// white, whichever has the higher WCAG contrast). Selection/active
-    /// highlights paint `accent` behind inherited text; without this the
-    /// near-white `fg` of the dark/gray/blue themes sits on light accents
-    /// (sky/amber/yellow) and is nearly invisible.
-    accent_ink: Rgba,
     danger: Rgba,
     /// The **selection** colour: selected agenda item, selected slide row,
     /// active buttons — always signal red, on every skin.
@@ -308,23 +302,30 @@ impl UI {
         // recessed strip. These are desaturated relatives of each skin's own
         // surface, never brand red (the 10-percent rule).
         let (border, muted, hover, sunken) = match t.id {
-            "light" => (rgb(0xE6D3D5), rgb(0x6B4F52), rgb(0xF9EFF0), rgb(0xFBF2F3)),
+            "light" => (rgb(0xD9BFC2), rgb(0x6B4F52), rgb(0xF2DEE0), rgb(0xF6E8E9)),
             "dark" => (rgb(0x40201F), rgb(0xC9ABAC), rgb(0x2A0C0D), rgb(0x1A0405)),
-            "gray" => (rgb(0x8B8B94), rgb(0xE7E7EA), rgb(0x5E5E67), rgb(0x494950)),
-            "blue" => (rgb(0x4A70C8), rgb(0xD7E4FF), rgb(0x2B4FA8), rgb(0x1B3378)),
+            "gray" => (rgb(0xA0A0A9), rgb(0xF0F0F2), rgb(0x6A6A73), rgb(0x46464E)),
+            "blue" => (rgb(0x6E93E0), rgb(0xDCE8FF), rgb(0x3B5FBF), rgb(0x17357A)),
             _ => (rgb(0x2E2E33), rgb(0xB4B4B8), rgb(0x151518), rgb(0x0A0A0C)),
+        };
+        // Gray/blue carry a light `muted` because vp-core uses it as a panel
+        // fill; those skins need a DARK panel for 4.5:1 body text, so the
+        // panel is resolved here instead of trusting the theme literal.
+        let panel = match t.id {
+            "gray" => rgb(0x5A5A63),
+            "blue" => rgb(0x2B4FA8),
+            _ => hex(t.muted),
         };
         UI {
             bg: hex(t.bg),
             fg: hex(t.fg),
-            panel: hex(t.muted),
+            panel,
             border,
             muted,
             hover,
             sunken,
             selection_surface: rgb(0x8E0B0D),
             accent,
-            accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
             // Skin-independent: the selected agenda item is signal red and
             // the live/projecting row is lime, on every skin
@@ -942,7 +943,10 @@ impl Root {
     /// Feed one divider move: width follows the cursor, clamped 220..720.
     fn col_move(&mut self, cx: &mut Context<Self>, cur_x: f32) {
         if let Some((col, start_w, press_x)) = self.col_drag {
-            let w = clamp_col_width(start_w + cur_x - press_x);
+            // The right divider moves left when dragged left: its width is
+            // the distance from the window's right edge, so the delta flips.
+            let delta = if col == 0 { cur_x - press_x } else { press_x - cur_x };
+            let w = clamp_col_width(start_w + delta);
             if col == 0 {
                 self.left_w = w;
             } else {
@@ -983,11 +987,11 @@ impl Root {
             .border_1()
             .border_color(ui.border);
         let strip = if grabbed {
-            strip.bg(ui.accent)
+            strip.bg(ui.hover).border_color(ui.fg)
         } else {
-            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+            strip.bg(ui.panel).hover(|s| s.bg(ui.hover))
         };
-        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        let grip_color = if grabbed { ui.fg } else { ui.muted };
         strip
             .id(if col == 0 { "vp-col-split-l" } else { "vp-col-split-r" })
             .child(div().text_size(px(12.)).text_color(grip_color).child("⋮⋮".to_string()))
@@ -1082,11 +1086,11 @@ impl Root {
             .border_1()
             .border_color(ui.border);
         let strip = if grabbed {
-            strip.bg(ui.accent)
+            strip.bg(ui.hover).border_color(ui.fg)
         } else {
-            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+            strip.bg(ui.panel).hover(|s| s.bg(ui.hover))
         };
-        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
+        let grip_color = if grabbed { ui.fg } else { ui.muted };
         strip
             .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
             .child(div().text_size(px(12.)).text_color(grip_color).child("⋯".to_string()))
@@ -7495,10 +7499,16 @@ impl Root {
             );
             items.push(row);
         }
+        let menu_left = match kind {
+            MenuKind::Lang => 350.0,
+            MenuKind::Theme => 432.0,
+            MenuKind::Monitor => 516.0,
+            MenuKind::Ratio => 600.0,
+        };
         div()
             .absolute()
             .top(px(58.))
-            .right(px(18.))
+            .left(px(menu_left))
             .w(px(240.))
             .flex()
             .flex_col()
@@ -8540,9 +8550,9 @@ impl Root {
             .justify_center()
             .text_size(px(11.))
             .border_1()
-            .border_color(if dot_lit { ui.accent } else { ui.border })
-            .bg(if dot_lit { ui.accent } else { rgba(0x00000000) })
-            .text_color(if dot_lit { ink_on(ui.accent) } else { ui.muted })
+            .border_color(if dot_lit { ui.fg } else { ui.border })
+            .bg(if dot_lit { ui.fg } else { rgba(0x00000000) })
+            .text_color(if dot_lit { ui.bg } else { ui.muted })
             .child("●".to_string());
         style_kids.push(row(vec![
             btn_stop(
@@ -9262,6 +9272,9 @@ impl Root {
             )
             // Right: slides above, preview below (split by a draggable
             // divider), command strip full-height at the panel's edge.
+            // The divider belongs BETWEEN centre and right, not after the
+            // right column at the window edge.
+            .child(self.divider(ui, cx, 1))
             .child(
                 div()
                     .flex()
@@ -9288,8 +9301,7 @@ impl Root {
                             .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
                     )
                     .child(tool_strip)
-            )
-            .child(self.divider(ui, cx, 1));
+            );
         if let Some(layer) = self.dropdown_overlay(ui, cx) {
             root = root.child(layer);
         }
@@ -11882,7 +11894,6 @@ impl Root {
         win_h: f32,
     ) -> Div {
         let slides = self.projector_slides();
-        let n = slides.len();
         let cur = self.projector_slide_index();
         // Room mirror: the same background stack the projector renders, so
         // an assigned image shows here too (WI-023) — not just on a second
@@ -11958,7 +11969,7 @@ impl Root {
                         div()
                             .text_size(px(13.5))
                             .text_color(hex("#BBBBBB"))
-                            .child("(nothing live — press Show)".to_string()),
+                            .child("(nothing live — press Go live)".to_string()),
                     ),
             )
         } else {
@@ -11969,7 +11980,9 @@ impl Root {
             // cannot disagree with the projector by construction (WI-028)
             // AND fits. "current" follows the window glass; a set preset
             // letterboxes exactly like the projector does.
-            let panel_w = (self.right_w.min((win_w * 0.32).max(220.0)) - 12.0).max(120.0);
+            // Right column minus its own padding, the 44px command strip and
+            // the gap: the old -12 let the output box overflow under the rail.
+            let panel_w = (self.right_w.min((win_w * 0.32).max(220.0)) - 64.0).max(120.0);
             let aspect = AspectRatio::from_label(&self.aspect_ratio)
                 .map(|r| r.aspect() as f32)
                 .unwrap_or((win_w / win_h.max(1.0)).clamp(0.5, 4.0));
@@ -11992,11 +12005,6 @@ impl Root {
                         ))
                         .child(card_caption("Output")),
                 )
-        };
-        let count = if n == 0 {
-            "0/0".to_string()
-        } else {
-            format!("{}/{}", cur + 1, n)
         };
         // Header per preview-area.png: the panel is the picture plus its
         // caption — no style-level badge, no frame tabs. The caption (song /
@@ -12038,7 +12046,7 @@ impl Root {
                             .min_w_0()
                             .overflow_hidden()
                             .text_color(ui.muted)
-                            .child(format!("{head_short}  {count}")),
+                            .child(head_short),
                     )
                     .children(self.state_chips(ui))
                     .when(self.aspect_ratio != "current", |d| {
@@ -12335,7 +12343,7 @@ impl Root {
             let doc = this.lyrics_doc.clone();
             doc.update(cx, |d, cx| d.insert_at_cursor("[]", cx));
         }));
-        kids.push(btn(ui, cx, "split", false, |this, _, _, cx| {
+        kids.push(btn(ui, cx, "Split", false, |this, _, _, cx| {
             let doc = this.lyrics_doc.clone();
             doc.update(cx, |d, cx| d.insert_at_cursor("\n\n", cx));
         }));
@@ -12350,14 +12358,14 @@ impl Root {
                 doc.update(cx, |d, cx| d.wrap_selection(before, after, cx));
             }));
         }
-        for (label, prefix) in [("H1", "# "), ("H2", "## "), ("list", "- ")] {
+        for (label, prefix) in [("H1", "# "), ("H2", "## "), ("List", "- ")] {
             kids.push(btn(ui, cx, label, false, move |this, _, _, cx| {
                 let doc = this.lyrics_doc.clone();
                 doc.update(cx, |d, cx| d.prefix_current_line(prefix, cx));
             }));
         }
-        kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
-            this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
+        kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
+            this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
             let size = this.lyrics_text_size;
             this.lyrics_doc.update(cx, |d, cx| {
                 d.text_px = size;
@@ -12365,8 +12373,8 @@ impl Root {
             });
             cx.notify();
         }));
-        kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
-            this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
+        kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
+            this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
             let size = this.lyrics_text_size;
             this.lyrics_doc.update(cx, |d, cx| {
                 d.text_px = size;
