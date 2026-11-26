@@ -24,9 +24,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{AssetSource, SharedString};
-#[cfg(test)]
-use gpui::{Styled, px};
+use gpui::{AssetSource, SharedString, Styled, px};
 #[cfg(test)]
 use vp_core::schema::ItemKind;
 
@@ -82,7 +80,6 @@ icon_table! {
     "kind-clock" => "kind-clock.svg",
 }
 
-#[cfg(test)]
 /// File backing a manifest id, if it is one of ours.
 pub fn file_for(icon_id: &str) -> Option<&'static str> {
     ICON_TABLE
@@ -101,7 +98,6 @@ pub fn svg_for(icon_id: &str) -> Option<&'static str> {
     std::str::from_utf8(bytes).ok()
 }
 
-#[cfg(test)]
 /// Embedded-asset path `img()` resolves through [`VpIconAssets`].
 pub fn asset_path(icon_id: &str) -> Option<String> {
     file_for(icon_id).map(|f| format!("icons/{f}"))
@@ -178,11 +174,9 @@ impl AssetSource for VpIconAssets {
     }
 }
 
-/// Drawn artwork for a manifest id, sized for the strip's 34px circles.
-/// Test-only since the rail became theme-aware text chips (R-Rail): the
-/// rainbow SVGs stay as the manifest's reference artwork.
-#[cfg(test)]
-#[allow(dead_code)] // SVG art path kept for the asset pipeline; text glyphs render today
+/// Drawn artwork for a manifest id, sized for the strip's 32px chips. One
+/// family for the command rail (rendered grayscale so it matches the theme
+/// ink); the manifest stays the reference artwork.
 pub fn art(icon_id: &str) -> gpui::Img {
     let path = asset_path(icon_id).unwrap_or_else(|| "icons/cmd-next.svg".to_string());
     gpui::img(path).w(px(20.)).h(px(20.))

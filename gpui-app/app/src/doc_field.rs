@@ -115,6 +115,8 @@ pub struct DocField {
     pub ink: gpui::Rgba,
     pub line: gpui::Rgba,
     pub focus_line: gpui::Rgba,
+    /// Reduce Motion: caret renders solid instead of blinking.
+    pub reduced_motion: bool,
 }
 
 impl EventEmitter<DocChanged> for DocField {}
@@ -134,6 +136,14 @@ impl DocField {
             ink: rgb(0x18181B),
             line: rgb(0xCCCCCC),
             focus_line: rgb(0x2A5DB0),
+            reduced_motion: false,
+        }
+    }
+
+    pub fn set_reduced_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.reduced_motion != on {
+            self.reduced_motion = on;
+            cx.notify();
         }
     }
 
@@ -926,6 +936,9 @@ impl Render for DocField {
             .flex()
             .flex_col()
             .flex_1()
+            // Fill the document well: a content-height page left ~200px of
+            // empty pane below it and broke the 340px sheet contract.
+            .h_full()
             .key_context("DocField")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
@@ -982,21 +995,25 @@ impl Render for DocField {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .child(
-                            div()
-                                .text_size(px(self.text_px))
-                                .child("|")
-                                .with_animation(
-                                    ElementId::Name("lyrics-caret-empty".into()),
-                                    Animation::new(Duration::from_millis(
-                                        (CARET_BLINK_MS * 2) as u64,
-                                    ))
-                                    .repeat(),
-                                    |el, delta| {
-                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                    },
-                                ),
-                        )
+                        .child({
+                            let caret = div().text_size(px(self.text_px)).child("|");
+                            if self.reduced_motion {
+                                caret.into_any_element()
+                            } else {
+                                caret
+                                    .with_animation(
+                                        ElementId::Name("lyrics-caret-empty".into()),
+                                        Animation::new(Duration::from_millis(
+                                            (CARET_BLINK_MS * 2) as u64,
+                                        ))
+                                        .repeat(),
+                                        |el, delta| {
+                                            el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                        },
+                                    )
+                                    .into_any_element()
+                            }
+                        })
                         .child(format!(" {placeholder}"))
                         .into_any_element()
                 } else {
@@ -1078,20 +1095,25 @@ impl Render for DocField {
                                     .flex_row()
                                     .items_center()
                                     .child(StyledText::new(before))
-                                    .child(
-                                        div()
-                                            .text_size(px(self.text_px))
-                                            .child("|")
-                                            .with_animation(
-                                                ElementId::Name(
-                                                    format!("lyrics-caret-{cursor}").into(),
-                                                ),
-                                                Animation::new(Duration::from_millis((CARET_BLINK_MS * 2) as u64)).repeat(),
-                                                |el, delta| {
-                                                    el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                                },
-                                            ),
-                                    )
+                                    .child({
+                                        let caret =
+                                            div().text_size(px(self.text_px)).child("|");
+                                        if self.reduced_motion {
+                                            caret.into_any_element()
+                                        } else {
+                                            caret
+                                                .with_animation(
+                                                    ElementId::Name(
+                                                        format!("lyrics-caret-{cursor}").into(),
+                                                    ),
+                                                    Animation::new(Duration::from_millis((CARET_BLINK_MS * 2) as u64)).repeat(),
+                                                    |el, delta| {
+                                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                                    },
+                                                )
+                                                .into_any_element()
+                                        }
+                                    })
                                     .child(StyledText::new(after))
                                     .into_any_element(),
                                 None if line.is_empty() => " ".to_string().into_any_element(),

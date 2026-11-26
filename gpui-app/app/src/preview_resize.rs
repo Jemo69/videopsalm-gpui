@@ -531,7 +531,7 @@ impl crate::Root {
             )
             .child(
                 div()
-                    .text_size(px(10.5))
+                    .text_size(px(11.))
                     .text_color(ui.muted)
                     .child(if total == 0 {
                         "0 / 0".to_string()

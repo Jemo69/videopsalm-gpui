@@ -812,6 +812,7 @@ pub fn tool_strip() -> [(&'static str, &'static str); 7] {
 /// Display glyph for a strip command (Signal Room language): the rail is a
 /// column of theme-aware chips, so the mark is drawn in the theme ink rather
 /// than baked into a rainbow SVG. Order and meaning match [`tool_strip`].
+#[cfg_attr(not(test), allow(dead_code))] // kept as the text fallback/metadata for tests; the rail now renders SVG art
 pub fn strip_glyph(action: &str) -> &'static str {
     match action {
         "next" => "▸",
@@ -1121,6 +1122,11 @@ pub struct LayoutPrefs {
     pub projector_on: bool,
     #[serde(default)]
     pub show_style_explorer: bool,
+    /// Reduce motion (caret blink and future UI transitions). Off by
+    /// default; the operator's choice survives restart. Projection slide
+    /// transitions stay explicit per-item choices.
+    #[serde(default)]
+    pub reduced_motion: bool,
     /// The keyboard reference panel inside the slide panel. Off by default:
     /// UX-RESEARCH §10.2 says the slide panel is a list of slide rows and
     /// nothing else, and the original reaches the same help via contextual
@@ -1240,6 +1246,7 @@ impl Default for LayoutPrefs {
             viewer_mode: false,
             projector_on: true,
             show_style_explorer: false,
+            reduced_motion: false,
             show_shortcuts: false,
             excluded_books: Vec::new(),
             hidden_books: Vec::new(),

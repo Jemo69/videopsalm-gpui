@@ -90,6 +90,9 @@ pub struct TextField {
     line: gpui::Rgba,
     focus_line: gpui::Rgba,
     muted_ink: gpui::Rgba,
+    /// Reduce Motion: the caret stops blinking (static bar) and future UI
+    /// transitions shorten. Mirrors `Root::reduced_motion`.
+    reduced_motion: bool,
 }
 
 impl EventEmitter<Changed> for TextField {}
@@ -111,6 +114,14 @@ impl TextField {
             line: rgb(0x888888),
             focus_line: rgb(0x2A5DB0),
             muted_ink: rgba(0x00000059),
+            reduced_motion: false,
+        }
+    }
+
+    pub fn set_reduced_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.reduced_motion != on {
+            self.reduced_motion = on;
+            cx.notify();
         }
     }
 
@@ -715,26 +726,34 @@ impl Render for TextField {
                         let at = self.cursor_offset().min(line.len());
                         let x = line.x_for_index(at);
                         Some(
-                            div()
-                                .absolute()
-                                .left(x)
-                                .top(px(0.))
-                                .bottom(px(0.))
-                                .w(px(2.))
-                                .bg(gpui::blue())
-                                .with_animation(
-                                    ElementId::Name(
-                                        format!("field-caret-{at}").into(),
-                                    ),
-                                    Animation::new(Duration::from_millis(
-                                        (CARET_BLINK_MS * 2) as u64,
-                                    ))
-                                    .repeat(),
-                                    |el, delta| {
-                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                    },
-                                )
-                                .into_any_element(),
+                            {
+                                let caret = div()
+                                    .absolute()
+                                    .left(x)
+                                    .top(px(0.))
+                                    .bottom(px(0.))
+                                    .w(px(2.))
+                                    .bg(gpui::blue());
+                                let caret = if self.reduced_motion {
+                                    caret.into_any_element()
+                                } else {
+                                    caret
+                                        .with_animation(
+                                            ElementId::Name(
+                                                format!("field-caret-{at}").into(),
+                                            ),
+                                            Animation::new(Duration::from_millis(
+                                                (CARET_BLINK_MS * 2) as u64,
+                                            ))
+                                            .repeat(),
+                                            |el, delta| {
+                                                el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                            },
+                                        )
+                                        .into_any_element()
+                                };
+                                caret
+                            }
                         )
                     }
                     _ => None,

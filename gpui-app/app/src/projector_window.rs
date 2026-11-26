@@ -291,7 +291,7 @@ pub(crate) fn background_layer(
 fn missing_note(text: &str) -> Div {
     div()
         .p(px(8.))
-        .text_size(px(13.))
+        .text_size(px(13.5))
         .text_color(rgb(0x999999))
         .child(text.to_string())
 }

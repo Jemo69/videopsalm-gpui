@@ -80,10 +80,43 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
 - All controls keep their handlers; the `More` disclosure only relocates
   set-once nodes.
 
+## Round 1 fixes (reviewer CHANGES 5.5/10)
+
+- **R1-05 slide-row clip at 1366x768.** The persisted preview height could
+  squeeze the slide list to ~140px. Preview is now capped at 34% of the window
+  (220px floor) when its height is pinned, and the unpinned preview shares the
+  column with the list. Both verses render whole at 1366x768.
+- **R1-03 placeholder contrast.** All field placeholders use `ui.muted`
+  (light 6.6:1, dark ~8:1) instead of a 0.5-alpha ink.
+- **R1-04 red section labels.** Remaining `text_color(ui.accent)` sites are ink
+  or muted; red text is gone from the browser/shortcut surfaces. Red fills keep
+  `#ED1216`, text uses ink.
+- **R1-01 option lists.** Lang / Theme / Monitor / Ratio open a floating list
+  with the selected marker; no silent cycling, no phantom monitor `% 3`.
+- **R1-02 dark default.** `LayoutPrefs` and `Root` boot dark; the editor page and
+  fields retune on every boot.
+- **R1-06 captions 11px.** Group captions are 11 (was 9.5).
+- **R1-07 type ladder.** One enforced scale: 11 / 12 / 13.5 / 15 (52px clock is
+  content). A test scans every `text_size(px(<literal>))` and fails off-scale.
+- **R1-08 status copy.** "Layout restored." and "Installed N Bible
+  translations." (plural correct, no internal filenames).
+- **R1-09 empty agenda + stale editor.** Empty state is a heading + one
+  sentence + the drop list at meta size, wrapped inside the cap. `New` clears
+  the editor too, so the centre cannot show a stale song.
+- **R1-10 reduced motion.** Persisted `reduced_motion` toggle in Message
+  settings; carets render static when on (no blink animation).
+- **R1-11 one icon family.** The command rail renders the manifest SVGs
+  (grayscale) instead of mixed Unicode glyphs; tooltips keep the labels.
+- **340px lyric box.** The document now fills its well (`h_full`) instead of
+  sizing to content; measured >340px at 1576x900.
+- **Browser composition.** Songbooks tree is collapsed by default behind a
+  `Books` toggle in the Songs header, so the song list owns the pane; the
+  duplicate `+ Book` chip is gone.
+
 ## Verification
 
-- `cargo test --workspace`: app 222 + vp-core 255 + misc 5 = **482 passed, 0
-  failed**, zero project warnings.
+- `cargo test --workspace`: app **223** + vp-core 255 + misc 5 = **483 passed,
+  0 failed**, zero project warnings.
 - Fresh captures at 1576×900 (light + dark) and 1366×768 (light); built binary,
   no mockups.
 - `videopsalm-layout.json` left at HEAD (launch writes were reverted).
