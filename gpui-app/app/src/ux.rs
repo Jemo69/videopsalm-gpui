@@ -1309,7 +1309,7 @@ pub const RIBBON_OUTER_PY: f32 = 2.0;
 pub const RIBBON_BAND_GAP: f32 = 2.0;
 pub const RIBBON_GROUP_PY: f32 = 2.0;
 pub const RIBBON_GROUP_PX: f32 = 4.0;
-pub const RIBBON_WRAP_GAP: f32 = 6.0;
+pub const RIBBON_WRAP_GAP: f32 = 4.0;
 /// Line box of a 12px control row, borders included (≈16px box). The
 /// chrome budget (≤160px of bands, panes from y190) is pinned by
 /// `control_window_chrome_stays_compact` below.

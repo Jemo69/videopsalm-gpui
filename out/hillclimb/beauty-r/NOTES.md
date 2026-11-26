@@ -139,6 +139,21 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
 - **C10 / R1-11 icons.** Rail uses the drawn SVG family; Next and Project are
   distinct shapes (double chevron vs play triangle).
 
+## Round 3 fixes (6.5/10 fresh captures, CHANGES 3/10)
+
+- **Fresh evidence, all skins.** light/dark/gray/blue/onyx at 1576x900 and
+  1366x768, from the current binary; option-list and empty-agenda states
+  recaptured.
+- **Agenda rail at 1366.** Rail buttons 26 -> 22px and the agenda cap floor
+  raised to 240px, so the fifth (down) button renders whole.
+- **One ribbon band at 1366.** Removed the duplicate Explorer launcher (the
+  Style menu owns that door), `More` is now a single `⋯` control with a
+  tooltip instead of a group captioned "More" containing a "More" button, and
+  the wrap gap/padding were tightened so Font stays on the first band.
+- **Agenda menu tab active state.** Active when an agenda item (not a transient
+  library preview) is driving the centre; clicking it drops the transient
+  selection and returns to the agenda.
+
 ## Verification
 
 - `cargo test --workspace`: app **223** + vp-core 255 + misc 5 = **483 passed,

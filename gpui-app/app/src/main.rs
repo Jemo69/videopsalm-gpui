@@ -6250,7 +6250,7 @@ pub(crate) fn btn(
         (rgba(0x00000000), ui.fg, rgba(0x00000000))
     };
     let mut d = div()
-        .px(px(6.))
+        .px(px(5.))
         .py(px(2.))
         // One control row never collapses below its line box.
         .min_h(px(crate::ux::RIBBON_LINE_PX))
@@ -7612,10 +7612,20 @@ impl Root {
                 this.agenda_file_open = !this.agenda_file_open;
                 this.show_control(cx);
             }))
-            .child(menu_tab(ui, cx, "Agenda", false, |this, cx| {
-                this.show_control(cx);
-                this.set_status(cx, "Agenda.");
-            }))
+            .child(menu_tab(
+                ui,
+                cx,
+                "Agenda",
+                self.sel_item.is_some() && self.sel_song.is_none(),
+                |this, cx| {
+                    // Back to the agenda as the centre's source: drop the
+                    // transient library preview so the selected item drives
+                    // the slide panel again.
+                    this.sel_song = None;
+                    this.show_control(cx);
+                    this.set_status(cx, "Agenda.");
+                },
+            ))
             .child(menu_tab(
                 ui,
                 cx,
@@ -8596,14 +8606,9 @@ impl Root {
                 cx.notify();
             }));
         }
-        // Style Explorer launcher ends the preset row (not a third line of
-        // the group) — same handler; the tree still opens over whichever tab
-        // is active (UX-RESEARCH §5.3).
-        presets.push(btn(ui, cx, "Explorer", self.show_style_explorer, |this, _, _, cx| {
-            this.show_style_explorer = !this.show_style_explorer;
-            this.persist_layout_quiet();
-            cx.notify();
-        }));
+        // No second Explorer launcher: the Style menu tab already opens the
+        // same tree, and this one was the width that forced the ribbon to
+        // wrap to a second band at 1366.
         style_kids.push(row(presets));
         // Font group: family + B/I/U + alignment + chord notation.
         // Font dropdown (WI-029): every installed family, searchable — eight
@@ -8911,22 +8916,19 @@ impl Root {
             .child(group(ui, "Song", song_kids))
             .child(group(ui, &self.t("styles"), style_kids))
             .child(group(ui, &self.t("font"), font_kids))
-            // Set-once groups fold behind one labelled disclosure (RESEARCH
-            // P-15: never let the ribbon wrap into a mystery third band).
-            // Every control stays one click away; nothing is dropped.
-            .child(group(
+            // Set-once groups fold behind ONE disclosure control (RESEARCH
+            // P-15). It is deliberately a bare button, not a group with a
+            // "More" caption and a "More" label inside it.
+            .child(btn_tip(
                 ui,
-                "More",
-                vec![btn(
-                    ui,
-                    cx,
-                    if self.ribbon_more_open { "Fewer ▴" } else { "More ▾" },
-                    self.ribbon_more_open,
-                    |this, _, _, cx| {
-                        this.ribbon_more_open = !this.ribbon_more_open;
-                        cx.notify();
-                    },
-                )],
+                cx,
+                "⋯",
+                "More controls — colors, slide layout, animation, chords, text colour",
+                self.ribbon_more_open,
+                |this, _, _, cx| {
+                    this.ribbon_more_open = !this.ribbon_more_open;
+                    cx.notify();
+                },
             ))
             .when(self.ribbon_more_open, |d| {
                 d.child(group(ui, "Chord notation", more_kids))
@@ -9597,7 +9599,7 @@ impl Root {
         // Height-aware cap: a fixed 260px left the library browser with no
         // list on a 768px booth laptop. 30% of the window keeps ~5 agenda
         // rows while guaranteeing the song list below stays visible.
-        let cap = (vh * 0.30).clamp(180., 300.);
+        let cap = (vh * 0.32).clamp(240., 320.);
         wrap = match self.agenda_h {
             Some(h) => wrap.h(px(h)),
             None => wrap.flex_none().max_h(px(cap)),
@@ -9827,7 +9829,7 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .w(px(30.))
-                .h(px(26.))
+                .h(px(22.))
                 .rounded(px(4.))
                 .bg(if enabled { ui.sunken } else { rgba(0x00000000) })
                 .text_color(if enabled { ui.fg } else { ui.muted })
@@ -9863,7 +9865,7 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .w(px(18.))
-                .h(px(26.))
+                .h(px(22.))
                 .rounded(px(4.))
                 .bg(if open {
                     ui.fg
