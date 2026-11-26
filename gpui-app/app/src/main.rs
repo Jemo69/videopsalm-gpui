@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Application, AsyncApp, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
     KeyBinding, MouseButton, MouseUpEvent, Rgba, ScrollHandle, Subscription, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions, actions, div, prelude::*, px, rgb, size,
+    WindowBounds, WindowHandle, WindowOptions, actions, div, prelude::*, px, rgb, rgba, size,
 };
 use vp_core::agenda as agenda_ops;
 use vp_core::bible_data::{BibleLibrary, Translation};
@@ -172,7 +172,17 @@ pub(crate) struct UI {
     bg: Rgba,
     fg: Rgba,
     panel: Rgba,
+    /// True hairline separator. Neutral on every skin: red is a signal, not
+    /// structure. The old value tiled the window in pink-red boxes and made
+    /// every control shout at the same volume.
     border: Rgba,
+    /// Secondary ink for captions, meta lines and inert labels. Meets 4.5:1
+    /// on the panel it sits on; never a pale gray on a tinted surface.
+    muted: Rgba,
+    /// Pointer hover wash (one tonal step off the panel).
+    hover: Rgba,
+    /// Recessed strip: menu bar, status bar, seated rows.
+    sunken: Rgba,
     accent: Rgba,
     /// Text color guaranteed readable on `accent` backgrounds (black or
     /// white, whichever has the higher WCAG contrast). Selection/active
@@ -191,6 +201,10 @@ pub(crate) struct UI {
     selection: Rgba,
     /// Text colour guaranteed readable on `selection` backgrounds.
     selection_ink: Rgba,
+    /// Selected surfaces (agenda + slide rows). Signal-deep red with paper
+    /// ink: 8:1 instead of the 4.6:1 a full-brightness red fill gave black
+    /// text, and a quieter block on the eye at service time.
+    selection_surface: Rgba,
     /// The live/projecting cue: lime, on every skin (LIVE = lime only).
     live: Rgba,
     /// Text colour guaranteed readable on `live` backgrounds.
@@ -280,21 +294,25 @@ impl UI {
             .and_then(themes::parse_hex)
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
-        // Signal Room chrome: paper/night window, thin line-token borders.
-        // Each skin uses its sheet `--line`: light paper #E4B3B7, dark night
-        // #5B2327, onyx neutral gray (true black, never red-tinted);
-        // gray/blue keep the signal-red accent edge.
-        let border = match t.id {
-            "light" => rgb(0xE4B3B7),
-            "dark" => rgb(0x5B2327),
-            "onyx" => rgb(0x3F3F46),
-            _ => hex(t.accent),
+        // Shelving tokens per skin: hairline, hover wash, muted ink and
+        // recessed strip. These are desaturated relatives of each skin's own
+        // surface, never brand red (the 10-percent rule).
+        let (border, muted, hover, sunken) = match t.id {
+            "light" => (rgb(0xE6D3D5), rgb(0x6B4F52), rgb(0xF9EFF0), rgb(0xFBF2F3)),
+            "dark" => (rgb(0x40201F), rgb(0xC9ABAC), rgb(0x2A0C0D), rgb(0x1A0405)),
+            "gray" => (rgb(0x8B8B94), rgb(0xE7E7EA), rgb(0x5E5E67), rgb(0x494950)),
+            "blue" => (rgb(0x4A70C8), rgb(0xD7E4FF), rgb(0x2B4FA8), rgb(0x1B3378)),
+            _ => (rgb(0x2E2E33), rgb(0xB4B4B8), rgb(0x151518), rgb(0x0A0A0C)),
         };
         UI {
             bg: hex(t.bg),
             fg: hex(t.fg),
             panel: hex(t.muted),
             border,
+            muted,
+            hover,
+            sunken,
+            selection_surface: rgb(0x8E0B0D),
             accent,
             accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
@@ -465,6 +483,14 @@ pub(crate) struct Root {
     /// Persisted under the `ribbon_hidden` layout key: the operator's
     /// workspace choice survives restart (hover or Expand re-opens).
     ribbon_collapsed: bool,
+    /// Preview frame-edit mode: the outline + 8 drag handles are an editing
+    /// overlay, not part of the picture. Off by default so an idle preview
+    /// shows only the output (R-REVIEW P0.3). Session-only.
+    frames_on: bool,
+    /// `More` ribbon disclosure: set-once groups (slide layout, colours,
+    /// animation, chord notation) fold under one labelled button instead of
+    /// wrapping into a third band. Session-only, like the other disclosures.
+    ribbon_more_open: bool,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
     /// Agenda file rows (path New/Open/Save + native folder/plan) hidden
@@ -1317,6 +1343,8 @@ impl Root {
             explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
             ribbon_collapsed: false,
+            ribbon_more_open: false,
+            frames_on: false,
             show_keytips: false,
             agenda_file_open: false,
             rail_menu: None,
@@ -1607,6 +1635,10 @@ impl Root {
         // File-backed layout persistence (View ribbon → Save layout).
         if let Some(layout) = LayoutPrefs::load_file(LayoutPrefs::FILE) {
             this.apply_layout_prefs(&layout);
+            // The restored skin also retunes the editor page; the prefs are
+            // applied after construction, so this cannot wait for the next
+            // republish.
+            this.sync_doc_surface(cx);
             this.status = format!("Layout restored from {}.", LayoutPrefs::FILE);
         }
         // Restore persisted library songs (app support folder) so imports
@@ -3136,7 +3168,64 @@ impl Root {
     /// is part of the same step: it is what repaints the second window.
     /// Display flags (blank / text-hidden) use [`Self::republish`] instead:
     /// the wall must obey them even under a freeze hold.
+    fn sync_doc_surface(&self, cx: &mut Context<Self>) {
+        // The editor page follows the active skin: a white writing slab in a
+        // dark booth was the one surface that ignored the theme.
+        let ui = self.ui();
+        let doc = self.lyrics_doc.clone();
+        doc.update(cx, |d, cx| {
+            d.set_surface(ui.panel, ui.fg, ui.border, ui.accent, cx);
+        });
+        // Every text field follows the same skin, so dark mode stops being a
+        // dark window with random white rectangles in it.
+        let fields = [
+            &self.search_field,
+            &self.path_field,
+            &self.alert_field,
+            &self.book_field,
+            &self.verse_field,
+            &self.title_field,
+            &self.song_title_field,
+            &self.number_field,
+            &self.references_field,
+            &self.author_field,
+            &self.copyright_field,
+            &self.composer_field,
+            &self.media_path_field,
+            &self.media_range_field,
+            &self.website_field,
+            &self.gallery_import_field,
+            &self.gallery_image_filter,
+            &self.gallery_video_filter,
+            &self.pptx_field,
+            &self.bible_xml_field,
+            &self.native_path_field,
+            &self.clock_field,
+            &self.font_filter_field,
+            &self.rename_field,
+        ];
+        for field in fields {
+            let field = field.clone();
+            field.update(cx, |f, cx| {
+                f.set_surface(
+                    ui.sunken,
+                    ui.fg,
+                    ui.border,
+                    ui.accent,
+                    gpui::Rgba {
+                        r: ui.fg.r,
+                        g: ui.fg.g,
+                        b: ui.fg.b,
+                        a: 0.5,
+                    },
+                    cx,
+                );
+            });
+        }
+    }
+
     fn republish(&mut self, cx: &mut Context<Self>) {
+        self.sync_doc_surface(cx);
         // A browser killed outside the app leaves a stale showing (blank
         // wall, lit chip) until the next push respawns it — reap on every
         // republish so ticks and display flags heal it sooner. Reap only:
@@ -6096,43 +6185,37 @@ pub(crate) fn btn(
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
     let shield = active && ui.accent == SHIELD_ARMED;
-    // Sheet chips: an ON control is filled signal red with readable ink;
-    // the orange 2px edge stays so engagement still reads at a glance.
-    // The shield keeps its own armed-red fill with ink to match.
-    let border = if shield {
-        SHIELD_ARMED
+    // Inverted-emphasis chips: an ON control fills with ink and flips its
+    // label to the surface colour. That is a state cue the eye can rank;
+    // filling every engaged toggle with signal red made 30 buttons shout
+    // and left the one action that matters (Go live) with no rank at all.
+    // The armed shield keeps its red fill — it is load-bearing.
+    let (bg, ink, edge) = if shield {
+        (SHIELD_ARMED, ink_on(SHIELD_ARMED), SHIELD_ARMED)
     } else if active {
-        ui.engaged
+        // Engaged = ink edge + tonal wash. Not a solid block: the only
+        // filled action on a band is the real primary (Go live), so state
+        // chips never outrank the action that puts words on the wall.
+        (ui.hover, ui.fg, ui.fg)
     } else {
-        ui.border
+        (rgba(0x00000000), ui.fg, rgba(0x00000000))
     };
     let mut d = div()
-        .px(px(crate::ux::RIBBON_BTN_PX))
-        .py(px(crate::ux::RIBBON_BTN_PY))
-        // One 11px control row never collapses below its line box.
+        .px(px(6.))
+        .py(px(2.))
+        // One control row never collapses below its line box.
         .min_h(px(crate::ux::RIBBON_LINE_PX))
-        .rounded_sm()
-        .bg(if shield {
-            SHIELD_ARMED
-        } else if active {
-            ui.selection
-        } else {
-            ui.panel
-        })
-        .text_color(if shield {
-            ink_on(SHIELD_ARMED)
-        } else if active {
-            ui.selection_ink
-        } else {
-            ui.fg
-        })
+        .rounded(px(4.))
+        .border_1()
+        .border_color(edge)
+        .bg(bg)
+        .text_color(ink)
         .cursor_pointer()
+        .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
         .child(label.to_string());
-    d = if active {
-        d.border_2().border_color(border)
-    } else {
-        d.border_1().border_color(border)
-    };
+    if !active {
+        d = d.hover(|s| s.bg(ui.hover));
+    }
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
@@ -6347,13 +6430,15 @@ fn lyric_chords(text: &str) -> Vec<String> {
 /// control window's own div, never inside the projector snapshot, so the room
 /// and the real projector window are untouched.
 pub(crate) fn card_caption(text: &str) -> Div {
+    // Bottom-left: the snapshot's own header (file name / reference) owns
+    // the top edge, so the caption must not sit on top of it.
     div()
         .absolute()
-        .top(px(4.))
-        .left(px(6.))
-        .text_size(px(9.))
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(0xBBBBBB))
+        .bottom(px(6.))
+        .left(px(8.))
+        .text_size(px(10.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(0xC9C9C9))
         .child(text.to_string())
 }
 
@@ -6371,21 +6456,17 @@ pub(crate) fn kbd(ui: &UI, key: &str) -> Div {
 }
 
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
-    // Signal Room cards (sheet section 1): white card, bold ink title.
-    // Red is reserved for the title strip, primary buttons, selected rows.
-    let header_bg = ui.panel;
-    let header_ink = ui.fg;
     let mut col = div()
         .flex()
         .flex_col()
         .gap_1()
-        .p(px(6.))
+        .p(px(8.))
         // min_h_0 lets the panel shrink below its content so an inner
         // scroller can actually scroll instead of pushing the layout.
         .min_h_0()
         .flex_1()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(6.))
         .border_1()
         .border_color(ui.border)
         .bg(ui.panel)
@@ -6394,13 +6475,14 @@ pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
                 .flex()
                 .flex_row()
                 .items_center()
-                .px(px(6.))
-                .py(px(3.))
-                .rounded_sm()
-                .bg(header_bg)
-                .text_color(header_ink)
-                .text_size(px(13.))
-                .font_weight(FontWeight::BOLD)
+                .px(px(2.))
+                .pt(px(1.))
+                .pb(px(3.))
+                .border_b_1()
+                .border_color(ui.border)
+                .text_color(ui.fg)
+                .text_size(px(13.5))
+                .font_weight(FontWeight::SEMIBOLD)
                 .child(title.to_string()),
         );
     for k in kids {
@@ -6417,13 +6499,13 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(crate::ux::RIBBON_GROUP_PY))
+        .gap(px(1.))
         .px(px(crate::ux::RIBBON_GROUP_PX))
         .py(px(crate::ux::RIBBON_GROUP_PY))
-        .rounded_sm()
-        .border_1()
-        .border_color(ui.border)
-        .bg(ui.panel)
+        .rounded(px(5.))
+        // Tonal layer, not an outline: one step off the band reads as a
+        // group without adding another red rectangle to the wall.
+        .bg(ui.sunken)
         .child(
             div()
                 .flex()
@@ -6434,11 +6516,13 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
                 .children(kids),
         )
         .child(
+            // No `w_full` here: the caption must not stretch its group to the
+            // rest of the band (that made the two-button `More` group a long
+            // empty plank).
             div()
-                .w_full()
-                .text_center()
-                .text_size(px(crate::ux::RIBBON_TEXT_PX))
-                .text_color(rgb(0x5B6B82))
+                .px(px(5.))
+                .text_size(px(9.5))
+                .text_color(ui.muted)
                 .child(caption.to_string()),
         )
 }
@@ -6452,31 +6536,54 @@ fn swatch(
     active: bool,
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
+    // A real chip plus a neutral "A": the old glyph-only swatch made a white
+    // and a paper swatch indistinguishable from empty space.
     let ink = hex(color_hex);
     div()
-        .px(px(crate::ux::RIBBON_BTN_PX))
-        .py(px(crate::ux::RIBBON_BTN_PY))
-        .rounded_sm()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(3.))
+        .px(px(3.))
+        .py(px(2.))
+        .rounded(px(4.))
         .border_1()
         .border_color(if active { ui.fg } else { ui.border })
-        .bg(if active { ui.panel } else { ui.bg })
+        .bg(if active { ui.sunken } else { rgba(0x00000000) })
         .cursor_pointer()
-        .text_size(px(13.))
-        .text_color(ink)
-        .child("A".to_string())
+        .when(!active, |d| d.hover(|s| s.bg(ui.hover)))
+        .child(
+            div()
+                .w(px(12.))
+                .h(px(12.))
+                .rounded(px(2.))
+                .border_1()
+                .border_color(rgb(0x9A9A9A))
+                .bg(ink),
+        )
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(if active { ui.fg } else { ui.muted })
+                .child("A"),
+        )
         .on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
-fn metadata_box(value: &str) -> Div {
+fn metadata_box(ui: &UI, value: &str) -> Div {
+    // Theme-aware read-only chip: the old hardcoded white/ink pair turned
+    // into a light box floating on the dark skins.
     div()
         .flex_1()
         .min_w(px(70.))
-        .px_1()
+        .px(px(5.))
         .py(px(2.))
+        .rounded(px(3.))
         .border_1()
-        .border_color(rgb(0x9CA3AF))
-        .bg(rgb(0xFFFFFF))
-        .text_color(rgb(0x18181B))
+        .border_color(ui.border)
+        .bg(ui.sunken)
+        .text_color(ui.fg)
+        .text_size(px(11.5))
         .child(value.to_string())
 }
 
@@ -6497,14 +6604,14 @@ fn mini(
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
     div()
-        .px_1()
-        .rounded_sm()
-        .border_1()
-        .border_color(ui.border)
-        .bg(if active { ui.selection } else { ui.panel })
-        .text_color(if active { ui.selection_ink } else { ui.fg })
-        .text_size(px(11.))
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .bg(if active { ui.fg } else { ui.sunken })
+        .text_color(if active { ui.bg } else { ui.fg })
+        .text_size(px(11.5))
         .cursor_pointer()
+        .hover(|s| s.bg(if active { ui.fg } else { ui.hover }))
         .child(label.to_string())
         .on_mouse_up(MouseButton::Left, cx.listener(f))
 }
@@ -6591,13 +6698,13 @@ fn section_scrolled_with_rail(
         .flex()
         .flex_col()
         .gap_1()
-        .p(px(6.))
+        .p(px(8.))
         // min_h_0 + flex_1 let the panel shrink below its content so the
         // inner scroller scrolls instead of pushing the whole layout down.
         .min_h_0()
         .flex_1()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(6.))
         .border_1()
         .border_color(ui.border)
         .bg(ui.panel)
@@ -6606,13 +6713,14 @@ fn section_scrolled_with_rail(
                 .flex()
                 .flex_row()
                 .items_center()
-                .px(px(6.))
-                .py(px(3.))
-                .rounded_sm()
-                .bg(ui.panel)
+                .px(px(2.))
+                .pt(px(1.))
+                .pb(px(3.))
+                .border_b_1()
+                .border_color(ui.border)
                 .text_color(ui.fg)
-                .text_size(px(13.))
-                .font_weight(FontWeight::BOLD)
+                .text_size(px(13.5))
+                .font_weight(FontWeight::SEMIBOLD)
                 .child(title.to_string()),
         );
     for k in top {
@@ -6985,14 +7093,18 @@ impl Render for Root {
         })
         .child(
             div()
-                .px_2()
-                .py(px(2.))
+                .px_3()
+                .py(px(3.))
                 .flex()
                 .flex_row()
                 .flex_wrap()
                 .gap_1()
                 .items_center()
+                .bg(ui.sunken)
+                .border_t_1()
                 .border_color(ui.border)
+                .text_size(px(11.))
+                .text_color(ui.muted)
                 .child(format!("{} {}", self.t("status"), self.status))
                 .child(div().text_size(px(10.5)).child("|".to_string()))
                 .child(kbd(&ui, "Enter"))
@@ -7149,101 +7261,153 @@ impl Root {
     // (File|Agenda|Songs|Bibles|Media|Style|View) as a tab bar + grouped
     // action buttons. All buttons reuse the same handlers as the panels.
 
-    /// Slim signal-red title strip (position 1): brand + agenda name on
-    /// red, paper strips below. The old full-red ribbon band read as one
-    /// oversized block next to the sheet's paper strips (R3).
+    /// Slim signal strip (position 1): brand + agenda name on quiet deep
+    /// red, paper strips below. Bright signal red is spent on exactly two
+    /// things in this window: the live arm action and selected rows. The
+    /// old full-brightness band plus red group boxes read as one alarm.
     fn title_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let ink = rgb(0xFDE7E9);
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
-            .px_2()
-            .py(px(0.))
-            .bg(ui.selection)
-            .text_color(rgb(0xFFFFFF))
-            .text_size(px(10.))
-            .font_weight(FontWeight::BOLD)
-            .child(format!("♪ Perez — {}", self.agenda.title))
+            .px_3()
+            .py(px(4.))
+            .bg(ui.selection_surface)
+            .text_color(ink)
+            .text_size(px(12.))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().text_size(px(13.)).child("♪".to_string()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Perez  ·  {}", self.agenda.title)),
+                    ),
+            )
             .child(div().flex_1())
-            .child(btn(ui, cx, "⛶ Go live", false, |this, _, _, cx| {
-                this.go_live(cx);
-            }))
+            .child({
+                // The one high-emphasis action, filled paper on the band so
+                // it reads against red instead of camouflaging into it.
+                div()
+                    .px(px(10.))
+                    .py(px(3.))
+                    .rounded(px(4.))
+                    .bg(ink)
+                    .text_color(ui.selection_surface)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .child("⛶ Go live".to_string())
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.go_live(cx);
+                        }),
+                    )
+            })
     }
 
     /// Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/View
     /// menu row. Each item drives existing workspace state (ribbon tab,
     /// browser tab, disclosures, viewer mode) — no dead wires.
     fn menu_row(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        // Menu-bar tabs: label, then a 2px rule under the open workspace.
+        // No red here; the active workspace is named by ink + weight +
+        // position, which survives grayscale and every skin.
+        let menu_tab = |ui: &UI,
+                        cx: &mut Context<Root>,
+                        text: &str,
+                        active: bool,
+                        f: fn(&mut Root, &mut Context<Root>)| {
+            let mut d = div()
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(4.))
+                .text_size(px(12.))
+                .text_color(if active { ui.fg } else { ui.muted })
+                .cursor_pointer()
+                .border_b_2()
+                .border_color(if active { ui.accent } else { rgba(0x00000000) })
+                .child(text.to_string());
+            if active {
+                d = d.font_weight(FontWeight::SEMIBOLD);
+            } else {
+                d = d.hover(|s| s.bg(ui.hover).text_color(ui.fg));
+            }
+            d.on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| f(this, cx)),
+            )
+        };
+        let divider = || div().w(px(1.)).h(px(15.)).bg(ui.border);
         div()
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_1()
+            .gap(px(1.))
             .items_center()
             .px_2()
-            .py(px(0.))
-            .text_size(px(11.))
-            .bg(ui.panel)
+            .py(px(1.))
+            .text_size(px(12.))
+            .bg(ui.sunken)
             .border_b_1()
             .border_color(ui.border)
-            .child(btn(ui, cx, "File", self.agenda_file_open, |this, _, _, cx| {
+            .child(menu_tab(ui, cx, "File", self.agenda_file_open, |this, cx| {
                 this.agenda_file_open = !this.agenda_file_open;
                 this.show_control(cx);
             }))
-            .child(btn(ui, cx, "Agenda", false, |this, _, _, cx| {
+            .child(menu_tab(ui, cx, "Agenda", false, |this, cx| {
                 this.show_control(cx);
                 this.set_status(cx, "Agenda.");
             }))
-            .child(btn(
+            .child(menu_tab(
                 ui,
                 cx,
                 "Songs",
                 self.left_tab == LeftTab::Songs,
-                |this, _, _, cx| {
+                |this, cx| {
                     this.left_tab = LeftTab::Songs;
                     this.show_control(cx);
                 },
             ))
-            .child(btn(
+            .child(menu_tab(
                 ui,
                 cx,
                 "Bibles",
                 self.left_tab == LeftTab::Bibles,
-                |this, _, _, cx| {
+                |this, cx| {
                     this.left_tab = LeftTab::Bibles;
                     this.show_control(cx);
                 },
             ))
-            .child(btn(
+            .child(menu_tab(
                 ui,
                 cx,
                 "Media",
                 self.ribbon == RibbonTab::Background,
-                |this, _, _, cx| {
+                |this, cx| {
                     this.ribbon = RibbonTab::Background;
                     this.show_control(cx);
                 },
             ))
-            .child(btn(
-                ui,
-                cx,
-                "Style",
-                self.show_style_explorer,
-                |this, _, _, cx| {
-                    this.show_style_explorer = !this.show_style_explorer;
-                    this.show_control(cx);
-                },
-            ))
-            .child(btn(ui, cx, "View", self.viewer_mode, |this, _, _, cx| {
+            .child(menu_tab(ui, cx, "Style", self.show_style_explorer, |this, cx| {
+                this.show_style_explorer = !this.show_style_explorer;
+                this.show_control(cx);
+            }))
+            .child(menu_tab(ui, cx, "View", self.viewer_mode, |this, cx| {
                 this.toggle_viewer_mode(cx);
             }))
             .child(div().w(px(8.)))
-            // Sheet menu-strip right cluster: Lang · Theme · Monitor · Ratio
-            // indicators (each one cycles on click) plus the primary
-            // Projector button, Stage view and Stop. All drive existing
-            // state — the same actions as the ribbon/settings, surfaced
-            // where the operator's hand already is.
+            .child(divider())
+            .child(div().w(px(6.)))
+            // Right cluster: live indicators (each cycles on click) plus the
+            // secondary workspace actions. Values ride in the labels so no
+            // extra chrome is needed to read them.
             .child({
                 let label = format!("Lang: {}", self.lang.to_uppercase());
                 btn(ui, cx, &label, false, |this, _, _, cx| {
@@ -7255,8 +7419,7 @@ impl Root {
             .child({
                 // Current values ride in the label; the button cycles.
                 let label = format!(
-                    "{}: {}",
-                    "Theme",
+                    "Theme: {}",
                     vp_core::themes::theme_by_id(&self.theme_id)
                         .map(|t| t.name)
                         .unwrap_or("Light")
@@ -7300,24 +7463,26 @@ impl Root {
                     cx.notify();
                 })
             })
-            .child(div().w(px(8.)))
+            .child(div().w(px(6.)))
+            .child(divider())
+            .child(div().w(px(6.)))
             .child(btn(ui, cx, "Projector", self.projector_window.is_some(), |this, _, _, cx| {
                 this.toggle_projector(cx);
             }))
             .child({
                 let active = self.mode == Mode::Stage;
                 let mut b = div()
-                    .px(px(crate::ux::RIBBON_BTN_PX))
+                    .px(px(6.))
+                    .py(px(2.))
                     .min_h(px(crate::ux::RIBBON_LINE_PX))
-                    .rounded_sm()
-                    .bg(if active { ui.selection } else { ui.panel })
-                    .text_color(if active { ui.selection_ink } else { ui.fg })
+                    .rounded(px(4.))
+                    .bg(if active { ui.fg } else { rgba(0x00000000) })
+                    .text_color(if active { ui.bg } else { ui.fg })
                     .cursor_pointer()
-                    .border_1()
-                    .border_color(ui.border)
+                    .when(active, |d| d.font_weight(FontWeight::MEDIUM))
                     .child("Stage view".to_string());
-                if active {
-                    b = b.border_2();
+                if !active {
+                    b = b.hover(|s| s.bg(ui.hover));
                 }
                 // Press-phase handler: in Stage mode a mouse-UP on this
                 // button never arrived (the stage tree owns the release),
@@ -7363,11 +7528,14 @@ impl Root {
                 .id("ribbon-collapsed-strip")
                 .flex()
                 .flex_row()
-                .gap_1()
-                .px(px(6.))
-                .py(px(2.))
+                .gap_2()
+                .px(px(8.))
+                .py(px(4.))
                 .items_center()
-                .bg(rgb(0x1E6CC8))
+                .bg(ui.sunken)
+                .border_b_1()
+                .border_color(ui.border)
+                .text_color(ui.muted)
                 .cursor_pointer()
                 // The whole strip is the affordance, not just the button:
                 // a hand cursor that only works on 120 px is a lie.
@@ -7405,26 +7573,23 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                // Signal Room tabs (perez-sheet.html): paper tabs, the
-                // active tab filled ink. Primary actions are signal red
-                // buttons, not tabs — tabs never compete with them.
-                let (tab_bg, tab_ink, tab_border) = if active {
-                    (ui.fg, ui.bg, ui.fg)
-                } else {
-                    (ui.panel, ui.fg, ui.border)
-                };
-                div()
-                    .px(px(1.))
-                    .py(px(crate::ux::RIBBON_TAB_PY))
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(tab_border)
-                    .bg(tab_bg)
-                    .text_color(tab_ink)
+                // Ribbon tabs: quiet text until chosen, then an ink chip.
+                // Red stays off the tab row entirely — tabs name a workspace,
+                // they do not signal anything about the room.
+                let mut tab = div()
+                    .px(px(8.))
+                    .py(px(crate::ux::RIBBON_TAB_PY + 1.0))
+                    .border_b_2()
+                    .border_color(if active { ui.accent } else { rgba(0x00000000) })
+                    .text_color(if active { ui.fg } else { ui.muted })
                     .cursor_pointer()
-                    .when(active, |d| d.font_weight(FontWeight::BOLD))
-                    .child(title.to_string())
-                    .on_mouse_up(
+                    .child(title.to_string());
+                if active {
+                    tab = tab.font_weight(FontWeight::SEMIBOLD);
+                } else {
+                    tab = tab.hover(|s| s.bg(ui.hover).text_color(ui.fg));
+                }
+                tab.on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
                             if ev.click_count >= 2 {
@@ -7675,10 +7840,11 @@ impl Root {
             .max_w_full()
             .bg(ui.panel)
             .text_color(ui.fg)
-            .rounded_md()
-            .border_2()
-            .border_color(ui.accent)
-            .p(px(10.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(ui.border)
+            .shadow_lg()
+            .p(px(14.))
             .flex()
             .flex_col()
             .gap_2()
@@ -8140,21 +8306,9 @@ impl Root {
             .justify_center()
             .text_size(px(11.))
             .border_1()
-            .border_color(if dot_lit {
-                rgb(0x16A34A)
-            } else {
-                ui.border
-            })
-            .bg(if dot_lit {
-                rgb(0x22C55E)
-            } else {
-                ui.bg
-            })
-            .text_color(if dot_lit {
-                rgb(0xFFFFFF)
-            } else {
-                ui.border
-            })
+            .border_color(if dot_lit { ui.accent } else { ui.border })
+            .bg(if dot_lit { ui.accent } else { rgba(0x00000000) })
+            .text_color(if dot_lit { ink_on(ui.accent) } else { ui.muted })
             .child("●".to_string());
         style_kids.push(row(vec![
             btn_stop(
@@ -8169,18 +8323,8 @@ impl Root {
                 },
             ),
             dot,
-            btn(
-                ui,
-                cx,
-                "A✎",
-                self.show_style_explorer,
-                |this, _, _, cx| {
-                    this.show_style_explorer = !this.show_style_explorer;
-                    this.set_status(cx, "Style preset editor (Style explorer).");
-                    this.persist_layout_quiet();
-                    cx.notify();
-                },
-            ),
+            // No second launcher here: the preset row already ends with
+            // `Explorer`. Two buttons for one door was one too many.
         ]));
         // The 8 style levels live in the floating overlay menu
         // (`dropdown_overlay`), NOT inline here: inline expansion shoved
@@ -8211,7 +8355,7 @@ impl Root {
         // Style Explorer launcher ends the preset row (not a third line of
         // the group) — same handler; the tree still opens over whichever tab
         // is active (UX-RESEARCH §5.3).
-        presets.push(btn(ui, cx, "Style explorer", self.show_style_explorer, |this, _, _, cx| {
+        presets.push(btn(ui, cx, "Explorer", self.show_style_explorer, |this, _, _, cx| {
             this.show_style_explorer = !this.show_style_explorer;
             this.persist_layout_quiet();
             cx.notify();
@@ -8296,6 +8440,9 @@ impl Root {
         }));
         // Glyph-only: the operator reads the alignment from the icon and the
         // hover tip names it (ribbon width is the chrome budget's currency).
+        // Alignment is a style-level setting (like vertical align), so it
+        // lives in `More`; the working Font row stays to one line.
+        let mut set_once_kids: Vec<Div> = Vec::new();
         for (glyph, want) in [
             ("⇤", Align::Left),
             ("⇔", Align::Center),
@@ -8307,7 +8454,7 @@ impl Root {
                 Align::Center => "Center",
                 Align::Right => "Right",
             };
-            font_kids.push(btn_tip(
+            set_once_kids.push(btn_tip(
                 ui,
                 cx,
                 glyph,
@@ -8328,13 +8475,15 @@ impl Root {
         }
         // Vertical placement of the lyric block in its frame (WI-021):
         // top / center / bottom, same global-setting shape as horizontal.
+        // Set-once per style level, so it lives in `More` with the other
+        // style-wide knobs and keeps the working Font row to one line.
         for (glyph, want) in [
             ("↑", VAlign::Top),
             ("↕", VAlign::Center),
             ("↓", VAlign::Bottom),
         ] {
             let active = self.valign == want;
-            font_kids.push(btn_tip(
+            set_once_kids.push(btn_tip(
                 ui,
                 cx,
                 glyph,
@@ -8357,15 +8506,17 @@ impl Root {
                 },
             ));
         }
-        // Lyric text color (WI-024): preset swatches + Auto (theme). The
-        // Colors group next door drives the accent; this one drives the
-        // words on the screen — the vendor styles text color per level,
-        // v1 keeps one global setting like alignment.
+        // Lyric text colour (WI-024) and chord notation are set-once
+        // preferences, so they ride in the `More` disclosure with the other
+        // set-once groups. The working Font row keeps only controls an
+        // operator touches while a song is live; the ribbon loses the
+        // six-colour swatch rainbow that competed with the brand signal.
+        let mut more_kids: Vec<Div> = set_once_kids;
         for sw in [
             "#FFFFFF", "#FACC15", "#38BDF8", "#22C55E", "#F97316", "#000000",
         ] {
             let active = self.fg_override.as_deref() == Some(sw);
-            font_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
+            more_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.fg_override = Some(sw.into());
                 this.mirror_font_to_style();
                 this.write_style_attr(cx, &format!("Colour {sw}"), move |v| {
@@ -8373,7 +8524,7 @@ impl Root {
                 });
             }));
         }
-        font_kids.push(btn(
+        more_kids.push(btn(
             ui,
             cx,
             "◌ Auto",
@@ -8387,16 +8538,16 @@ impl Root {
                 });
             },
         ));
-        font_kids.push(btn(
+        more_kids.push(btn(
             ui,
             cx,
-            "C-D-E",
+            "Chords C-D-E",
             self.notation == ChordNotation::Abc,
             |this, _, _, cx| {
                 this.apply_transpose(cx, 0, Some(ChordNotation::Abc));
             },
         ));
-        font_kids.push(btn(
+        more_kids.push(btn(
             ui,
             cx,
             "Do-Re-Mi",
@@ -8516,9 +8667,29 @@ impl Root {
             .child(group(ui, "Song", song_kids))
             .child(group(ui, &self.t("styles"), style_kids))
             .child(group(ui, &self.t("font"), font_kids))
-            .child(group(ui, "Slide layout", layout_kids))
-            .child(group(ui, &self.t("colors"), color_kids))
-            .child(group(ui, &self.t("animation"), anim_kids));
+            // Set-once groups fold behind one labelled disclosure (RESEARCH
+            // P-15: never let the ribbon wrap into a mystery third band).
+            // Every control stays one click away; nothing is dropped.
+            .child(group(
+                ui,
+                "More",
+                vec![btn(
+                    ui,
+                    cx,
+                    if self.ribbon_more_open { "Fewer ▴" } else { "More ▾" },
+                    self.ribbon_more_open,
+                    |this, _, _, cx| {
+                        this.ribbon_more_open = !this.ribbon_more_open;
+                        cx.notify();
+                    },
+                )],
+            ))
+            .when(self.ribbon_more_open, |d| {
+                d.child(group(ui, "Chord notation", more_kids))
+                    .child(group(ui, "Slide layout", layout_kids))
+                    .child(group(ui, &self.t("colors"), color_kids))
+                    .child(group(ui, &self.t("animation"), anim_kids))
+            });
         ribbon_groups
     }
 
@@ -8624,10 +8795,10 @@ impl Root {
                     .flex_col()
                     .gap_1()
                     .p(px(6.))
-                    .rounded_md()
+                    .rounded(px(6.))
                     .bg(ui.panel)
                     .border_1()
-                    .border_color(ui.engaged)
+                    .border_color(ui.border)
                     .shadow_lg()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -8699,10 +8870,10 @@ impl Root {
                     .flex_col()
                     .gap_1()
                     .p(px(6.))
-                    .rounded_md()
+                    .rounded(px(6.))
                     .bg(ui.panel)
                     .border_1()
-                    .border_color(ui.engaged)
+                    .border_color(ui.border)
                     .shadow_lg()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -8757,7 +8928,7 @@ impl Root {
             // window was two rows tall). A short agenda fits content; a long
             // one scrolls inside the cap. Dragging the divider below pins a
             // fixed height instead (`agenda_h`), persisted like the widths.
-            .child(self.agenda_wrap(ui, cx))
+            .child(self.agenda_wrap(ui, cx, vh))
             .child(self.hdivider(ui, cx, 0))
             .child(
                 div()
@@ -8901,11 +9072,30 @@ impl Root {
                 Some(song) => {
                     let verses = song.ordered_verses().len();
                     let slides = self.item_slides(idx).len();
-                    format!("{verses} verses · {slides} slides")
+                    let mut bits: Vec<String> = Vec::new();
+                    if self.show_abbrev {
+                        let ab = self.songbook_abbrev(&song.songbook_id);
+                        if !ab.is_empty() {
+                            bits.push(ab);
+                        }
+                    }
+                    if self.show_number && !song.ccli.is_empty() {
+                        bits.push(song.ccli.clone());
+                    }
+                    let prefix = if bits.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} · ", bits.join(" "))
+                    };
+                    format!(
+                        "{prefix}{verses} {} · {slides} {}",
+                        if verses == 1 { "verse" } else { "verses" },
+                        if slides == 1 { "slide" } else { "slides" }
+                    )
                 }
                 None => "Song · missing from library".to_string(),
             },
-            ItemRef::Bible { bible_ref } => format_header(bible_ref),
+            ItemRef::Bible { bible_ref: _ } => "Bible verses".to_string(),
             ItemRef::File { file } => {
                 // `Path::extension` (not `rsplit('.')`, which returns the
                 // whole path for extensionless files like `/home/op/README`).
@@ -8996,7 +9186,7 @@ impl Root {
             } else {
                 format!("Chords in these lyrics: {}", chords.join(" – "))
             };
-            body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar [chord] key inserts one at the cursor); transpose lives with the song chords.");
+            body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar Chord key inserts one at the cursor); transpose lives with the song chords.");
             if text.contains("[]") {
                 body.push_str("\nEmpty [] markers are ignored until a chord letter is typed inside them.");
             }
@@ -9111,11 +9301,11 @@ impl Root {
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_1()
+            .gap(px(2.))
             .items_center()
             .px_2()
-            .py(px(0.))
-            .text_size(px(10.))
+            .py(px(1.))
+            .text_size(px(12.))
             .bg(ui.panel)
             .border_b_1()
             .border_color(ui.border)
@@ -9132,17 +9322,21 @@ impl Root {
             btn(ui, cx, "Save", false, |this, _, _, cx| {
                 this.save_agenda(cx)
             }),
+            div().w(px(1.)).h(px(14.)).bg(ui.border),
             btn(ui, cx, "Open VP plan…", false, |this, _, _, cx| {
                 this.import_native_plan(cx)
             }),
             btn(ui, cx, "Save VP plan…", false, |this, _, _, cx| {
                 this.export_native_plan(cx)
             }),
+            div().w(px(1.)).h(px(14.)).bg(ui.border),
+            // A starter, not a toggle: it is a one-shot load, so it must not
+            // sit permanently "on" (the old `true` made it a red block).
             btn(
                 ui,
                 cx,
                 "Load sample agenda",
-                true,
+                false,
                 |this, _, _, cx| {
                     this.load_sample_agenda(cx)
                 },
@@ -9155,11 +9349,15 @@ impl Root {
 
     /// Agenda wrapper: automatic (content up to the 360 px cap) until the
     /// operator drags the divider below it, then the pinned height.
-    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>, vh: f32) -> Div {
         let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        // Height-aware cap: a fixed 260px left the library browser with no
+        // list on a 768px booth laptop. 30% of the window keeps ~5 agenda
+        // rows while guaranteeing the song list below stays visible.
+        let cap = (vh * 0.30).clamp(180., 300.);
         wrap = match self.agenda_h {
             Some(h) => wrap.h(px(h)),
-            None => wrap.flex_none().max_h(px(360.)),
+            None => wrap.flex_none().max_h(px(cap)),
         };
         wrap.child(self.agenda_panel(ui, cx))
     }
@@ -9200,46 +9398,14 @@ impl Root {
             // Row shape: songbook ABBREV, song NUMBER, title — then the
             // status dot. `show_abbrev` / `show_number` (1.27b toggles)
             // hide their column.
-            let row_title = match &item.reference {
-                ItemRef::Song { song_id } => {
-                    let song = self.songs.iter().find(|s| &s.id == song_id);
-                    let ab = if self.show_abbrev {
-                        song.map(|s| self.songbook_abbrev(&s.songbook_id))
-                            .filter(|a| !a.is_empty())
-                            .map(|a| format!(" {a}"))
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    let num = if self.show_number {
-                        song.map(|s| {
-                            if !s.song_id.is_empty() {
-                                s.song_id.clone()
-                            } else {
-                                s.ccli.clone()
-                            }
-                        })
-                        .filter(|n| !n.is_empty())
-                        .map(|n| format!(" {n}"))
-                        .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    format!("{}{}", ab, format!("{num} {}", item.title).trim_start())
-                        .trim_start()
-                        .to_string()
-                }
-                _ => item.title.clone(),
-            };
-            let title = row_title;
-            // A filled signal-red dot at the right edge of every row is the
-            // per-item status indicator the original shows.
-            let status_dot = div()
-                .flex_none()
-                .w(px(8.))
-                .h(px(8.))
-                .rounded_full()
-                .bg(ui.selection);
+            // Title at full voice; songbook abbreviation and number are
+            // metadata, so they join the muted subline instead of gluing
+            // themselves to the title (`M2762838 Amazing Grace`).
+            let title = item.title.clone();
+            // Selection is an outline + tinted surface, never a solid red
+            // block (RESEARCH P-04): the row keeps its readable body text and
+            // the red edge does the pointing. Live keeps its lime fill.
+            let row_ink = if live { ui.live_ink } else { ui.fg };
             // The row being renamed renders its title as an editable field
             // (double-click → rename in place); every other row is plain text.
             let title_cell: Div = if self.renaming_item == Some(idx) {
@@ -9261,12 +9427,26 @@ impl Root {
                 // ("4 verses · key G", "Image · Cover"). It inherits
                 // the row ink, so live/selected coloring still reads.
                 let meta = self.agenda_meta(item, idx);
-                div()
+                let mut cell = div()
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .child(title)
-                    .child(div().text_size(px(10.5)).child(meta))
+                    .gap(px(1.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    );
+                if !meta.is_empty() {
+                    cell = cell.child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(if live { row_ink } else { ui.muted })
+                            .child(meta),
+                    );
+                }
+                cell
             };
             rows.push(
                 div()
@@ -9274,29 +9454,31 @@ impl Root {
                     .flex_row()
                     .gap_1()
                     .items_center()
-                    .px_1()
-                    .rounded_sm()
+                    .px(px(5.))
+                    .py(px(3.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if live {
+                        ui.live
+                    } else if selected {
+                        ui.accent
+                    } else {
+                        rgba(0x00000000)
+                    })
                     .bg(if live {
                         ui.live
                     } else if selected {
-                        ui.selection
+                        ui.hover
                     } else {
-                        ui.panel
+                        rgba(0x00000000)
                     })
-                    .text_color(if live {
-                        ui.live_ink
-                    } else if selected {
-                        ui.selection_ink
-                    } else {
-                        ui.fg
-                    })
+                    .text_color(row_ink)
                     .cursor_pointer()
+                    .when(!live && !selected, |d| d.hover(|s| s.bg(ui.hover)))
                     .child(title_cell)
                     .when(live, |d| d.child(live_tag(ui)))
-                    .child(status_dot)
-                    // Lime (live) and red (selected) fills never read as one
-                    // state; the engaged outline marks the keyboard cursor.
-                    .when(selected, |d| d.border_1().border_color(ui.engaged))
+                    // Lime (live) and deep red (selected) fills never read
+                    // as one state; no third outline on top of either.
                     // A single click respects the shield; a **double-click
                     // renames the row in place** (UX-RESEARCH §3.1: items are
                     // renamable meaningful names) and still punches through
@@ -9358,26 +9540,38 @@ impl Root {
                         tip: &str,
                         enabled: bool,
                         f: fn(&mut Root, &mut Context<Root>)| {
-            let _ = tip;
+            let tip_text: String = match tip {
+                "add" => "Add the selected document to the agenda",
+                "save" => "Save the agenda",
+                "delete" => "Remove the selected agenda item",
+                "move up" => "Move the selected item up",
+                "move down" => "Move the selected item down",
+                other => other,
+            }
+            .to_string();
             let mut b = div()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
                 .w(px(30.))
-                .h(px(24.))
-                .rounded_sm()
-                .border_1()
-                .border_color(if enabled { ui.border } else { ui.bg })
-                .bg(if enabled { ui.panel } else { ui.bg })
-                .text_color(if enabled { ui.fg } else { ui.border })
-                .text_size(px(13.))
+                .h(px(26.))
+                .rounded(px(4.))
+                .bg(if enabled { ui.sunken } else { rgba(0x00000000) })
+                .text_color(if enabled { ui.fg } else { ui.muted })
+                .text_size(px(14.))
                 .child(glyph.to_string());
             if enabled {
-                b = b.cursor_pointer().on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _w, cx| f(this, cx)),
-                );
+                b = b
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ui.hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _w, cx| f(this, cx)),
+                    );
+                b.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+                    cx.new(|_| TooltipLabel(tip_text.clone())).into()
+                });
             }
             b
         };
@@ -9397,20 +9591,22 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .w(px(18.))
-                .h(px(24.))
-                .rounded_sm()
-                .border_1()
-                .border_color(if enabled {
-                    if open {
-                        ui.engaged
-                    } else {
-                        ui.border
-                    }
+                .h(px(26.))
+                .rounded(px(4.))
+                .bg(if open {
+                    ui.fg
+                } else if enabled {
+                    ui.sunken
                 } else {
-                    ui.bg
+                    rgba(0x00000000)
                 })
-                .bg(if enabled { ui.panel } else { ui.bg })
-                .text_color(if enabled { ui.fg } else { ui.border })
+                .text_color(if open {
+                    ui.bg
+                } else if enabled {
+                    ui.muted
+                } else {
+                    ui.muted
+                })
                 .text_size(px(11.))
                 .child("▾".to_string());
             if enabled {
@@ -9436,8 +9632,12 @@ impl Root {
                 );
             }
             if open {
-                b = b.border_2().border_color(ui.engaged);
+                b = b.font_weight(FontWeight::SEMIBOLD);
             }
+            let menu_tip = format!("More {action} options");
+            b.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+                cx.new(|_| TooltipLabel(menu_tip.clone())).into()
+            });
             b
         };
         fn rail_row(main: Div, menu: Div) -> Div {
@@ -9583,16 +9783,25 @@ impl Root {
         } else {
             Vec::new()
         };
-        let mut agenda_header = vec![file_disclosure];
+        let file_row = row_wrap(vec![
+            file_disclosure,
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_size(px(10.5))
+                .text_color(ui.muted)
+                .child(format!("Recent: {recents}")),
+        ]);
+        let mut agenda_header = vec![file_row];
         agenda_header.extend(file_controls);
-        agenda_header.push(label(ui, &format!("Recent: {recents}"), 12.));
         let section = section_scrolled_with_rail(
             ui,
-            // Header per `agenda-panel.png`: a circle-chevron, a dropdown, then
-            // the agenda name. The old `✎` prefix was the *mode* pencil being
-            // reused as decoration, which is why the header never matched.
+            // The panel title is the agenda's name, nothing more. The old
+            // `⊙ ∨` glyph pair was decorative chrome the operator had to
+            // decode; the dirty `*` stays because it carries state.
             &format!(
-                "⊙ ∨ {}{}",
+                "{}{}",
                 // The `*` marks unsaved changes (UX-RESEARCH §3.1, §10.9).
                 if self.agenda_dirty { "*" } else { "" },
                 self.agenda.title
@@ -9681,11 +9890,15 @@ impl Root {
                     cx.notify();
                 }),
                 div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
-                btn(ui, cx, "×", false, |this, _, _, cx| {
-                    this.search_field
-                        .update(cx, |field, cx| field.set_text("", cx));
-                    this.refresh_search("", cx);
-                }),
+                if !self.search_field.read(cx).text().is_empty() {
+                    btn(ui, cx, "×", false, |this, _, _, cx| {
+                        this.search_field
+                            .update(cx, |field, cx| field.set_text("", cx));
+                        this.refresh_search("", cx);
+                    })
+                } else {
+                    div().w(px(0.))
+                },
             ]));
             if self.show_scope_grid {
                 kids.push(self.search_scope_panel(ui, cx));
@@ -9741,11 +9954,15 @@ impl Root {
                     },
                 ),
                 div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
-                btn(ui, cx, "×", false, |this, _, _, cx| {
-                    this.search_field
-                        .update(cx, |field, cx| field.set_text("", cx));
-                    this.apply_bible_search("", cx);
-                }),
+                if !self.search_field.read(cx).text().is_empty() {
+                    btn(ui, cx, "×", false, |this, _, _, cx| {
+                        this.search_field
+                            .update(cx, |field, cx| field.set_text("", cx));
+                        this.apply_bible_search("", cx);
+                    })
+                } else {
+                    div().w(px(0.))
+                },
             ]));
             // The whole picker (translations + import + books/chapters +
             // verses) is taller than the panel: it scrolls as one, like the
@@ -9830,16 +10047,16 @@ impl Root {
         div()
             .flex()
             .flex_col()
-            .p_2()
-            .rounded_md()
+            .p(px(8.))
+            .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
-            .bg(ui.panel)
+            .bg(ui.sunken)
             .child(
                 div()
                     .text_size(px(11.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ui.accent)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.muted)
                     .child("Find words in:"),
             )
             .child(
@@ -9869,9 +10086,10 @@ impl Root {
             .items_center()
             .px_1()
             .min_w_0()
-            .text_size(px(12.))
-            .text_color(ui.accent)
-            .child("▤ songbooks")
+            .text_size(px(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(ui.muted)
+            .child("▤ Songbooks")
             .child(btn_tip(
                 ui,
                 cx,
@@ -9941,14 +10159,11 @@ impl Root {
                     .and_then(|si| self.songs.get(si))
                     .is_some_and(|s| s.songbook_id == book.id);
             let name = format!(
-                "{} {} {}{} ({} {})",
-                if scoped { "▾" } else { "▸" },
-                "▤",
+                "{}{}",
                 if book_dirty { "*" } else { "" },
-                book.name,
-                count,
-                unit
+                book.name
             );
+            let meta = format!("{count} {unit}");
             let id_toggle = book.id.clone();
             let id_scope = book.id.clone();
             let id_hide = book.id.clone();
@@ -9956,32 +10171,85 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
+                    .gap(px(3.))
                     .items_center()
-                    .px_1()
-                    .text_size(px(12.))
+                    .px(px(4.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if scoped { ui.accent } else { rgba(0x00000000) })
+                    .bg(if scoped { ui.hover } else { rgba(0x00000000) })
                     // Excluded books gray out, exactly like the original.
-                    .text_color(if excluded { hex("#777777") } else { ui.fg })
-                    .child(btn(
+                    .text_color(if excluded { ui.muted } else { ui.fg })
+                    .cursor_pointer()
+                    .when(!scoped, |d| d.hover(|s| s.bg(ui.hover)))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.songbook_filter = if scoped { None } else { Some(id_scope.clone()) };
+                            let q = this.search_field.read(cx).text();
+                            this.refresh_search(&q, cx);
+                            this.persist_layout_quiet();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(10.))
+                            .text_size(px(9.))
+                            .text_color(ui.muted)
+                            .child(if scoped { "▾" } else { "▸" }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(1.))
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(ui.muted)
+                                    .child(meta),
+                            ),
+                    )
+                    .child(btn_tip(
                         ui,
                         cx,
-                        if excluded { "⊘" } else { "◉" },
-                        excluded,
+                        if excluded { "☐" } else { "☑" },
+                        if excluded {
+                            "Enable this songbook in instant find"
+                        } else {
+                            "Exclude this songbook from instant find"
+                        },
+                        false,
                         move |this, _, _, cx| {
                             this.toggle_book_excluded(&id_toggle, cx);
                         },
                     ))
-                    .child(btn(ui, cx, &name, scoped, move |this, _, _, cx| {
-                        this.songbook_filter = if scoped { None } else { Some(id_scope.clone()) };
-                        let q = this.search_field.read(cx).text();
-                        this.refresh_search(&q, cx);
-                        this.persist_layout_quiet();
-                    }))
-                    .child(btn(ui, cx, "👁", false, move |this, _, _, cx| {
-                        this.hidden_books.insert(id_hide.clone());
-                        this.persist_layout_quiet();
-                        cx.notify();
-                    })),
+                    .child(
+                        btn_tip(
+                        ui,
+                        cx,
+                        "×",
+                        "Hide this songbook (Show all restores it)",
+                        false,
+                        move |this, _, _, cx| {
+                            this.hidden_books.insert(id_hide.clone());
+                            this.persist_layout_quiet();
+                            cx.notify();
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        ),
+                    ),
             );
         }
         vec![div().flex().flex_col().gap(px(2.)).children(rows)]
@@ -9995,10 +10263,14 @@ impl Root {
         Some(
             div()
                 .px_1()
-                .rounded_sm()
-                .bg(if selected { ui.selection } else { ui.panel })
-                .text_color(if selected { ui.selection_ink } else { ui.fg })
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if selected { ui.accent } else { rgba(0x00000000) })
+                .bg(if selected { ui.hover } else { rgba(0x00000000) })
+                .text_size(px(12.5))
+                .text_color(ui.fg)
                 .cursor_pointer()
+                .when(!selected, |d| d.hover(|s| s.bg(ui.hover)))
                 .child(title)
                 .on_mouse_up(
                     MouseButton::Left,
@@ -10078,7 +10350,8 @@ impl Root {
         // A hint that explains the search, the way the original's box does.
         let hint = match self.results.len() {
             0 => self.t("no_results"),
-            n => format!("{} match(es)", n),
+            1 => "1 match".to_string(),
+            n => format!("{n} matches"),
         };
         // Flat rows: the caller (`browser_panel`) puts these in the single
         // books+songs scroller, so everything stays reachable on short
@@ -10244,8 +10517,9 @@ impl Root {
         let mut list = vec![label(
             ui,
             &format!(
-                "🔍 {} keyword match(es) — click one, or 🔍 to go back",
-                self.bible_hits.len()
+                "🔍 {} keyword {} — click one, or 🔍 to go back",
+                self.bible_hits.len(),
+                if self.bible_hits.len() == 1 { "match" } else { "matches" }
             ),
             12.,
         )];
@@ -10325,14 +10599,14 @@ impl Root {
                     .cursor_pointer()
                     .text_size(px(11.))
                     .font_weight(if is_cur {
-                        FontWeight::BOLD
+                        FontWeight::SEMIBOLD
                     } else {
                         FontWeight::NORMAL
                     })
-                    .bg(if is_cur { hex("#f97327") } else { ui.panel })
-                    .text_color(if is_cur { rgb(0xffffff) } else { ui.fg })
+                    .bg(if is_cur { ui.hover } else { ui.panel })
+                    .text_color(ui.fg)
                     .border_1()
-                    .border_color(if is_cur { hex("#f97327") } else { ui.border })
+                    .border_color(if is_cur { ui.fg } else { ui.border })
                     .child(tab_title)
                     .on_mouse_up(
                         MouseButton::Left,
@@ -10397,10 +10671,14 @@ impl Root {
             book_rows.push(
                 div()
                     .px_1()
-                    .rounded_sm()
-                    .bg(if active { ui.selection } else { ui.panel })
-                    .text_color(if active { ui.selection_ink } else { ui.fg })
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if active { ui.accent } else { rgba(0x00000000) })
+                    .bg(if active { ui.hover } else { rgba(0x00000000) })
+                    .text_size(px(12.5))
+                    .text_color(ui.fg)
                     .cursor_pointer()
+                    .when(!active, |d| d.hover(|s| s.bg(ui.hover)))
                     .child(title)
                     .on_mouse_up(
                         MouseButton::Left,
@@ -10895,26 +11173,20 @@ impl Root {
             let preview: String = slide.lines.join(" / ");
             let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
-            // Brand layer: the projecting row is lime, the keyboard
-            // cursor row is signal red, everything else is the panel.
-            // Lime wins when a row is both (mid-service the cursor often
-            // sits on the live slide).
+            // Brand layer: the projecting row is lime (fill + LIVE word),
+            // the keyboard cursor gets a signal-red edge, everything else is
+            // a neutral panel row. Lime wins when a row is both (mid-service
+            // the cursor often sits on the live slide).
             let row_bg = if live_now {
                 ui.live
             } else if selected {
-                ui.selection
+                ui.hover
             } else {
                 ui.panel
             };
-            let row_ink = if live_now {
-                ui.live_ink
-            } else if selected {
-                ui.selection_ink
-            } else {
-                ui.fg
-            };
+            let row_ink = if live_now { ui.live_ink } else { ui.fg };
             let border_c = if selected && !live_now {
-                ui.engaged
+                ui.accent
             } else {
                 row_bg
             };
@@ -10949,7 +11221,7 @@ impl Root {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .text_color(if live_now { row_ink } else { ui.muted })
                             .child(badge),
                     )
                     // DESIGN.md signature: the live cue is lime PLUS the
@@ -11058,26 +11330,20 @@ impl Root {
             // The row currently projecting is filled lime, always (sheet
             // LIVE = lime only, on every skin). The selected row is filled
             // signal red so the two never read as one.
-            // Brand layer: the projecting row is lime, the keyboard
-            // cursor row is signal red, everything else is the panel.
-            // Lime wins when a row is both (mid-service the cursor often
-            // sits on the live slide).
+            // Brand layer: the projecting row is lime (fill + LIVE word),
+            // the keyboard cursor gets a signal-red edge, everything else is
+            // a neutral panel row. Lime wins when a row is both (mid-service
+            // the cursor often sits on the live slide).
             let row_bg = if live_now {
                 ui.live
             } else if selected {
-                ui.selection
+                ui.hover
             } else {
                 ui.panel
             };
-            let row_ink = if live_now {
-                ui.live_ink
-            } else if selected {
-                ui.selection_ink
-            } else {
-                ui.fg
-            };
+            let row_ink = if live_now { ui.live_ink } else { ui.fg };
             let border_c = if selected && !live_now {
-                ui.engaged
+                ui.accent
             } else {
                 row_bg
             };
@@ -11115,7 +11381,7 @@ impl Root {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .text_color(if live_now { row_ink } else { ui.muted })
                             .child(badge),
                     )
                     // DESIGN.md signature: the live cue is lime PLUS the
@@ -11199,26 +11465,20 @@ impl Root {
             let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(badge.as_str());
             // Plain panel rows; color carries state, not chrome.
-            // Brand layer: the projecting row is lime, the keyboard
-            // cursor row is signal red, everything else is the panel.
-            // Lime wins when a row is both (mid-service the cursor often
-            // sits on the live slide).
+            // Brand layer: the projecting row is lime (fill + LIVE word),
+            // the keyboard cursor gets a signal-red edge, everything else is
+            // a neutral panel row. Lime wins when a row is both (mid-service
+            // the cursor often sits on the live slide).
             let row_bg = if live_now {
                 ui.live
             } else if selected {
-                ui.selection
+                ui.hover
             } else {
                 ui.panel
             };
-            let row_ink = if live_now {
-                ui.live_ink
-            } else if selected {
-                ui.selection_ink
-            } else {
-                ui.fg
-            };
+            let row_ink = if live_now { ui.live_ink } else { ui.fg };
             let border_c = if selected && !live_now {
-                ui.engaged
+                ui.accent
             } else {
                 row_bg
             };
@@ -11255,7 +11515,7 @@ impl Root {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .text_color(if live_now { row_ink } else { ui.muted })
                             .child(badge.clone()),
                     )
                     // Full slide text, wrapped — never truncated (R-6). No
@@ -11398,7 +11658,7 @@ impl Root {
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
-                .child(card_caption("OUTPUT"))
+                .child(card_caption("Output"))
         } else if snap.frame.item.is_none() {
             // No slide live: background still shows, with a note naming
             // the way back.
@@ -11417,7 +11677,7 @@ impl Root {
                             .text_color(hex("#BBBBBB"))
                             .child("(nothing live — press Show)".to_string()),
                     )
-                    .child(card_caption("OUTPUT")),
+                    .child(card_caption("Output")),
             )
         } else {
             // The projector render itself, in an output-ratio box sized to
@@ -11448,7 +11708,7 @@ impl Root {
                         .child(projector_window::render_snapshot(
                             snap.danger, &snap, panel_w, bh, None,
                         ))
-                        .child(card_caption("OUTPUT")),
+                        .child(card_caption("Output")),
                 )
         };
         let count = if n == 0 {
@@ -11471,8 +11731,8 @@ impl Root {
             .flex_col()
             .gap_1()
             .flex_1()
-            .p(px(6.))
-            .rounded_sm()
+            .p(px(8.))
+            .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
             .bg(ui.panel)
@@ -11482,27 +11742,34 @@ impl Root {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px(px(6.))
-                    .py(px(3.))
-                    .rounded_sm()
-                    .bg(ui.panel)
+                    .pb(px(3.))
                     .text_color(ui.fg)
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(format!(
-                        "{} — {} {count}",
-                        self.t("preview"),
-                        head_short
-                    ))
+                    .text_size(px(12.5))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.t("preview")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_color(ui.muted)
+                            .child(format!("{head_short}  {count}")),
+                    )
                     .children(self.state_chips(ui))
                     .when(self.aspect_ratio != "current", |d| {
                         d.child(
                             div()
-                                .px_1()
-                                .rounded_sm()
-                                .bg(rgb(0x3B82F6))
-                                .text_color(rgb(0xFFFFFF))
-                                .text_size(px(11.))
+                                .px(px(5.))
+                                .py(px(1.))
+                                .rounded(px(3.))
+                                .border_1()
+                                .border_color(ui.border)
+                                .bg(ui.sunken)
+                                .text_color(ui.muted)
+                                .text_size(px(10.5))
                                 .child(format!("↗ {}", self.aspect_ratio)),
                         )
                     }),
@@ -11519,62 +11786,37 @@ impl Root {
         // must see at a glance that the room is looking at a browser, not
         // the tile (a windowed browser can hide behind the control window
         // and otherwise read as broken).
+        // Badges, not a rainbow: one neutral chip shape for every state,
+        // with red kept for the shield (load-bearing: browsing cannot move
+        // the wall) and ink for the base screen. The label always spells the
+        // state out, so the cue survives grayscale.
+        let chip = |text: &str, bg: Rgba, ink: Rgba| {
+            div()
+                .px(px(5.))
+                .py(px(1.))
+                .rounded(px(3.))
+                .border_1()
+                .border_color(ui.border)
+                .bg(bg)
+                .text_color(ink)
+                .text_size(px(10.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text.to_string())
+        };
         if self.live_view_url.is_some() {
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(rgb(0x2E7D32))
-                    .text_color(rgb(0xFFFFFF))
-                    .text_size(px(11.))
-                    .child("\u{1F310} LIVE WEB"),
-            );
+            chips.push(chip("Live web", ui.sunken, ui.fg));
         }
         if self.shield {
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(SHIELD_ARMED)
-                    .text_color(ink_on(SHIELD_ARMED))
-                    .text_size(px(11.))
-                    .child("🛡 SHIELD"),
-            );
+            chips.push(chip("Shield", SHIELD_ARMED, ink_on(SHIELD_ARMED)));
         }
         if self.frozen_slide.is_some() {
-            let cyan = rgb(0x00ACC1);
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(cyan)
-                    .text_color(ink_on(cyan))
-                    .text_size(px(11.))
-                    .child("❄ FROZEN"),
-            );
+            chips.push(chip("Frozen", ui.sunken, ui.fg));
         }
         if self.text_hidden {
-            let orange = rgb(0xF57C00);
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(orange)
-                    .text_color(ink_on(orange))
-                    .text_size(px(11.))
-                    .child("📄 TEXT HIDDEN"),
-            );
+            chips.push(chip("Text hidden", ui.sunken, ui.fg));
         }
         if self.blank {
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(ui.selection)
-                    .text_color(ui.selection_ink)
-                    .text_size(px(11.))
-                    .child("● BASE SCREEN"),
-            );
+            chips.push(chip("Base screen", ui.fg, ui.bg));
         }
         chips
     }
@@ -11604,10 +11846,10 @@ impl Root {
         let ink = if armed { ui.selection_ink } else { ui.fg };
         let outline = engaged_outline(active, armed);
         let _ = icon;
-        div()
-            .w(px(30.))
-            .h(px(30.))
-            .rounded_sm()
+        let mut d = div()
+            .w(px(32.))
+            .h(px(32.))
+            .rounded(px(5.))
             .flex()
             .items_center()
             .justify_center()
@@ -11615,10 +11857,29 @@ impl Root {
             .border_1()
             .border_color(if armed { ui.selection } else { ui.border })
             .text_color(ink)
-            .text_size(px(14.))
+            .text_size(px(15.))
             .cursor_pointer()
-            .when(outline, |d| d.border_2().border_color(ui.selection))
-            .child(crate::ux::strip_glyph(action).to_string())
+            .child(crate::ux::strip_glyph(action).to_string());
+        if outline {
+            // Engaged: a 2px accent edge, drawn inside the existing border
+            // box so the column never reflows mid-service.
+            d = d.border_2().border_color(ui.selection);
+        } else if !armed {
+            d = d.hover(|s| s.bg(ui.hover));
+        }
+        let tip: &'static str = match action {
+            "next" => "Next slide (X)",
+            "base" => "Base screen — blank the wall (B)",
+            "text" => "Hide the lyrics, keep the background (T)",
+            "shield" => "Shield — browsing cannot move the live slide",
+            "freeze" => "Freeze — hold this slide while you browse",
+            "project" => "Project the selected item now",
+            _ => "Edit mode / viewer mode (Ctrl+E)",
+        };
+        d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+            cx.new(|_| TooltipLabel(tip.to_string())).into()
+        });
+        d
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, _w, cx| match action {
@@ -11659,36 +11920,12 @@ impl Root {
             };
             // The shield is the one state the original colours red.
             let armed = active && action == "shield";
-            let strip = UI {
-                bg: ui.bg,
-                fg: ui.fg,
-                panel: ui.panel,
-                border: ui.border,
-                accent: if armed { SHIELD_ARMED } else { ui.accent },
-                accent_ink: ink_on(if armed { SHIELD_ARMED } else { ui.accent }),
-                danger: ui.danger,
-                selection: ui.selection,
-                selection_ink: ui.selection_ink,
-                engaged: ui.engaged,
-                live: ui.live,
-                live_ink: ui.live_ink,
-            };
-            let button = Self::round_command(ui, &strip, cx, icon, active, armed, action, i);
-            // Dropdown affordance under the commands that have one.
-            let has_menu = !matches!(action, "project" | "mode");
-            col.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(button)
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(if has_menu { ui.fg } else { ui.bg })
-                            .child(if has_menu { "▾" } else { " " }),
-                    ),
-            );
+            let button = Self::round_command(ui, ui, cx, icon, active, armed, action, i);
+            // No dangling `▾` under every chip: the previous code drew an
+            // arrow that opened nothing. Each command now carries a hover
+            // tooltip instead, so the rail reads as seven commands, not
+            // seven dropdowns.
+            col.push(div().flex().flex_col().items_center().child(button));
         }
         div()
             .flex()
@@ -11813,7 +12050,7 @@ impl Root {
                 doc.update(cx, |d, cx| d.insert_at_cursor(&tag, cx));
             }));
         }
-        kids.push(btn(ui, cx, "[chord]", false, |this, _, _, cx| {
+        kids.push(btn(ui, cx, "Chord", false, |this, _, _, cx| {
             let doc = this.lyrics_doc.clone();
             doc.update(cx, |d, cx| d.insert_at_cursor("[]", cx));
         }));
@@ -11944,12 +12181,12 @@ impl Root {
             .flex()
             .flex_col()
             .gap_1()
-            .p(px(6.))
+            .p(px(8.))
             .min_w_0()
             .min_h_0()
             .flex_1()
             .overflow_hidden()
-            .rounded_sm()
+            .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
             .bg(ui.panel)
@@ -11963,13 +12200,13 @@ impl Root {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px(px(6.))
-                    .py(px(3.))
-                    .rounded_sm()
-                    .bg(ui.panel)
+                    .px(px(2.))
+                    .pb(px(3.))
+                    .border_b_1()
+                    .border_color(ui.border)
                     .text_color(ui.fg)
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(div().flex_1().child(format!(
                         "♪ {}{}",
                         if self.song_dirty { "*" } else { "" },
@@ -12149,7 +12386,7 @@ impl Root {
                                             cx.notify();
                                         },
                                     ))
-                                    .child(metadata_box(&summary)),
+                                    .child(metadata_box(ui, &summary)),
                             );
                         if open {
                             // Overlay, not in-flow: the editor panel clips at
@@ -12174,7 +12411,7 @@ impl Root {
                                     .border_1()
                                     .border_color(ui.border)
                                     .bg(ui.panel)
-                                    .child(metadata_box(&full)),
+                                    .child(metadata_box(ui, &full)),
                             );
                         }
                         col
@@ -13349,20 +13586,10 @@ fn main() {
                 .unwrap_or((1500., 950.));
             let (boot_w, boot_h) = clamp_boot_size((1500., 950.), avail);
             let bounds = Bounds::centered(None, size(px(boot_w), px(boot_h)), cx);
-            // OS chrome carries the agenda name, like the original's
-            // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
-            // Same agenda Root::build opens, so the two can never disagree.
-            let boot_title: String = {
-                let db = open_boot_db();
-                let (agenda, _) = boot_agenda_from_lib(&db);
-                if agenda.title.trim().is_empty() {
-                    "New agenda".to_string()
-                } else {
-                    agenda.title
-                }
-            };
-            let window_title: gpui::SharedString =
-                format!("{boot_title} - Perez RS").into();
+            // The OS title names the app only: the agenda name lives in the
+            // in-app signal strip, and printing it twice was the duplicate
+            // the review flagged. No boot DB read is needed for chrome.
+            let window_title: gpui::SharedString = "Perez RS".into();
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),

@@ -182,6 +182,7 @@ impl AssetSource for VpIconAssets {
 /// Test-only since the rail became theme-aware text chips (R-Rail): the
 /// rainbow SVGs stay as the manifest's reference artwork.
 #[cfg(test)]
+#[allow(dead_code)] // SVG art path kept for the asset pipeline; text glyphs render today
 pub fn art(icon_id: &str) -> gpui::Img {
     let path = asset_path(icon_id).unwrap_or_else(|| "icons/cmd-next.svg".to_string());
     gpui::img(path).w(px(20.)).h(px(20.))

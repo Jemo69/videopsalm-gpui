@@ -814,7 +814,7 @@ pub fn tool_strip() -> [(&'static str, &'static str); 7] {
 /// than baked into a rainbow SVG. Order and meaning match [`tool_strip`].
 pub fn strip_glyph(action: &str) -> &'static str {
     match action {
-        "next" => "▾",
+        "next" => "▸",
         "base" => "■",
         "text" => "T",
         "shield" => "⊘",
@@ -1291,19 +1291,19 @@ pub const CARET_BLINK_MS: u128 = 530;
 /// the ribbon layout code in `main.rs` and the chrome-budget test below, so
 /// inflating any band fails the test instead of silently taxing the editor
 /// height. All values are pixels.
-pub const RIBBON_TEXT_PX: f32 = 10.5;
-pub const RIBBON_BTN_PY: f32 = 0.0;
-pub const RIBBON_BTN_PX: f32 = 1.5;
-pub const RIBBON_TAB_PY: f32 = 0.5;
-pub const RIBBON_OUTER_PY: f32 = 0.5;
-pub const RIBBON_BAND_GAP: f32 = 0.0;
-pub const RIBBON_GROUP_PY: f32 = 0.5;
-pub const RIBBON_GROUP_PX: f32 = 2.0;
-pub const RIBBON_WRAP_GAP: f32 = 2.0;
-/// Line box of an 10.5px control row, borders included (≈13px box). The
+pub const RIBBON_TEXT_PX: f32 = 12.0;
+pub const RIBBON_BTN_PY: f32 = 1.0;
+pub const RIBBON_BTN_PX: f32 = 4.0;
+pub const RIBBON_TAB_PY: f32 = 2.0;
+pub const RIBBON_OUTER_PY: f32 = 2.0;
+pub const RIBBON_BAND_GAP: f32 = 2.0;
+pub const RIBBON_GROUP_PY: f32 = 2.0;
+pub const RIBBON_GROUP_PX: f32 = 4.0;
+pub const RIBBON_WRAP_GAP: f32 = 6.0;
+/// Line box of a 12px control row, borders included (≈16px box). The
 /// chrome budget (≤160px of bands, panes from y190) is pinned by
 /// `control_window_chrome_stays_compact` below.
-pub const RIBBON_LINE_PX: f32 = 13.0;
+pub const RIBBON_LINE_PX: f32 = 16.0;
 
 /// Estimated height of one ribbon: the tab band plus one wrapped band of
 /// groups whose tallest column holds `control_lines` control rows of
@@ -1328,13 +1328,15 @@ mod tests {
 
     #[test]
     fn ribbon_chrome_stays_inside_the_density_budget() {
-        // VP1.29 density: 10.5px controls, tabs merged into the groups
-        // band, one wrapped band ≈ 100-124px of total chrome. The budget
-        // must hold for the worst planned group shape (2 stacked control
-        // rows per group: dropdown row + preset row), one band.
-        assert!(RIBBON_TEXT_PX <= 11.0);
-        assert!(RIBBON_BTN_PY <= 1.0);
-        assert!(RIBBON_TAB_PY <= 1.0);
+        // VP1.29 density with a readable control size: 12px glyphs in a
+        // 16px line box, tabs merged into the groups band, one wrapped
+        // band ≈ 85-110px of total chrome. The budget must hold for the
+        // worst planned group shape (2 stacked control rows per group:
+        // dropdown row + preset row), one band.
+        assert!(RIBBON_TEXT_PX <= 12.5);
+        assert!(RIBBON_BTN_PY <= 1.5);
+        // 2px tab padding is the touch-height floor for a 12px label.
+        assert!(RIBBON_TAB_PY <= 2.0);
         let total = ribbon_chrome_budget(2.0);
         assert!(
             total <= 110.0,

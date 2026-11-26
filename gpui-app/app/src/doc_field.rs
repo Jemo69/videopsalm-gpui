@@ -108,6 +108,13 @@ pub struct DocField {
     /// True between left-button down and up: mouse moves extend the
     /// selection (drag-select), cleared on release *anywhere*.
     is_selecting: bool,
+    /// Page surface + ink + borders. Defaults are the light paper page;
+    /// `Root` retunes them from the active skin so a dark room gets a dark
+    /// writing surface instead of a white slab.
+    pub surface: gpui::Rgba,
+    pub ink: gpui::Rgba,
+    pub line: gpui::Rgba,
+    pub focus_line: gpui::Rgba,
 }
 
 impl EventEmitter<DocChanged> for DocField {}
@@ -123,6 +130,29 @@ impl DocField {
             selection_reversed: false,
             last_bounds: None,
             is_selecting: false,
+            surface: rgb(0xFFFFFF),
+            ink: rgb(0x18181B),
+            line: rgb(0xCCCCCC),
+            focus_line: rgb(0x2A5DB0),
+        }
+    }
+
+    /// Retune the page surface to the active skin (called from
+    /// `Root::republish`, which every theme change already runs).
+    pub fn set_surface(
+        &mut self,
+        surface: gpui::Rgba,
+        ink: gpui::Rgba,
+        line: gpui::Rgba,
+        focus_line: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) {
+        if self.surface != surface || self.ink != ink || self.line != line {
+            self.surface = surface;
+            self.ink = ink;
+            self.line = line;
+            self.focus_line = focus_line;
+            cx.notify();
         }
     }
 
@@ -931,16 +961,10 @@ impl Render for DocField {
             .p(px(8.))
             .rounded_sm()
             .border_2()
-            .border_color(if focused {
-                rgb(0x2A5DB0)
-            } else {
-                rgb(0xCCCCCC)
-            })
-            .bg(rgb(0xFFFFFF))
-            // Hardcoded dark ink: the document surface is white in every
-            // theme, so inheriting the theme foreground would put near-white
-            // text on white.
-            .text_color(rgb(0x18181B))
+            .border_color(if focused { self.focus_line } else { self.line })
+            .bg(self.surface)
+            // Page ink is paired with the page surface, never inherited.
+            .text_color(self.ink)
             .text_size(px(self.text_px))
             // Line box tracks the zoom: a fixed height clips descenders
             // and overlaps lines once A+ pushes past 20px text.
@@ -979,7 +1003,12 @@ impl Render for DocField {
                     placeholder.to_string().into_any_element()
                 };
                 vec![div()
-                    .text_color(hsla(0., 0., 0., 0.4))
+                    .text_color(gpui::Rgba {
+                        r: self.ink.r,
+                        g: self.ink.g,
+                        b: self.ink.b,
+                        a: 0.45,
+                    })
                     .child(hint)]
             } else {
                 content

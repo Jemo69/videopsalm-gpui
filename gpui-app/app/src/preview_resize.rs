@@ -45,7 +45,7 @@
 
 use gpui::{
     App, Context, DefiniteLength, Div, DragMoveEvent, MouseButton, Point, Render, Window, div,
-    prelude::*, px, rgb,
+    prelude::*, px, rgb, rgba,
 };
 use vp_core::geometry::{FitMode, Viewport, resolve_percent};
 use vp_core::schema::{NORMALIZED_SPACE, Rect, Style};
@@ -402,27 +402,39 @@ impl crate::Root {
     pub fn preview_surface(&mut self, ui: &crate::UI, cx: &mut Context<Self>, body: Div) -> Div {
         let frame = self.frame_sel;
         let fbox = frame_fractions(self.current_frame_rect());
+        let frames_on = self.frames_on;
 
+        // Frame editing is a mode, not permanent chrome: the selector and the
+        // eight drag handles only exist while the operator is adjusting the
+        // frame. An idle preview shows the output alone (R-REVIEW P0.3).
         let mut selector = div().flex().flex_row().gap_1().items_center();
-        for f in FrameId::ALL {
-            let active = f == frame;
-            let mut b = div()
-                .px_2()
-                .py_1()
-                .rounded_sm()
-                .text_size(px(11.))
-                .cursor_pointer()
-                .child(f.label().to_string());
-            b = if active {
-                b.bg(ui.accent).text_color(ui.accent_ink)
-            } else {
-                b.bg(ui.panel).text_color(ui.accent)
-            };
-            b = b.on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _ev, _win, cx| this.select_frame(cx, f)),
-            );
-            selector = selector.child(b);
+        if frames_on {
+            for f in FrameId::ALL {
+                let active = f == frame;
+                let mut b = div()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .text_size(px(11.))
+                    .cursor_pointer()
+                    .child(f.label().to_string());
+                b = if active {
+                    b.border_color(ui.fg)
+                        .bg(ui.hover)
+                        .text_color(ui.fg)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                } else {
+                    b.border_color(rgba(0x00000000))
+                        .text_color(ui.muted)
+                        .hover(|s| s.bg(ui.hover))
+                };
+                b = b.on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _ev, _win, cx| this.select_frame(cx, f)),
+                );
+                selector = selector.child(b);
+            }
         }
 
         let ghost = self.drag_ghost.clone();
@@ -439,7 +451,7 @@ impl crate::Root {
             .w(DefiniteLength::Fraction(fbox.w))
             .h(DefiniteLength::Fraction(fbox.h))
             .border_1()
-            .border_color(ui.accent)
+            .border_color(rgba(0xFFFFFF66))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
@@ -453,42 +465,100 @@ impl crate::Root {
                       _cx: &mut App| ghost.clone(),
             );
 
-        let mut body = body
-            .relative()
-            .on_drag_move::<FrameHandle>(cx.listener(|this, ev, _win, cx| {
-                this.frame_drag_move(cx, ev);
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _ev, _win, cx| {
-                    this.frame_drag_end(cx);
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _ev, _win, cx| {
-                    this.frame_drag_end(cx);
-                }),
-            )
-            .child(outline);
-        for h in FrameHandle::ALL {
-            // The Move outline is already a child (added above); the loop
-            // lays the 8 edge/corner handles over it — later siblings
-            // hit-test first, so handles stay grabbable on the outline.
-            if h == FrameHandle::Move {
-                continue;
+        let mut body = body.relative();
+        if frames_on {
+            body = body
+                .on_drag_move::<FrameHandle>(cx.listener(|this, ev, _win, cx| {
+                    this.frame_drag_move(cx, ev);
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _win, cx| {
+                        this.frame_drag_end(cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _win, cx| {
+                        this.frame_drag_end(cx);
+                    }),
+                )
+                .child(outline);
+            for h in FrameHandle::ALL {
+                // The Move outline is already a child (added above); the loop
+                // lays the 8 edge/corner handles over it — later siblings
+                // hit-test first, so handles stay grabbable on the outline.
+                if h == FrameHandle::Move {
+                    continue;
+                }
+                body = body.child(self.frame_handle(ui, cx, h, fbox));
             }
-            body = body.child(self.frame_handle(ui, cx, h, fbox));
         }
 
-        div()
+        // Transport on the object it controls (RESEARCH P-11): prev/next,
+        // the live slide position, and a 2px progress rule. Buttons call the
+        // same handlers as the keyboard map; the rule is static (no motion to
+        // reduce).
+        let total = self.projector_slides().len();
+        let cur = self.projector_slide_index();
+        let frac = if total == 0 {
+            0.0
+        } else {
+            ((cur + 1) as f32 / total as f32).clamp(0.0, 1.0)
+        };
+        let transport = div()
             .flex()
-            .flex_col()
-            .gap_1()
-            .flex_1()
-            .min_h_0()
-            .child(selector)
-            .child(body)
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .pt(px(2.))
+            .child(crate::btn(ui, cx, "‹ Prev", false, |this, _, _, cx| {
+                this.prev_slide(cx);
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(2.))
+                    .rounded_full()
+                    .bg(ui.border)
+                    .child(
+                        div()
+                            .h(px(2.))
+                            .w(DefiniteLength::Fraction(frac))
+                            .rounded_full()
+                            .bg(ui.accent),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(ui.muted)
+                    .child(if total == 0 {
+                        "0 / 0".to_string()
+                    } else {
+                        format!("{} / {}", cur + 1, total)
+                    }),
+            )
+            .child(crate::btn(ui, cx, "Next ›", false, |this, _, _, cx| {
+                this.next_slide(cx);
+            }))
+            .child(crate::btn(
+                ui,
+                cx,
+                if frames_on { "Done ▴" } else { "Adjust frames" },
+                frames_on,
+                |this, _, _, cx| {
+                    this.frames_on = !this.frames_on;
+                    this.frame_drag = None;
+                    cx.notify();
+                },
+            ));
+
+        let mut surface = div().flex().flex_col().gap_1().flex_1().min_h_0();
+        if frames_on {
+            surface = surface.child(selector);
+        }
+        surface.child(body).child(transport)
     }
 
     /// One corner/edge handle, positioned by fraction over the slide body.
@@ -496,7 +566,7 @@ impl crate::Root {
     /// padding box; the -6 px margins centre the 12 px disc on its anchor.
     fn frame_handle(
         &self,
-        ui: &crate::UI,
+        _ui: &crate::UI,
         cx: &mut Context<Self>,
         handle: FrameHandle,
         fbox: FrameBox,
@@ -515,7 +585,7 @@ impl crate::Root {
             .rounded_full()
             .bg(rgb(0xFFFFFF))
             .border_1()
-            .border_color(ui.accent)
+            .border_color(rgb(0x6B6B6B))
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,

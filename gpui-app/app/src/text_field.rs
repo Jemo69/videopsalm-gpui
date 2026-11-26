@@ -14,7 +14,7 @@ use gpui::{
     Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window,
-    actions, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, white,
+    actions, div, fill, point, prelude::*, px, relative, rgb, rgba,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -83,6 +83,13 @@ pub struct TextField {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// Field surface + ink + borders, retuned from the active skin by
+    /// `Root::sync_doc_surface`. Defaults are the light look.
+    surface: gpui::Rgba,
+    ink: gpui::Rgba,
+    line: gpui::Rgba,
+    focus_line: gpui::Rgba,
+    muted_ink: gpui::Rgba,
 }
 
 impl EventEmitter<Changed> for TextField {}
@@ -99,6 +106,31 @@ impl TextField {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            surface: rgb(0xFFFFFF),
+            ink: rgb(0x18181B),
+            line: rgb(0x888888),
+            focus_line: rgb(0x2A5DB0),
+            muted_ink: rgba(0x00000059),
+        }
+    }
+
+    /// Retune the field to the active skin (same hook as the lyrics page).
+    pub fn set_surface(
+        &mut self,
+        surface: gpui::Rgba,
+        ink: gpui::Rgba,
+        line: gpui::Rgba,
+        focus_line: gpui::Rgba,
+        muted_ink: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) {
+        if self.surface != surface || self.ink != ink || self.line != line {
+            self.surface = surface;
+            self.ink = ink;
+            self.line = line;
+            self.focus_line = focus_line;
+            self.muted_ink = muted_ink;
+            cx.notify();
         }
     }
 
@@ -567,7 +599,7 @@ impl Element for TextElement {
         let selected_range = input.selected_range.clone();
         let style = window.text_style();
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 0., 0.35))
+            (input.placeholder.clone(), input.muted_ink.into())
         } else {
             (content, style.color)
         };
@@ -739,20 +771,21 @@ impl Render for TextField {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .line_height(px(26.))
-            .text_size(px(15.))
+            .text_size(px(13.5))
             .child(
                 div()
                     .w_full()
                     .px_1()
                     .py(px(2.))
-                    .rounded_sm()
+                    .rounded(px(4.))
                     .border_1()
-                    .border_color(rgb(0x888888))
-                    .bg(white())
-                    // The field surface is hardcoded white (v1 look), so the
-                    // ink must be hardcoded dark — inheriting the theme fg
-                    // paints near-white text on this white field.
-                    .text_color(rgb(0x18181B))
+                    .border_color(if self.focus_handle.is_focused(window) {
+                        self.focus_line
+                    } else {
+                        self.line
+                    })
+                    .bg(self.surface)
+                    .text_color(self.ink)
                     .child(
                         div()
                             .relative()
