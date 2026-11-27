@@ -175,6 +175,34 @@ After: `after-light-1576.png`, `after-dark-1576.png`, `after-light-1366.png`.
   (icon + name + count); song rows are icon + title with 6px indent. The song
   list now starts roughly 100px higher and reads as the pane's content.
 
+## Windows preview build fixes (user test of e6dd39b)
+
+- **Agenda density + missing song.** Rows tightened (py1, title/meta gap 0),
+  the recents line is one-line and capped, File row stays compact. The sample
+  agenda's `Website Demo` referenced a bundled song that was never seeded;
+  `website-demo.json` is now a third boot sample (`upsert_song_if_absent`, so
+  existing libraries gain it too). Evidence: `state-website-demo.png` shows
+  "M · 2 verses · 4 slides", not "missing from library".
+- **Create New Song crash.** Could not reproduce on Linux (normal + clean
+  profile); hardened anyway: selection resolves by id, a stale index is a quiet
+  status instead of an index, and two regression tests cover the sample/agenda
+  contract and the empty-verse -> document -> verses round trip. If it recurs,
+  the Windows panic is written to `videopsalm-debug.log` next to the exe.
+- **Default + new song selection.** Boot opens the first library song (editor
+  and sidebar selected); `create_song` clears the query, scopes the browser to
+  the new song's book, resolves by id, selects it and scrolls to the bottom so
+  the highlighted row is visible. Evidence: `state-boot-video.png`,
+  `state-new-song.png`.
+- **Windows video preview.** Motion only started in `push_projection`, so the
+  preview stayed a black tile until Go live. `start_preview_background` now
+  starts the assigned video loop (poster + motion) at boot and on background
+  assign, independent of projection. Pump quality raised from 960px/8fps to
+  1280px/24fps (vp-core `MotionPump`; shared with the Electron target) and JPEG
+  quality 5 -> 3. Preview body is clipped above the transport so frames no
+  longer paint under Prev/Next.
+- Preview transport label shortened to `Frames` so it fits a 250px column at
+  1366 (was "Adjust fram").
+
 ## Verification
 
 - `cargo test --workspace`: app **223** + vp-core 255 + misc 5 = **483 passed,

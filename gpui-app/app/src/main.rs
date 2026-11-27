@@ -122,6 +122,7 @@ actions!(
 
 const SONG_A: &str = include_str!("../../assets/samples/songs/amazing-grace.json");
 const SONG_B: &str = include_str!("../../assets/samples/songs/holy-holy-chords.json");
+const SONG_WEB: &str = include_str!("../../assets/samples/songs/website-demo.json");
 const BIBLE_EN: &str = include_str!("../../assets/samples/bible/sample-bible-en.json");
 const BIBLE_FR: &str = include_str!("../../assets/samples/bible/sample-bible-fr.json");
 const AGENDA_SAMPLE: &str = include_str!("../../assets/samples/agenda/sample-agenda.json");
@@ -232,7 +233,7 @@ const ENGAGED: Rgba = Rgba {
 
 /// In-app video motion rate: silent piped stills/sec at 960px wide. The tick
 /// polls at the same cadence; higher reads smoother but republishes more.
-const MOTION_FPS: u32 = 8;
+const MOTION_FPS: u32 = 24;
 
 /// Signal red: selected agenda item + primary buttons (perez-sheet.html
 /// brand layer). Projection-surface blue cue is unchanged).
@@ -1122,7 +1123,7 @@ impl Root {
         locales.insert("en".to_string(), Locale::load("en", LOCALE_EN).unwrap());
         locales.insert("fr".to_string(), Locale::load("fr", LOCALE_FR).unwrap());
 
-        let songs: Vec<Song> = [SONG_A, SONG_B]
+        let songs: Vec<Song> = [SONG_A, SONG_B, SONG_WEB]
             .iter()
             .map(|s| serde_json::from_str(s).unwrap())
             .collect();
@@ -1795,6 +1796,19 @@ impl Root {
                 this.status = format!("{} — {note}", this.status);
             }
         }
+        // Default working song: open the first library song on boot so the
+        // operator starts from a document, not an empty editor. A persisted
+        // selection/agenda is respected; this only fills the blank state.
+        let q = this.search_field.read(cx).text();
+        this.refresh_search(&q, cx);
+        if this.sel_song.is_none() {
+            if let Some(idx) = this.results.first().copied() {
+                this.select_song(cx, idx);
+            }
+        }
+        // Preview/background motion starts with the window, not only after
+        // Go live: the operator must see the video before pressing anything.
+        this.start_preview_background(cx);
         this
     }
 
@@ -3312,6 +3326,25 @@ impl Root {
         was
     }
 
+    /// Start the assigned video-loop background for the CONTROL PREVIEW,
+    /// independent of projection. Before this, motion only started inside
+    /// `push_projection`, so the preview stayed a black tile until the
+    /// operator pressed Go live (the Windows report).
+    pub(crate) fn start_preview_background(&mut self, cx: &mut Context<Self>) {
+        if self.bg_kind != BackgroundKind::VideoLoop || self.live_item.is_some() {
+            return;
+        }
+        let Some(path) = self.bg_file.clone().filter(|p| p.exists()) else {
+            return;
+        };
+        self.ensure_video_poster(&path);
+        if !self.ensure_motion_for(cx, &path, true) {
+            // No decoder: the poster still stands, and projection will
+            // retry through its own path.
+            self.stop_motion();
+        }
+    }
+
     /// Play `path` in-app — ffmpeg pipe first (unchanged when it works),
     /// in-house H.264 decoder when ffmpeg is missing or fails. True =
     /// motion running (caller marks launched); false = caller falls back
@@ -4084,8 +4117,18 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             );
             return;
         }
+        let Some(song) = self.songs.get(idx).cloned() else {
+            // Stale index after a list rebuild: fail quiet, never panic.
+            self.set_status(cx, "That song is no longer in the library.");
+            return;
+        };
         self.sel_song = Some(idx);
-        if let Some(song) = self.songs.get(idx).cloned() {
+        // Keep the selected row visible in the browser list (it can be below
+        // the fold when the list is long or the user just created it).
+        if let Some(pos) = self.results.iter().position(|&i| i == idx) {
+            self.scroll_songs.scroll_to_item(pos);
+        }
+        if let Some(song) = Some(song) {
             let doc = lyrics_doc::document_from_verses(&song.verses);
             self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
             self.sync_song_meta_fields(cx);
@@ -4617,16 +4660,33 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             ..Default::default()
         };
         let title = song.title.clone();
+        let song_id = song.id.clone();
+        let book_scope = song.songbook_id.clone();
         if vp_core::library::upsert_song(&self.db, &song).is_err() {
             self.set_status(cx, "Could not save the new song.");
             return;
         }
         self.songs.push(song);
-        let idx = self.songs.len() - 1;
-        self.songbook_filter = None;
-        let q = self.search_field.read(cx).text();
-        self.refresh_search(&q, cx);
+        // Resolve by id, not `len - 1`: the library list can be reloaded or
+        // reordered between the push and the selection.
+        let Some(idx) = self.songs.iter().position(|s| s.id == song_id) else {
+            self.set_status(cx, "New song was saved but could not be selected.");
+            return;
+        };
+        // Make the new row visible: clear the query and scope the browser to
+        // its songbook (falling back to all songs if the scope is empty).
+        self.search_field
+            .update(cx, |field, cx| field.set_text("", cx));
+        self.songbook_filter = Some(book_scope);
+        self.refresh_search("", cx);
+        if !self.results.contains(&idx) {
+            self.songbook_filter = None;
+            self.refresh_search("", cx);
+        }
         self.select_song(cx, idx);
+        // A brand-new song is appended to the scoped list; scroll to the
+        // end so its selected row is on screen immediately.
+        self.scroll_songs.scroll_to_bottom();
         self.set_status(
             cx,
             format!("{title} created — type the lyrics, then project it."),
@@ -9880,7 +9940,6 @@ impl Root {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
                     .child(
                         div()
                             .text_size(px(13.5))
@@ -9904,7 +9963,7 @@ impl Root {
                     .gap_1()
                     .items_center()
                     .px(px(5.))
-                    .py(px(3.))
+                    .py(px(1.))
                     .rounded(px(4.))
                     .border_1()
                     .border_color(if live {
@@ -10248,12 +10307,22 @@ impl Root {
         } else {
             Vec::new()
         };
+        // Keep the File row one line even with a long recents list: the
+        // agenda's height is worth more than the tail of a path.
+        let recents = {
+            let mut s: String = recents.chars().take(42).collect();
+            if s.chars().count() < recents.chars().count() {
+                s.push('…');
+            }
+            s
+        };
         let file_row = row_wrap(vec![
             file_disclosure,
             div()
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
+                .whitespace_nowrap()
                 .text_size(px(11.))
                 .text_color(ui.muted)
                 .child(format!("Recent: {recents}")),
@@ -13598,6 +13667,9 @@ impl Root {
         self.bg_kind = BackgroundKind::Color;
         self.bg_website = None;
         self.bg_file = None;
+        if self.live_item.is_none() {
+            self.stop_motion();
+        }
         self.persist_layout_quiet();
         crate::presentation::publish(self, cx);
         self.set_status(cx, "Website background removed — plain color.");
@@ -14217,6 +14289,58 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_samples_cover_every_song_referenced_by_the_sample_agenda() {
+        // Regression: "Website Demo" was in the sample agenda but not seeded
+        // at boot, so the row read "Song · missing from library".
+        let songs: Vec<Song> = [SONG_A, SONG_B, SONG_WEB]
+            .iter()
+            .map(|s| serde_json::from_str(s).expect("sample song parses"))
+            .collect();
+        let agenda = Agenda::from_json(AGENDA_SAMPLE).expect("sample agenda parses");
+        for item in &agenda.items {
+            if let ItemRef::Song { song_id } = &item.reference {
+                assert!(
+                    songs.iter().any(|s| &s.id == song_id),
+                    "agenda references {song_id} but no bundled sample provides it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_song_payload_round_trips_through_the_editor() {
+        // The create path: empty verse -> document -> back to verses, then
+        // index resolution by id (never by `len - 1`). Guards the Windows
+        // "create crashed" report against a data/panic regression.
+        let song = Song {
+            id: "local:1".to_string(),
+            title: "New song".to_string(),
+            songbook_id: "local-book:my-songs".to_string(),
+            verses: vec![vp_core::schema::SongVerse {
+                id: "V1".to_string(),
+                lines: vec![String::new()],
+                order: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let doc = lyrics_doc::document_from_verses(&song.verses);
+        // A brand-new song opens an EMPTY document (placeholder visible);
+        // the first keystroke creates verse 1 with the existing id.
+        assert!(doc.is_empty());
+        let back = lyrics_doc::verses_from_document("Amazing grace", &song.verses);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, "V1");
+        let songs = vec![song];
+        let idx = songs
+            .iter()
+            .position(|s| s.id == "local:1")
+            .expect("new song must resolve by id");
+        assert_eq!(idx, 0);
+        assert!(songs.get(1).is_none(), "out-of-range guard stays quiet");
+    }
 
     #[test]
     fn chrome_type_scale_holds_only_the_four_agreed_steps() {

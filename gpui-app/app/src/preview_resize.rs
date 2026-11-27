@@ -465,7 +465,11 @@ impl crate::Root {
                       _cx: &mut App| ghost.clone(),
             );
 
-        let mut body = body.relative();
+        // The output body must not bleed under the transport: the live
+        // background layer is absolute/size_full, and a flex column will let
+        // it paint past its slot without this clip (seen with a playing
+        // video background).
+        let mut body = body.relative().min_h_0().overflow_hidden();
         if frames_on {
             body = body
                 .on_drag_move::<FrameHandle>(cx.listener(|this, ev, _win, cx| {
@@ -542,10 +546,13 @@ impl crate::Root {
             .child(crate::btn(ui, cx, "Next ›", false, |this, _, _, cx| {
                 this.next_slide(cx);
             }))
-            .child(crate::btn(
+            // "Frames" not "Adjust frames": the label clipped on a 250px
+            // preview column at 1366, and the tooltip carries the full verb.
+            .child(crate::btn_tip(
                 ui,
                 cx,
-                if frames_on { "Done ▴" } else { "Adjust frames" },
+                if frames_on { "Done" } else { "Frames" },
+                "Adjust the preview frames (body / header / footer)",
                 frames_on,
                 |this, _, _, cx| {
                     this.frames_on = !this.frames_on;
