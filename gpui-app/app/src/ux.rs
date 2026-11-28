@@ -259,6 +259,37 @@ pub fn video_item_file(item: &AgendaItem) -> Option<(String, PathBuf)> {
         _ => None,
     }
 }
+/// Status-line path: keep the end of the path and elide the middle, so a
+/// 60-character media path does not push the shortcut hints off a 1366px
+/// status bar (and does not wrap it onto a second line). Always keeps the
+/// file name whole; `…/parent/file.mp4` is the shape when the path is long.
+/// Pure, so the elision contract is testable.
+pub fn shorten_path(path: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    let Some(slash) = path.rfind('/') else {
+        return path.to_string();
+    };
+    if chars.len() <= max_chars || max_chars < 8 {
+        return path.to_string();
+    }
+    // Keep the file name and as much of its parent as fits after `…/`.
+    let name = &path[slash + 1..];
+    let parent = &path[..slash];
+    let budget = max_chars.saturating_sub(2 + name.chars().count() + 1); // "…/" + "/"
+    let parent: String = parent
+        .rsplit('/')
+        .next()
+        .unwrap_or(parent)
+        .chars()
+        .take(budget)
+        .collect();
+    if parent.is_empty() {
+        format!("…/{name}")
+    } else {
+        format!("…/{parent}/{name}")
+    }
+}
+
 /// One-line verse-order summary for the collapsed disclosure: the full
 /// list when it fits, `first 5 … (N verses)` for long medleys (pure so
 /// the collapse contract is unit-testable).
@@ -812,9 +843,10 @@ pub fn tool_strip() -> [(&'static str, &'static str); 7] {
 /// Display glyph for a strip command (Signal Room language): the rail is a
 /// column of theme-aware chips, so the mark is drawn in the theme ink rather
 /// than baked into a rainbow SVG. Order and meaning match [`tool_strip`].
+#[cfg_attr(not(test), allow(dead_code))] // kept as the text fallback/metadata for tests; the rail now renders SVG art
 pub fn strip_glyph(action: &str) -> &'static str {
     match action {
-        "next" => "▾",
+        "next" => "▸",
         "base" => "■",
         "text" => "T",
         "shield" => "⊘",
@@ -1121,6 +1153,11 @@ pub struct LayoutPrefs {
     pub projector_on: bool,
     #[serde(default)]
     pub show_style_explorer: bool,
+    /// Reduce motion (caret blink and future UI transitions). Off by
+    /// default; the operator's choice survives restart. Projection slide
+    /// transitions stay explicit per-item choices.
+    #[serde(default)]
+    pub reduced_motion: bool,
     /// The keyboard reference panel inside the slide panel. Off by default:
     /// UX-RESEARCH §10.2 says the slide panel is a list of slide rows and
     /// nothing else, and the original reaches the same help via contextual
@@ -1205,7 +1242,10 @@ fn d_aspect_ratio() -> String {
 impl Default for LayoutPrefs {
     fn default() -> Self {
         LayoutPrefs {
-            theme_id: "light".to_string(),
+            // Dim-booth default (PRODUCT principle 5): a control room should
+            // not open as a 71%-white screen. Light stays one click away and
+            // a persisted choice always wins.
+            theme_id: "dark".to_string(),
             lang: "en".to_string(),
             ribbon: "agenda".to_string(),
             accent_override: None,
@@ -1237,6 +1277,7 @@ impl Default for LayoutPrefs {
             viewer_mode: false,
             projector_on: true,
             show_style_explorer: false,
+            reduced_motion: false,
             show_shortcuts: false,
             excluded_books: Vec::new(),
             hidden_books: Vec::new(),
@@ -1291,19 +1332,19 @@ pub const CARET_BLINK_MS: u128 = 530;
 /// the ribbon layout code in `main.rs` and the chrome-budget test below, so
 /// inflating any band fails the test instead of silently taxing the editor
 /// height. All values are pixels.
-pub const RIBBON_TEXT_PX: f32 = 10.5;
-pub const RIBBON_BTN_PY: f32 = 0.0;
-pub const RIBBON_BTN_PX: f32 = 1.5;
-pub const RIBBON_TAB_PY: f32 = 0.5;
-pub const RIBBON_OUTER_PY: f32 = 0.5;
-pub const RIBBON_BAND_GAP: f32 = 0.0;
-pub const RIBBON_GROUP_PY: f32 = 0.5;
-pub const RIBBON_GROUP_PX: f32 = 2.0;
-pub const RIBBON_WRAP_GAP: f32 = 2.0;
-/// Line box of an 10.5px control row, borders included (≈13px box). The
+pub const RIBBON_TEXT_PX: f32 = 12.0;
+pub const RIBBON_BTN_PY: f32 = 1.0;
+pub const RIBBON_BTN_PX: f32 = 4.0;
+pub const RIBBON_TAB_PY: f32 = 2.0;
+pub const RIBBON_OUTER_PY: f32 = 2.0;
+pub const RIBBON_BAND_GAP: f32 = 2.0;
+pub const RIBBON_GROUP_PY: f32 = 2.0;
+pub const RIBBON_GROUP_PX: f32 = 4.0;
+pub const RIBBON_WRAP_GAP: f32 = 4.0;
+/// Line box of a 12px control row, borders included (≈16px box). The
 /// chrome budget (≤160px of bands, panes from y190) is pinned by
 /// `control_window_chrome_stays_compact` below.
-pub const RIBBON_LINE_PX: f32 = 13.0;
+pub const RIBBON_LINE_PX: f32 = 16.0;
 
 /// Estimated height of one ribbon: the tab band plus one wrapped band of
 /// groups whose tallest column holds `control_lines` control rows of
@@ -1327,14 +1368,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_path_keeps_the_file_name_and_elides_the_middle() {
+        // A long media path must not push the shortcut hints off the status
+        // bar. The file name always survives whole; the elision is `…/`.
+        let long = "/home/jemo/.local/share/videopsalm/Media/Videos/Egon_Cool_Rainbow_Lines_Plus_4k (2).mp4";
+        let short = shorten_path(long, 58);
+        assert!(short.chars().count() <= 58, "{short}");
+        assert!(short.contains("Egon_Cool_Rainbow_Lines_Plus_4k (2).mp4"));
+        assert!(short.starts_with("…/"));
+        assert!(!short.contains("/home/jemo/.local"));
+        // Short paths are untouched; a path with no separator is untouched.
+        assert_eq!(shorten_path("Egon.mp4", 58), "Egon.mp4");
+        assert_eq!(shorten_path("no-separator-here", 4), "no-separator-here");
+        // Non-ASCII parents must not panic on the byte slice.
+        let _ = shorten_path("/home/é/µsique/très_long_nom_de_fichier_à_lire.mp4", 20);
+    }
+
+    #[test]
     fn ribbon_chrome_stays_inside_the_density_budget() {
-        // VP1.29 density: 10.5px controls, tabs merged into the groups
-        // band, one wrapped band ≈ 100-124px of total chrome. The budget
-        // must hold for the worst planned group shape (2 stacked control
-        // rows per group: dropdown row + preset row), one band.
-        assert!(RIBBON_TEXT_PX <= 11.0);
-        assert!(RIBBON_BTN_PY <= 1.0);
-        assert!(RIBBON_TAB_PY <= 1.0);
+        // VP1.29 density with a readable control size: 12px glyphs in a
+        // 16px line box, tabs merged into the groups band, one wrapped
+        // band ≈ 85-110px of total chrome. The budget must hold for the
+        // worst planned group shape (2 stacked control rows per group:
+        // dropdown row + preset row), one band.
+        assert!(RIBBON_TEXT_PX <= 12.5);
+        assert!(RIBBON_BTN_PY <= 1.5);
+        // 2px tab padding is the touch-height floor for a 12px label.
+        assert!(RIBBON_TAB_PY <= 2.0);
         let total = ribbon_chrome_budget(2.0);
         assert!(
             total <= 110.0,
@@ -1452,7 +1512,7 @@ mod tests {
     #[test]
     fn layout_prefs_defaults_match_app_boot() {
         let p = LayoutPrefs::default();
-        assert_eq!(p.theme_id, "light");
+        assert_eq!(p.theme_id, "dark");
         assert_eq!(p.lang, "en");
         assert_eq!(p.max_lines, 4);
         assert_eq!(p.max_chars, 40);

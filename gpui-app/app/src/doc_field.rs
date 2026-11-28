@@ -108,6 +108,15 @@ pub struct DocField {
     /// True between left-button down and up: mouse moves extend the
     /// selection (drag-select), cleared on release *anywhere*.
     is_selecting: bool,
+    /// Page surface + ink + borders. Defaults are the light paper page;
+    /// `Root` retunes them from the active skin so a dark room gets a dark
+    /// writing surface instead of a white slab.
+    pub surface: gpui::Rgba,
+    pub ink: gpui::Rgba,
+    pub line: gpui::Rgba,
+    pub focus_line: gpui::Rgba,
+    /// Reduce Motion: caret renders solid instead of blinking.
+    pub reduced_motion: bool,
 }
 
 impl EventEmitter<DocChanged> for DocField {}
@@ -123,6 +132,37 @@ impl DocField {
             selection_reversed: false,
             last_bounds: None,
             is_selecting: false,
+            surface: rgb(0xFFFFFF),
+            ink: rgb(0x18181B),
+            line: rgb(0xCCCCCC),
+            focus_line: rgb(0x2A5DB0),
+            reduced_motion: false,
+        }
+    }
+
+    pub fn set_reduced_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.reduced_motion != on {
+            self.reduced_motion = on;
+            cx.notify();
+        }
+    }
+
+    /// Retune the page surface to the active skin (called from
+    /// `Root::republish`, which every theme change already runs).
+    pub fn set_surface(
+        &mut self,
+        surface: gpui::Rgba,
+        ink: gpui::Rgba,
+        line: gpui::Rgba,
+        focus_line: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) {
+        if self.surface != surface || self.ink != ink || self.line != line {
+            self.surface = surface;
+            self.ink = ink;
+            self.line = line;
+            self.focus_line = focus_line;
+            cx.notify();
         }
     }
 
@@ -896,6 +936,9 @@ impl Render for DocField {
             .flex()
             .flex_col()
             .flex_1()
+            // Fill the document well: a content-height page left ~200px of
+            // empty pane below it and broke the 340px sheet contract.
+            .h_full()
             .key_context("DocField")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
@@ -931,16 +974,10 @@ impl Render for DocField {
             .p(px(8.))
             .rounded_sm()
             .border_2()
-            .border_color(if focused {
-                rgb(0x2A5DB0)
-            } else {
-                rgb(0xCCCCCC)
-            })
-            .bg(rgb(0xFFFFFF))
-            // Hardcoded dark ink: the document surface is white in every
-            // theme, so inheriting the theme foreground would put near-white
-            // text on white.
-            .text_color(rgb(0x18181B))
+            .border_color(if focused { self.focus_line } else { self.line })
+            .bg(self.surface)
+            // Page ink is paired with the page surface, never inherited.
+            .text_color(self.ink)
             .text_size(px(self.text_px))
             // Line box tracks the zoom: a fixed height clips descenders
             // and overlaps lines once A+ pushes past 20px text.
@@ -958,28 +995,37 @@ impl Render for DocField {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .child(
-                            div()
-                                .text_size(px(self.text_px))
-                                .child("|")
-                                .with_animation(
-                                    ElementId::Name("lyrics-caret-empty".into()),
-                                    Animation::new(Duration::from_millis(
-                                        (CARET_BLINK_MS * 2) as u64,
-                                    ))
-                                    .repeat(),
-                                    |el, delta| {
-                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                    },
-                                ),
-                        )
+                        .child({
+                            let caret = div().text_size(px(self.text_px)).child("|");
+                            if self.reduced_motion {
+                                caret.into_any_element()
+                            } else {
+                                caret
+                                    .with_animation(
+                                        ElementId::Name("lyrics-caret-empty".into()),
+                                        Animation::new(Duration::from_millis(
+                                            (CARET_BLINK_MS * 2) as u64,
+                                        ))
+                                        .repeat(),
+                                        |el, delta| {
+                                            el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                        },
+                                    )
+                                    .into_any_element()
+                            }
+                        })
                         .child(format!(" {placeholder}"))
                         .into_any_element()
                 } else {
                     placeholder.to_string().into_any_element()
                 };
                 vec![div()
-                    .text_color(hsla(0., 0., 0., 0.4))
+                    .text_color(gpui::Rgba {
+                        r: self.ink.r,
+                        g: self.ink.g,
+                        b: self.ink.b,
+                        a: 0.45,
+                    })
                     .child(hint)]
             } else {
                 content
@@ -1049,20 +1095,25 @@ impl Render for DocField {
                                     .flex_row()
                                     .items_center()
                                     .child(StyledText::new(before))
-                                    .child(
-                                        div()
-                                            .text_size(px(self.text_px))
-                                            .child("|")
-                                            .with_animation(
-                                                ElementId::Name(
-                                                    format!("lyrics-caret-{cursor}").into(),
-                                                ),
-                                                Animation::new(Duration::from_millis((CARET_BLINK_MS * 2) as u64)).repeat(),
-                                                |el, delta| {
-                                                    el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                                },
-                                            ),
-                                    )
+                                    .child({
+                                        let caret =
+                                            div().text_size(px(self.text_px)).child("|");
+                                        if self.reduced_motion {
+                                            caret.into_any_element()
+                                        } else {
+                                            caret
+                                                .with_animation(
+                                                    ElementId::Name(
+                                                        format!("lyrics-caret-{cursor}").into(),
+                                                    ),
+                                                    Animation::new(Duration::from_millis((CARET_BLINK_MS * 2) as u64)).repeat(),
+                                                    |el, delta| {
+                                                        el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                                    },
+                                                )
+                                                .into_any_element()
+                                        }
+                                    })
                                     .child(StyledText::new(after))
                                     .into_any_element(),
                                 None if line.is_empty() => " ".to_string().into_any_element(),

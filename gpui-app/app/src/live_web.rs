@@ -347,6 +347,7 @@ pub fn format_tile_text(lines: &[String], max_chars: usize) -> Vec<String> {
 /// nothing else.
 /// `profile` stays an `OsString` end to end: a lossy `String` round-trip
 /// could point Chrome at a mangled dir while `hide()` cleans the real one.
+#[allow(dead_code)] // kept as the plain-name variant of the `_with` knobs
 pub fn chromium_args(
     url: &str,
     geometry: Option<(i32, i32, i32, i32)>,
@@ -461,6 +462,7 @@ pub fn has_compositor() -> bool {
 /// black field it expects: our own document paints black and frames the
 /// page, so the result is white verse over black with no browser chrome,
 /// with or without a compositor.
+#[allow(dead_code)] // kept as the plain-name variant of the `_with` knobs
 pub fn overlay_wrapper_html(target: &str) -> String {
     overlay_wrapper_html_with_bg(target, "background:#000")
 }
@@ -527,6 +529,7 @@ pub fn overlay_background() -> &'static str {
 }
 
 /// [`chromium_args`] with the transparency decision explicit (pure, tested).
+#[allow(dead_code)] // kept as the plain-name variant of the `_with` knobs
 pub fn chromium_args_with(
     url: &str,
     geometry: Option<(i32, i32, i32, i32)>,

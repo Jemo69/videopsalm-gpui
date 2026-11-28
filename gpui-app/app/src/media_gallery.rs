@@ -930,7 +930,7 @@ fn thumb_compact(
                             b: 0.0,
                             a: 0.65,
                         })
-                        .text_size(px(10.))
+                        .text_size(px(11.))
                         .text_color(rgb(0xFFFFFF))
                         .child(badge),
                 ),

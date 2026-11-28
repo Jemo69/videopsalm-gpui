@@ -338,7 +338,7 @@ pub fn poster_ffmpeg_args(path: &std::path::Path, out: &std::path::Path, seek_se
         "-frames:v".into(),
         "1".into(),
         "-q:v".into(),
-        "5".into(),
+        "3".into(),
         out.to_string_lossy().into_owned(),
     ]
 }
@@ -392,7 +392,7 @@ pub fn ensure_video_poster(path: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// In-app video motion: `ffmpeg` decodes to an MJPEG pipe (`fps` filter,
-/// 960px wide, silent — the app owns all audio) and the tick reads one
+/// 1280px wide, silent — the app owns all audio) and the tick reads one
 /// frame per beat, shown through an uncached custom image loader. The pipe
 /// applies backpressure by itself: `ffmpeg` blocks when the 64KB buffer
 /// is full, so decode self-throttles to the display rate — no disk growth,
@@ -403,9 +403,9 @@ pub fn ensure_video_poster(path: &std::path::Path) -> Option<PathBuf> {
 /// No ffmpeg / bad file / failed spawn yields `Err` and callers fall back
 /// (poster still + OS player). Pure pieces (argv builder, JPEG split) are
 /// unit-tested; only `start` and `stop` touch processes.
-pub const MOTION_FPS_DEFAULT: u32 = 8;
+pub const MOTION_FPS_DEFAULT: u32 = 24;
 
-/// Safety cap for one MJPEG frame (960px stills are ~30–80KB).
+/// Safety cap for one MJPEG frame (1280px stills are ~60–160KB).
 const FRAME_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct MotionPump {
@@ -440,7 +440,7 @@ pub fn motion_ffmpeg_args(
     args.push("-map".to_string());
     args.push("0:v".to_string());
     args.push("-vf".to_string());
-    args.push(format!("scale=960:-2,fps={}", fps.max(1)));
+    args.push(format!("scale=1280:-2,fps={}", fps.max(1)));
     args.push("-f".to_string());
     args.push("mjpeg".to_string());
     args.push("-q:v".to_string());
@@ -1081,7 +1081,7 @@ mod tests {
             assert!(args.contains(&need.to_string()), "missing {need}: {args:?}");
         }
         assert!(args.iter().any(|a| a.contains("fps=8")), "rate capped: {args:?}");
-        assert!(args.iter().any(|a| a.contains("scale=960")), "width capped: {args:?}");
+        assert!(args.iter().any(|a| a.contains("scale=1280")), "width capped: {args:?}");
         assert!(!args.iter().any(|a| a == "-stream_loop"), "standalone ends: {args:?}");
         assert!(!args.iter().any(|a| a == "-ss"), "no offset at 0: {args:?}");
         let looped = motion_ffmpeg_args(std::path::Path::new("/vids/Loop.mp4"), 8, true, 12.5);
