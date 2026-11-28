@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Application, AsyncApp, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight,
     KeyBinding, MouseButton, MouseUpEvent, Rgba, ScrollHandle, Subscription, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions, actions, div, prelude::*, px, rgb, size,
+    WindowBounds, WindowHandle, WindowOptions, actions, div, prelude::*, px, rgb, rgba, size,
 };
 use vp_core::agenda as agenda_ops;
 use vp_core::bible_data::{BibleLibrary, Translation};
@@ -122,6 +122,7 @@ actions!(
 
 const SONG_A: &str = include_str!("../../assets/samples/songs/amazing-grace.json");
 const SONG_B: &str = include_str!("../../assets/samples/songs/holy-holy-chords.json");
+const SONG_WEB: &str = include_str!("../../assets/samples/songs/website-demo.json");
 const BIBLE_EN: &str = include_str!("../../assets/samples/bible/sample-bible-en.json");
 const BIBLE_FR: &str = include_str!("../../assets/samples/bible/sample-bible-fr.json");
 const AGENDA_SAMPLE: &str = include_str!("../../assets/samples/agenda/sample-agenda.json");
@@ -160,6 +161,16 @@ enum Testament {
     NT,
 }
 
+/// Which menu-strip setting has its option list open. A cycle button with no
+/// visible choices was the review's P1.8; these four now open a real list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuKind {
+    Lang,
+    Theme,
+    Monitor,
+    Ratio,
+}
+
 fn hex(color: &str) -> Rgba {
     match themes::parse_hex(color) {
         Some((r, g, b)) => rgb((r as u32) << 16 | (g as u32) << 8 | b as u32),
@@ -172,14 +183,18 @@ pub(crate) struct UI {
     bg: Rgba,
     fg: Rgba,
     panel: Rgba,
+    /// True hairline separator. Neutral on every skin: red is a signal, not
+    /// structure. The old value tiled the window in pink-red boxes and made
+    /// every control shout at the same volume.
     border: Rgba,
+    /// Secondary ink for captions, meta lines and inert labels. Meets 4.5:1
+    /// on the panel it sits on; never a pale gray on a tinted surface.
+    muted: Rgba,
+    /// Pointer hover wash (one tonal step off the panel).
+    hover: Rgba,
+    /// Recessed strip: menu bar, status bar, seated rows.
+    sunken: Rgba,
     accent: Rgba,
-    /// Text color guaranteed readable on `accent` backgrounds (black or
-    /// white, whichever has the higher WCAG contrast). Selection/active
-    /// highlights paint `accent` behind inherited text; without this the
-    /// near-white `fg` of the dark/gray/blue themes sits on light accents
-    /// (sky/amber/yellow) and is nearly invisible.
-    accent_ink: Rgba,
     danger: Rgba,
     /// The **selection** colour: selected agenda item, selected slide row,
     /// active buttons — always signal red, on every skin.
@@ -191,6 +206,10 @@ pub(crate) struct UI {
     selection: Rgba,
     /// Text colour guaranteed readable on `selection` backgrounds.
     selection_ink: Rgba,
+    /// Selected surfaces (agenda + slide rows). Signal-deep red with paper
+    /// ink: 8:1 instead of the 4.6:1 a full-brightness red fill gave black
+    /// text, and a quieter block on the eye at service time.
+    selection_surface: Rgba,
     /// The live/projecting cue: lime, on every skin (LIVE = lime only).
     live: Rgba,
     /// Text colour guaranteed readable on `live` backgrounds.
@@ -214,7 +233,7 @@ const ENGAGED: Rgba = Rgba {
 
 /// In-app video motion rate: silent piped stills/sec at 960px wide. The tick
 /// polls at the same cadence; higher reads smoother but republishes more.
-const MOTION_FPS: u32 = 8;
+const MOTION_FPS: u32 = 24;
 
 /// Signal red: selected agenda item + primary buttons (perez-sheet.html
 /// brand layer). Projection-surface blue cue is unchanged).
@@ -280,23 +299,34 @@ impl UI {
             .and_then(themes::parse_hex)
             .map(|(r, g, b)| rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
             .unwrap_or_else(|| hex(t.accent));
-        // Signal Room chrome: paper/night window, thin line-token borders.
-        // Each skin uses its sheet `--line`: light paper #E4B3B7, dark night
-        // #5B2327, onyx neutral gray (true black, never red-tinted);
-        // gray/blue keep the signal-red accent edge.
-        let border = match t.id {
-            "light" => rgb(0xE4B3B7),
-            "dark" => rgb(0x5B2327),
-            "onyx" => rgb(0x3F3F46),
-            _ => hex(t.accent),
+        // Shelving tokens per skin: hairline, hover wash, muted ink and
+        // recessed strip. These are desaturated relatives of each skin's own
+        // surface, never brand red (the 10-percent rule).
+        let (border, muted, hover, sunken) = match t.id {
+            "light" => (rgb(0xD9BFC2), rgb(0x6B4F52), rgb(0xF2DEE0), rgb(0xF6E8E9)),
+            "dark" => (rgb(0x40201F), rgb(0xC9ABAC), rgb(0x2A0C0D), rgb(0x1A0405)),
+            "gray" => (rgb(0xA0A0A9), rgb(0xF0F0F2), rgb(0x6A6A73), rgb(0x46464E)),
+            "blue" => (rgb(0x6E93E0), rgb(0xDCE8FF), rgb(0x3B5FBF), rgb(0x17357A)),
+            _ => (rgb(0x2E2E33), rgb(0xB4B4B8), rgb(0x151518), rgb(0x0A0A0C)),
+        };
+        // Gray/blue carry a light `muted` because vp-core uses it as a panel
+        // fill; those skins need a DARK panel for 4.5:1 body text, so the
+        // panel is resolved here instead of trusting the theme literal.
+        let panel = match t.id {
+            "gray" => rgb(0x5A5A63),
+            "blue" => rgb(0x2B4FA8),
+            _ => hex(t.muted),
         };
         UI {
             bg: hex(t.bg),
             fg: hex(t.fg),
-            panel: hex(t.muted),
+            panel,
             border,
+            muted,
+            hover,
+            sunken,
+            selection_surface: rgb(0x8E0B0D),
             accent,
-            accent_ink: ink_on(accent),
             danger: rgb(0xDC2626),
             // Skin-independent: the selected agenda item is signal red and
             // the live/projecting row is lime, on every skin
@@ -465,8 +495,25 @@ pub(crate) struct Root {
     /// Persisted under the `ribbon_hidden` layout key: the operator's
     /// workspace choice survives restart (hover or Expand re-opens).
     ribbon_collapsed: bool,
+    /// Preview frame-edit mode: the outline + 8 drag handles are an editing
+    /// overlay, not part of the picture. Off by default so an idle preview
+    /// shows only the output (R-REVIEW P0.3). Session-only.
+    frames_on: bool,
+    /// `More` ribbon disclosure: set-once groups (slide layout, colours,
+    /// animation, chord notation) fold under one labelled button instead of
+    /// wrapping into a third band. Session-only, like the other disclosures.
+    ribbon_more_open: bool,
+    /// Menu-strip option list (Lang / Theme / Monitor / Ratio). Session-only.
+    menu_popup: Option<MenuKind>,
     /// KeyTips overlay, toggled by bare `Alt` (1.5). Session-only.
     show_keytips: bool,
+    /// Library songbook tree expanded? Collapsed by default so the song list
+    /// (the reason the browser exists) owns the pane; the books are one click
+    /// away. Session-only.
+    songbooks_open: bool,
+    /// Reduce Motion preference (persisted): static carets, no decorative
+    /// animation. The toggle lives in Message settings.
+    reduced_motion: bool,
     /// Agenda file rows (path New/Open/Save + native folder/plan) hidden
     /// behind a `File ▾` disclosure, collapsed by default. The 1.29 agenda
     /// panel is the item list plus the right rail — file operations live in
@@ -897,7 +944,10 @@ impl Root {
     /// Feed one divider move: width follows the cursor, clamped 220..720.
     fn col_move(&mut self, cx: &mut Context<Self>, cur_x: f32) {
         if let Some((col, start_w, press_x)) = self.col_drag {
-            let w = clamp_col_width(start_w + cur_x - press_x);
+            // The right divider moves left when dragged left: its width is
+            // the distance from the window's right edge, so the delta flips.
+            let delta = if col == 0 { cur_x - press_x } else { press_x - cur_x };
+            let w = clamp_col_width(start_w + delta);
             if col == 0 {
                 self.left_w = w;
             } else {
@@ -926,6 +976,9 @@ impl Root {
         let ghost = self.drag_ghost.clone();
         let default_w = if col == 0 { 320.0 } else { 300.0 };
         let grabbed = self.col_drag.is_some_and(|(c, _, _)| c == col);
+        // A divider is a *seam*, not a control: a 14px transparent hit strip
+        // carrying one hairline rule. The old bordered box read as an empty
+        // panel wedged between two real ones on every skin.
         let strip = div()
             .w(px(14.))
             .h_full()
@@ -933,19 +986,19 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .cursor(gpui::CursorStyle::ResizeColumn)
-            .rounded_sm()
-            .border_1()
-            .border_color(ui.border);
+            .cursor(gpui::CursorStyle::ResizeColumn);
         let strip = if grabbed {
-            strip.bg(ui.accent)
+            strip.bg(ui.hover)
         } else {
-            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+            strip.hover(|s| s.bg(ui.hover))
         };
-        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
         strip
             .id(if col == 0 { "vp-col-split-l" } else { "vp-col-split-r" })
-            .child(div().text_size(px(12.)).text_color(grip_color).child("⋮⋮".to_string()))
+            .child(div().w(px(2.)).h(px(28.)).rounded_full().bg(if grabbed {
+                ui.fg
+            } else {
+                ui.border
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
@@ -1026,25 +1079,28 @@ impl Root {
     fn hdivider(&mut self, ui: &UI, cx: &mut Context<Self>, which: u8) -> impl gpui::IntoElement {
         let ghost = self.drag_ghost.clone();
         let grabbed = self.row_drag.is_some_and(|(w, _, _)| w == which);
+        // Same seam rule as [`Self::divider`]: a hairline, not a boxed pill
+        // with a glyph in it (the `⋯` box read as a stray empty card between
+        // the agenda and the browser, and between the slides and preview).
         let strip = div()
             .w_full()
             .h(px(14.))
             .flex()
             .items_center()
             .justify_center()
-            .cursor(gpui::CursorStyle::ResizeRow)
-            .rounded_sm()
-            .border_1()
-            .border_color(ui.border);
+            .cursor(gpui::CursorStyle::ResizeRow);
         let strip = if grabbed {
-            strip.bg(ui.accent)
+            strip.bg(ui.hover)
         } else {
-            strip.bg(ui.panel).hover(|s| s.bg(ui.accent))
+            strip.hover(|s| s.bg(ui.hover))
         };
-        let grip_color = if grabbed { ui.accent_ink } else { ui.accent };
         strip
             .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
-            .child(div().text_size(px(12.)).text_color(grip_color).child("⋯".to_string()))
+            .child(div().w(px(28.)).h(px(2.)).rounded_full().bg(if grabbed {
+                ui.fg
+            } else {
+                ui.border
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
@@ -1075,7 +1131,7 @@ impl Root {
         locales.insert("en".to_string(), Locale::load("en", LOCALE_EN).unwrap());
         locales.insert("fr".to_string(), Locale::load("fr", LOCALE_FR).unwrap());
 
-        let songs: Vec<Song> = [SONG_A, SONG_B]
+        let songs: Vec<Song> = [SONG_A, SONG_B, SONG_WEB]
             .iter()
             .map(|s| serde_json::from_str(s).unwrap())
             .collect();
@@ -1246,7 +1302,7 @@ impl Root {
         let mut this = Root {
             focus: cx.focus_handle(),
             mode: Mode::Control,
-            theme_id: "light".into(),
+            theme_id: "dark".into(),
             lang: "en".into(),
             locales,
             status: "Ready.".into(),
@@ -1317,7 +1373,12 @@ impl Root {
             explorer: style_explorer::ExplorerUi::default(),
             show_shortcuts: false,
             ribbon_collapsed: false,
+            ribbon_more_open: false,
+            frames_on: false,
+            menu_popup: None,
             show_keytips: false,
+            songbooks_open: false,
+            reduced_motion: false,
             agenda_file_open: false,
             rail_menu: None,
             renaming_item: None,
@@ -1607,8 +1668,12 @@ impl Root {
         // File-backed layout persistence (View ribbon → Save layout).
         if let Some(layout) = LayoutPrefs::load_file(LayoutPrefs::FILE) {
             this.apply_layout_prefs(&layout);
-            this.status = format!("Layout restored from {}.", LayoutPrefs::FILE);
+            this.status = "Layout restored.".to_string();
         }
+        // Retune the editor page + every field to the active skin on EVERY
+        // boot, not only when a layout file exists: the first-run skin is
+        // dark, so skipping this would open a dark window around white pages.
+        this.sync_doc_surface(cx);
         // Restore persisted library songs (app support folder) so imports
         // survive restart — the browser list is rebuilt from the database,
         // not just the bundled samples.
@@ -1718,12 +1783,17 @@ impl Root {
         this.adopt_agenda_styles(); // Styles travel with the agenda file.
         if !boot_import_errors.is_empty() {
             this.status = format!(
-                "bibles/: {boot_imports} installed, {} failed \u{2014} {}",
+                "Bible import: {boot_imports} installed, {} failed \u{2014} {}",
                 boot_import_errors.len(),
                 boot_import_errors.join("; ")
             );
         } else if boot_imports > 0 {
-            this.status = format!("Installed {boot_imports} Bible translation(s) from bibles/.");
+            let noun = if boot_imports == 1 {
+                "Bible translation"
+            } else {
+                "Bible translations"
+            };
+            this.status = format!("Installed {boot_imports} {noun}.");
         }
         // The VideoPsalm folder note wins on a fresh boot with media — it is
         // what the operator acted on last (or what auto-import found).
@@ -1734,6 +1804,19 @@ impl Root {
                 this.status = format!("{} — {note}", this.status);
             }
         }
+        // Default working song: open the first library song on boot so the
+        // operator starts from a document, not an empty editor. A persisted
+        // selection/agenda is respected; this only fills the blank state.
+        let q = this.search_field.read(cx).text();
+        this.refresh_search(&q, cx);
+        if this.sel_song.is_none() {
+            if let Some(idx) = this.results.first().copied() {
+                this.select_song(cx, idx);
+            }
+        }
+        // Preview/background motion starts with the window, not only after
+        // Go live: the operator must see the video before pressing anything.
+        this.start_preview_background(cx);
         this
     }
 
@@ -1778,6 +1861,7 @@ impl Root {
             viewer_mode: self.viewer_mode,
             projector_on: self.projector_on,
             show_style_explorer: self.show_style_explorer,
+            reduced_motion: self.reduced_motion,
             show_shortcuts: self.show_shortcuts,
             excluded_books: {
                 let mut v: Vec<String> = self.excluded_books.iter().cloned().collect();
@@ -1914,6 +1998,7 @@ impl Root {
         self.viewer_mode = p.viewer_mode;
         self.projector_on = p.projector_on;
         self.show_style_explorer = p.show_style_explorer;
+        self.reduced_motion = p.reduced_motion;
         self.show_shortcuts = p.show_shortcuts;
         self.excluded_books = p.excluded_books.iter().cloned().collect();
         self.hidden_books = p.hidden_books.iter().cloned().collect();
@@ -2503,10 +2588,12 @@ impl Root {
         open |= self.style_menu_open;
         open |= self.font_menu_open;
         open |= self.show_scope_grid;
+        open |= self.menu_popup.is_some();
         self.rail_menu = None;
         self.style_menu_open = false;
         self.font_menu_open = false;
         self.show_scope_grid = false;
+        self.menu_popup = None;
         if open {
             cx.notify();
         }
@@ -3136,7 +3223,66 @@ impl Root {
     /// is part of the same step: it is what repaints the second window.
     /// Display flags (blank / text-hidden) use [`Self::republish`] instead:
     /// the wall must obey them even under a freeze hold.
+    fn sync_doc_surface(&self, cx: &mut Context<Self>) {
+        // The editor page follows the active skin: a white writing slab in a
+        // dark booth was the one surface that ignored the theme.
+        let ui = self.ui();
+        let doc = self.lyrics_doc.clone();
+        doc.update(cx, |d, cx| {
+            d.set_surface(ui.panel, ui.fg, ui.border, ui.accent, cx);
+            d.set_reduced_motion(self.reduced_motion, cx);
+        });
+        // Every text field follows the same skin, so dark mode stops being a
+        // dark window with random white rectangles in it.
+        let fields = [
+            &self.search_field,
+            &self.path_field,
+            &self.alert_field,
+            &self.book_field,
+            &self.verse_field,
+            &self.title_field,
+            &self.song_title_field,
+            &self.number_field,
+            &self.references_field,
+            &self.author_field,
+            &self.copyright_field,
+            &self.composer_field,
+            &self.media_path_field,
+            &self.media_range_field,
+            &self.website_field,
+            &self.gallery_import_field,
+            &self.gallery_image_filter,
+            &self.gallery_video_filter,
+            &self.pptx_field,
+            &self.bible_xml_field,
+            &self.native_path_field,
+            &self.clock_field,
+            &self.font_filter_field,
+            &self.rename_field,
+        ];
+        for field in fields {
+            let field = field.clone();
+            field.update(cx, |f, cx| {
+                f.set_surface(
+                    ui.sunken,
+                    ui.fg,
+                    ui.border,
+                    ui.accent,
+                    ui.muted,
+                    cx,
+                );
+                f.set_reduced_motion(self.reduced_motion, cx);
+            });
+        }
+    }
+
     fn republish(&mut self, cx: &mut Context<Self>) {
+        self.sync_doc_surface(cx);
+        // A browser killed outside the app leaves a stale showing (blank
+        // wall, lit chip) until the next push respawns it — reap on every
+        // republish so ticks and display flags heal it sooner. Reap only:
+        // no spawn, no probe, safe in render-adjacent paths.
+        self.reap_dead_browser(cx);
         crate::presentation::publish(self, cx);
         let snap = self.projector_snapshot(cx);
         self.push_ndi_still(&snap);
@@ -3188,6 +3334,25 @@ impl Root {
         was
     }
 
+    /// Start the assigned video-loop background for the CONTROL PREVIEW,
+    /// independent of projection. Before this, motion only started inside
+    /// `push_projection`, so the preview stayed a black tile until the
+    /// operator pressed Go live (the Windows report).
+    pub(crate) fn start_preview_background(&mut self, cx: &mut Context<Self>) {
+        if self.bg_kind != BackgroundKind::VideoLoop || self.live_item.is_some() {
+            return;
+        }
+        let Some(path) = self.bg_file.clone().filter(|p| p.exists()) else {
+            return;
+        };
+        self.ensure_video_poster(&path);
+        if !self.ensure_motion_for(cx, &path, true) {
+            // No decoder: the poster still stands, and projection will
+            // retry through its own path.
+            self.stop_motion();
+        }
+    }
+
     /// Play `path` in-app — ffmpeg pipe first (unchanged when it works),
     /// in-house H.264 decoder when ffmpeg is missing or fails. True =
     /// motion running (caller marks launched); false = caller falls back
@@ -3219,14 +3384,26 @@ impl Root {
             Ok(pump) => {
                 self.motion = Some(pump);
                 self.ensure_motion_tick(cx);
-                self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                self.set_status(
+                    cx,
+                    format!(
+                        "Playing in-app — {}.",
+                        ux::shorten_path(&path.display().to_string(), 58)
+                    ),
+                );
                 true
             }
             Err(e) => match crate::loop_video::LoopRun::start(path, loop_play) {
                 Some(run) => {
                     self.loop_player = Some(run);
                     self.ensure_motion_tick(cx);
-                    self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                    self.set_status(
+                        cx,
+                        format!(
+                            "Playing in-app — {}.",
+                            ux::shorten_path(&path.display().to_string(), 58)
+                        ),
+                    );
                     true
                 }
                 None => {
@@ -3432,12 +3609,17 @@ impl Root {
         };
         self.projected_slides = live;
         self.projected_chord = self.proj_chord_line();
+        // Live web view follows the pushed slide (spawn on website slides,
+        // die the moment they leave) — synced BEFORE publish so the
+        // published snapshot already reflects the overlay state. Otherwise
+        // the first push to a website slide ships the URL tile while the
+        // browser is already opening behind it, and the wall disagrees with
+        // the overlay for a beat. Loopback stage pages render even with the
+        // toggle off (FreeShow parity); remote pages keep the Live gate.
+        self.sync_live_web(cx);
         crate::presentation::publish(self, cx);
         let snap = self.projector_snapshot(cx);
         self.push_ndi_still(&snap);
-        // Live web view follows the pushed slide (spawn on website slides,
-        // die the moment they leave). No-op while the toggle is off.
-        self.sync_live_web(cx);
     }
 
     /// The **projector's** slides: always the pushed snapshot, frozen or
@@ -3491,16 +3673,20 @@ impl Root {
         // also draw the URL tile underneath — the overlay carries the content
         // and the projector carries the background only. FreeShow never puts
         // a URL on the wall either: remote pages only ever appear in their
-        // hover/navigation controls.
+        // hover/navigation controls. The Live flag here is the *effective*
+        // one: loopback stage pages render with the toggle off.
+        let slide_url = live_web::live_url_for_slide(&Slide::text(
+            header.clone(),
+            lines.clone(),
+            footer.clone(),
+        ));
+        let live_eff = slide_url
+            .as_deref()
+            .is_some_and(|u| live_effective(self.live_web_on, u));
         if overlay_covers_slide(
-            self.live_web_on,
+            live_eff,
             self.live_view_url.as_deref(),
-            live_web::live_url_for_slide(&Slide::text(
-                header.clone(),
-                lines.clone(),
-                footer.clone(),
-            ))
-            .as_deref(),
+            slide_url.as_deref(),
         ) {
             header.clear();
             lines.clear();
@@ -3578,7 +3764,15 @@ impl Root {
             frame,
             blank: self.blank,
             header,
-            lines,
+            lines: lines.clone(),
+            // Rendered body lines: website tiles show the FreeShow-formatted
+            // URL rewrapped at the slide width; logic paths (slide-URL
+            // reconstruction, the overlay-cover rule) use raw `lines`.
+            display_lines: if footer == "WebSite" || footer == "YouTube" {
+                live_web::format_tile_text(&lines, self.max_chars)
+            } else {
+                lines.clone()
+            },
             footer,
             standalone,
             video_poster,
@@ -3896,6 +4090,23 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
     /// row). The document empties and the centre shows the instructional
     /// no-song panel; projection is untouched — deselecting is an editing
     /// gesture, never a live-state change.
+    /// `New`: replace the agenda AND clear the editor, so the centre pane
+    /// never shows the previous song beside an empty agenda.
+    fn new_agenda(&mut self, cx: &mut Context<Self>) {
+        self.agenda = Agenda::new("New agenda");
+        self.sel_item = None;
+        self.live_item = None;
+        self.sel_song = None;
+        self.sel_block = None;
+        self.song_dirty = false;
+        self.lyrics_doc.update(cx, |d, cx| d.set_text("", cx));
+        self.number_field.update(cx, |f, cx| f.set_text("", cx));
+        self.song_title_field.update(cx, |f, cx| f.set_text("", cx));
+        self.title_field.update(cx, |f, cx| f.set_text("", cx));
+        self.set_status(cx, "New agenda.");
+        cx.notify();
+    }
+
     fn deselect_song(&mut self, cx: &mut Context<Self>) {
         if self.song_dirty {
             // Belt-and-braces behind `song_click_target`'s dirty veto:
@@ -3926,8 +4137,18 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             );
             return;
         }
+        let Some(song) = self.songs.get(idx).cloned() else {
+            // Stale index after a list rebuild: fail quiet, never panic.
+            self.set_status(cx, "That song is no longer in the library.");
+            return;
+        };
         self.sel_song = Some(idx);
-        if let Some(song) = self.songs.get(idx).cloned() {
+        // Keep the selected row visible in the browser list (it can be below
+        // the fold when the list is long or the user just created it).
+        if let Some(pos) = self.results.iter().position(|&i| i == idx) {
+            self.scroll_songs.scroll_to_item(pos);
+        }
+        if let Some(song) = Some(song) {
             let doc = lyrics_doc::document_from_verses(&song.verses);
             self.lyrics_doc.update(cx, |d, cx| d.set_text(&doc, cx));
             self.sync_song_meta_fields(cx);
@@ -4459,16 +4680,33 @@ fn window_covers_monitor(window: &gpui::Window) -> bool {
             ..Default::default()
         };
         let title = song.title.clone();
+        let song_id = song.id.clone();
+        let book_scope = song.songbook_id.clone();
         if vp_core::library::upsert_song(&self.db, &song).is_err() {
             self.set_status(cx, "Could not save the new song.");
             return;
         }
         self.songs.push(song);
-        let idx = self.songs.len() - 1;
-        self.songbook_filter = None;
-        let q = self.search_field.read(cx).text();
-        self.refresh_search(&q, cx);
+        // Resolve by id, not `len - 1`: the library list can be reloaded or
+        // reordered between the push and the selection.
+        let Some(idx) = self.songs.iter().position(|s| s.id == song_id) else {
+            self.set_status(cx, "New song was saved but could not be selected.");
+            return;
+        };
+        // Make the new row visible: clear the query and scope the browser to
+        // its songbook (falling back to all songs if the scope is empty).
+        self.search_field
+            .update(cx, |field, cx| field.set_text("", cx));
+        self.songbook_filter = Some(book_scope);
+        self.refresh_search("", cx);
+        if !self.results.contains(&idx) {
+            self.songbook_filter = None;
+            self.refresh_search("", cx);
+        }
         self.select_song(cx, idx);
+        // A brand-new song is appended to the scoped list; scroll to the
+        // end so its selected row is on screen immediately.
+        self.scroll_songs.scroll_to_bottom();
         self.set_status(
             cx,
             format!("{title} created — type the lyrics, then project it."),
@@ -6074,43 +6312,37 @@ pub(crate) fn btn(
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
     let shield = active && ui.accent == SHIELD_ARMED;
-    // Sheet chips: an ON control is filled signal red with readable ink;
-    // the orange 2px edge stays so engagement still reads at a glance.
-    // The shield keeps its own armed-red fill with ink to match.
-    let border = if shield {
-        SHIELD_ARMED
+    // Inverted-emphasis chips: an ON control fills with ink and flips its
+    // label to the surface colour. That is a state cue the eye can rank;
+    // filling every engaged toggle with signal red made 30 buttons shout
+    // and left the one action that matters (Go live) with no rank at all.
+    // The armed shield keeps its red fill — it is load-bearing.
+    let (bg, ink, edge) = if shield {
+        (SHIELD_ARMED, ink_on(SHIELD_ARMED), SHIELD_ARMED)
     } else if active {
-        ui.engaged
+        // Engaged = ink edge + tonal wash. Not a solid block: the only
+        // filled action on a band is the real primary (Go live), so state
+        // chips never outrank the action that puts words on the wall.
+        (ui.hover, ui.fg, ui.fg)
     } else {
-        ui.border
+        (rgba(0x00000000), ui.fg, rgba(0x00000000))
     };
     let mut d = div()
-        .px(px(crate::ux::RIBBON_BTN_PX))
-        .py(px(crate::ux::RIBBON_BTN_PY))
-        // One 11px control row never collapses below its line box.
+        .px(px(5.))
+        .py(px(2.))
+        // One control row never collapses below its line box.
         .min_h(px(crate::ux::RIBBON_LINE_PX))
-        .rounded_sm()
-        .bg(if shield {
-            SHIELD_ARMED
-        } else if active {
-            ui.selection
-        } else {
-            ui.panel
-        })
-        .text_color(if shield {
-            ink_on(SHIELD_ARMED)
-        } else if active {
-            ui.selection_ink
-        } else {
-            ui.fg
-        })
+        .rounded(px(4.))
+        .border_1()
+        .border_color(edge)
+        .bg(bg)
+        .text_color(ink)
         .cursor_pointer()
+        .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
         .child(label.to_string());
-    d = if active {
-        d.border_2().border_color(border)
-    } else {
-        d.border_1().border_color(border)
-    };
+    if !active {
+        d = d.hover(|s| s.bg(ui.hover));
+    }
     d.on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
@@ -6132,6 +6364,174 @@ fn btn_stop(
         MouseButton::Left,
         cx.listener(|_, _, _, cx| cx.stop_propagation()),
     )
+}
+
+/// One bundled SVG icon at an optical size (grayscale so it matches ink).
+pub(crate) fn icon_el(icon_id: &str, size: f32) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .child(crate::icons::art_px(icon_id, size).grayscale(true))
+}
+
+/// Icon-only control with a hover tooltip and the standard active outline.
+pub(crate) fn icon_button(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    icon_id: &'static str,
+    tip: &'static str,
+    size: f32,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(4.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(if active { ui.fg } else { rgba(0x00000000) })
+        .bg(if active { ui.hover } else { rgba(0x00000000) })
+        .cursor_pointer()
+        .when(!active, |d| d.hover(|s| s.bg(ui.hover)))
+        .child(icon_el(icon_id, size));
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Icon + text control (icon first, one text voice).
+pub(crate) fn icon_text_button(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    icon_id: &'static str,
+    text: &str,
+    tip: &'static str,
+    size: f32,
+    active: bool,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .px(px(4.))
+        .py(px(2.))
+        .rounded(px(4.))
+        .border_b_2()
+        .border_color(if active { ui.accent } else { rgba(0x00000000) })
+        .text_size(px(12.))
+        .text_color(if active { ui.fg } else { ui.muted })
+        .cursor_pointer()
+        .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .when(!active, |d| d.hover(|s| s.text_color(ui.fg)))
+        .child(icon_el(icon_id, size))
+        .child(text.to_string());
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Flat text toggle (browser filters): no box, active = ink + accent rule.
+fn text_toggle(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    text: &str,
+    active: bool,
+    tip: &'static str,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .px(px(3.))
+        .py(px(1.))
+        .border_b_2()
+        .border_color(if active { ui.fg } else { rgba(0x00000000) })
+        .text_size(px(11.))
+        .text_color(if active { ui.fg } else { ui.muted })
+        .cursor_pointer()
+        .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .when(!active, |d| d.hover(|s| s.text_color(ui.fg)))
+        .child(text.to_string());
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Flat text action (browser quick actions): no box, no active state.
+fn text_action(
+    ui: &UI,
+    cx: &mut Context<Root>,
+    text: &str,
+    tip: &'static str,
+    f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .px(px(4.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .text_size(px(11.))
+        .text_color(ui.muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(ui.hover).text_color(ui.fg))
+        .child(text.to_string());
+    d = d.on_mouse_up(MouseButton::Left, cx.listener(f));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel(tip.to_string())).into()
+    });
+    d
+}
+
+/// Menu-strip setting trigger: current value + `▾`, opens the option list.
+fn setting_trigger(
+    ui: &UI,
+    text: String,
+    open: bool,
+    kind: MenuKind,
+    cx: &mut Context<Root>,
+) -> Div {
+    div()
+        .px(px(6.))
+        .py(px(2.))
+        .min_h(px(crate::ux::RIBBON_LINE_PX))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(if open { ui.fg } else { rgba(0x00000000) })
+        .bg(if open { ui.hover } else { rgba(0x00000000) })
+        .text_color(ui.fg)
+        .cursor_pointer()
+        .when(open, |d| d.font_weight(FontWeight::SEMIBOLD))
+        .when(!open, |d| d.hover(|s| s.bg(ui.hover)))
+        .child(format!("{text} ▾"))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.menu_popup = if this.menu_popup == Some(kind) {
+                    None
+                } else {
+                    Some(kind)
+                };
+                this.rail_menu = None;
+                this.style_menu_open = false;
+                this.font_menu_open = false;
+                this.show_scope_grid = false;
+                cx.notify();
+            }),
+        )
 }
 
 /// One-line floating help: dark chip, light text, small.
@@ -6191,16 +6591,33 @@ pub(crate) fn btn_disabled(ui: &UI, label: &str) -> Div {
 /// Live value between the A− / A+ stepper keys: fixed-width, centred, so the
 /// number never drifts as digits change and reads as the control's value
 /// rather than a caption beside it.
-fn font_size_readout(ui: &UI, value: i32) -> Div {
-    div()
-        .w(px(26.))
+/// Projection lyric size readout: unit included, click resets to 44px. The
+/// number is intentionally a control, not a label between two steppers.
+fn font_size_readout(
+    ui: &UI,
+    value: i32,
+    cx: &mut Context<Root>,
+    reset: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
+) -> Div {
+    let mut d = div()
+        .min_w(px(44.))
         .min_h(px(crate::ux::RIBBON_LINE_PX))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(11.))
+        .rounded(px(3.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(ui.fg)
-        .child(value.to_string())
+        .cursor_pointer()
+        .hover(|s| s.bg(ui.hover))
+        .child(format!("{value} px"))
+        .on_mouse_up(MouseButton::Left, cx.listener(reset));
+    d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+        cx.new(|_| TooltipLabel("Projection lyric size; click to reset to 44 px".to_string()))
+            .into()
+    });
+    d
 }
 
 /// True when the live web overlay is painting the slide that is on the wall
@@ -6210,6 +6627,15 @@ fn font_size_readout(ui: &UI, value: i32) -> Div {
 /// other. Live off, or a different URL showing, keeps the offline tile.
 fn overlay_covers_slide(live_on: bool, showing: Option<&str>, slide_url: Option<&str>) -> bool {
     live_on && matches!((showing, slide_url), (Some(a), Some(b)) if a == b)
+}
+
+/// Effective Live state for one website URL (pure, tested). FreeShow renders
+/// its `<webview>` unconditionally; the safe subset ports here: loopback
+/// pages are our own machine (the stage server — no packet ever leaves it),
+/// so they render without the Live gate. Remote pages stay behind Live +
+/// Allow (offline-first rule, unchanged) — the toggle still governs them.
+fn live_effective(live_on: bool, url: &str) -> bool {
+    live_on || live_web::is_loopback(url)
 }
 
 /// Whether F5 hands the press to in-app motion first (pure, tested): only
@@ -6316,13 +6742,15 @@ fn lyric_chords(text: &str) -> Vec<String> {
 /// control window's own div, never inside the projector snapshot, so the room
 /// and the real projector window are untouched.
 pub(crate) fn card_caption(text: &str) -> Div {
+    // Bottom-left: the snapshot's own header (file name / reference) owns
+    // the top edge, so the caption must not sit on top of it.
     div()
         .absolute()
-        .top(px(4.))
-        .left(px(6.))
-        .text_size(px(9.))
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(0xBBBBBB))
+        .bottom(px(6.))
+        .left(px(8.))
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(0xC9C9C9))
         .child(text.to_string())
 }
 
@@ -6334,27 +6762,23 @@ pub(crate) fn kbd(ui: &UI, key: &str) -> Div {
         .border_color(ui.border)
         .rounded_sm()
         .px(px(5.))
-        .text_size(px(10.))
+        .text_size(px(11.))
         .bg(ui.panel)
         .child(key.to_string())
 }
 
 pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
-    // Signal Room cards (sheet section 1): white card, bold ink title.
-    // Red is reserved for the title strip, primary buttons, selected rows.
-    let header_bg = ui.panel;
-    let header_ink = ui.fg;
     let mut col = div()
         .flex()
         .flex_col()
         .gap_1()
-        .p(px(6.))
+        .p(px(8.))
         // min_h_0 lets the panel shrink below its content so an inner
         // scroller can actually scroll instead of pushing the layout.
         .min_h_0()
         .flex_1()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(6.))
         .border_1()
         .border_color(ui.border)
         .bg(ui.panel)
@@ -6363,13 +6787,14 @@ pub(crate) fn section(ui: &UI, title: &str, kids: Vec<Div>) -> Div {
                 .flex()
                 .flex_row()
                 .items_center()
-                .px(px(6.))
-                .py(px(3.))
-                .rounded_sm()
-                .bg(header_bg)
-                .text_color(header_ink)
-                .text_size(px(13.))
-                .font_weight(FontWeight::BOLD)
+                .px(px(2.))
+                .pt(px(1.))
+                .pb(px(3.))
+                .border_b_1()
+                .border_color(ui.border)
+                .text_color(ui.fg)
+                .text_size(px(13.5))
+                .font_weight(FontWeight::SEMIBOLD)
                 .child(title.to_string()),
         );
     for k in kids {
@@ -6386,13 +6811,13 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(crate::ux::RIBBON_GROUP_PY))
+        .gap(px(1.))
         .px(px(crate::ux::RIBBON_GROUP_PX))
         .py(px(crate::ux::RIBBON_GROUP_PY))
-        .rounded_sm()
-        .border_1()
-        .border_color(ui.border)
-        .bg(ui.panel)
+        .rounded(px(5.))
+        // Tonal layer, not an outline: one step off the band reads as a
+        // group without adding another red rectangle to the wall.
+        .bg(ui.sunken)
         .child(
             div()
                 .flex()
@@ -6403,11 +6828,13 @@ fn group(ui: &UI, caption: &str, kids: Vec<Div>) -> Div {
                 .children(kids),
         )
         .child(
+            // No `w_full` here: the caption must not stretch its group to the
+            // rest of the band (that made the two-button `More` group a long
+            // empty plank).
             div()
-                .w_full()
-                .text_center()
-                .text_size(px(crate::ux::RIBBON_TEXT_PX))
-                .text_color(rgb(0x5B6B82))
+                .px(px(5.))
+                .text_size(px(11.))
+                .text_color(ui.muted)
                 .child(caption.to_string()),
         )
 }
@@ -6421,31 +6848,54 @@ fn swatch(
     active: bool,
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
+    // A real chip plus a neutral "A": the old glyph-only swatch made a white
+    // and a paper swatch indistinguishable from empty space.
     let ink = hex(color_hex);
     div()
-        .px(px(crate::ux::RIBBON_BTN_PX))
-        .py(px(crate::ux::RIBBON_BTN_PY))
-        .rounded_sm()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(3.))
+        .px(px(3.))
+        .py(px(2.))
+        .rounded(px(4.))
         .border_1()
         .border_color(if active { ui.fg } else { ui.border })
-        .bg(if active { ui.panel } else { ui.bg })
+        .bg(if active { ui.sunken } else { rgba(0x00000000) })
         .cursor_pointer()
-        .text_size(px(13.))
-        .text_color(ink)
-        .child("A".to_string())
+        .when(!active, |d| d.hover(|s| s.bg(ui.hover)))
+        .child(
+            div()
+                .w(px(12.))
+                .h(px(12.))
+                .rounded(px(2.))
+                .border_1()
+                .border_color(rgb(0x9A9A9A))
+                .bg(ink),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(if active { ui.fg } else { ui.muted })
+                .child("A"),
+        )
         .on_mouse_up(MouseButton::Left, cx.listener(f))
 }
 
-fn metadata_box(value: &str) -> Div {
+fn metadata_box(ui: &UI, value: &str) -> Div {
+    // Theme-aware read-only chip: the old hardcoded white/ink pair turned
+    // into a light box floating on the dark skins.
     div()
         .flex_1()
         .min_w(px(70.))
-        .px_1()
+        .px(px(5.))
         .py(px(2.))
+        .rounded(px(3.))
         .border_1()
-        .border_color(rgb(0x9CA3AF))
-        .bg(rgb(0xFFFFFF))
-        .text_color(rgb(0x18181B))
+        .border_color(ui.border)
+        .bg(ui.sunken)
+        .text_color(ui.fg)
+        .text_size(px(12.))
         .child(value.to_string())
 }
 
@@ -6466,14 +6916,14 @@ fn mini(
     f: impl Fn(&mut Root, &MouseUpEvent, &mut Window, &mut Context<Root>) + 'static,
 ) -> Div {
     div()
-        .px_1()
-        .rounded_sm()
-        .border_1()
-        .border_color(ui.border)
-        .bg(if active { ui.selection } else { ui.panel })
-        .text_color(if active { ui.selection_ink } else { ui.fg })
-        .text_size(px(11.))
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(3.))
+        .bg(if active { ui.fg } else { ui.sunken })
+        .text_color(if active { ui.bg } else { ui.fg })
+        .text_size(px(12.))
         .cursor_pointer()
+        .hover(|s| s.bg(if active { ui.fg } else { ui.hover }))
         .child(label.to_string())
         .on_mouse_up(MouseButton::Left, cx.listener(f))
 }
@@ -6526,9 +6976,10 @@ fn section_scrolled_with_rail(
     let list = div()
         .flex()
         .flex_col()
-        .gap(px(2.))
+        .gap(px(3.))
         .flex_1()
         .min_h_0()
+        .min_w_0()
         .id(id)
         .overflow_y_scroll()
         .track_scroll(handle)
@@ -6542,6 +6993,7 @@ fn section_scrolled_with_rail(
             .flex_col()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .overflow_hidden()
             .child(list)
     } else {
@@ -6551,22 +7003,41 @@ fn section_scrolled_with_rail(
             .gap_1()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .overflow_hidden()
             .child(list)
-            .child(div().flex().flex_col().gap_1().flex_none().children(rail))
+            // The rail is ONE tonal cluster, not five free-floating pairs of
+            // chips: on the panel surface the individual chips read as a
+            // scattered keypad beside the rows they act on. The outer column
+            // exists only to defeat the row's cross-axis stretch — painted
+            // on the cluster itself, the tonal block grew to the whole panel
+            // height instead of hugging its five buttons.
+            .child(
+                div().flex().flex_col().flex_none().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .p(px(2.))
+                        .rounded(px(6.))
+                        .bg(ui.sunken)
+                        .children(rail),
+                ),
+            )
     };
 
     let mut col = div()
         .flex()
         .flex_col()
         .gap_1()
-        .p(px(6.))
+        .p(px(8.))
         // min_h_0 + flex_1 let the panel shrink below its content so the
         // inner scroller scrolls instead of pushing the whole layout down.
         .min_h_0()
+        .min_w_0()
         .flex_1()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(6.))
         .border_1()
         .border_color(ui.border)
         .bg(ui.panel)
@@ -6575,13 +7046,14 @@ fn section_scrolled_with_rail(
                 .flex()
                 .flex_row()
                 .items_center()
-                .px(px(6.))
-                .py(px(3.))
-                .rounded_sm()
-                .bg(ui.panel)
+                .px(px(2.))
+                .pt(px(1.))
+                .pb(px(3.))
+                .border_b_1()
+                .border_color(ui.border)
                 .text_color(ui.fg)
-                .text_size(px(13.))
-                .font_weight(FontWeight::BOLD)
+                .text_size(px(13.5))
+                .font_weight(FontWeight::SEMIBOLD)
                 .child(title.to_string()),
         );
     for k in top {
@@ -6815,7 +7287,7 @@ pub(crate) fn label(ui: &UI, text: &str, size_px: f32) -> Div {
 /// already carries the lime fill; the tag itself is transparent.
 pub(crate) fn live_tag(ui: &UI) -> Div {
     div()
-        .text_size(px(10.))
+        .text_size(px(11.))
         .font_weight(FontWeight::BOLD)
         .text_color(ui.live_ink)
         .child("● LIVE".to_string())
@@ -6855,9 +7327,10 @@ impl Render for Root {
             .flex()
             .flex_col()
             .size_full()
+            .relative()
             .bg(ui.bg)
             .text_color(ui.fg)
-            .text_size(px(14.));
+            .text_size(px(15.));
         if chrome {
             // The original's title bar is OS chrome, not an in-document
             // utility toolbar. Keep those actions reachable from Message (the
@@ -6954,39 +7427,56 @@ impl Render for Root {
         })
         .child(
             div()
-                .px_2()
-                .py(px(2.))
+                .px_3()
+                .py(px(3.))
                 .flex()
                 .flex_row()
                 .flex_wrap()
                 .gap_1()
                 .items_center()
+                .bg(ui.sunken)
+                .border_t_1()
                 .border_color(ui.border)
+                .text_size(px(11.))
+                .text_color(ui.muted)
                 .child(format!("{} {}", self.t("status"), self.status))
-                .child(div().text_size(px(10.5)).child("|".to_string()))
+                .child(div().text_size(px(11.)).child("|".to_string()))
                 .child(kbd(&ui, "Enter"))
-                .child(div().text_size(px(10.5)).child("project".to_string()))
+                .child(div().text_size(px(11.)).child("project".to_string()))
                 .child(kbd(&ui, "F5"))
-                .child(div().text_size(px(10.5)).child("start".to_string()))
+                .child(div().text_size(px(11.)).child("start".to_string()))
                 .child(kbd(&ui, "X"))
-                .child(div().text_size(px(10.5)).child("next".to_string()))
+                .child(div().text_size(px(11.)).child("next".to_string()))
                 .child(kbd(&ui, "F6"))
-                .child(div().text_size(px(10.5)).child("slides".to_string()))
+                .child(div().text_size(px(11.)).child("slides".to_string()))
                 .child(kbd(&ui, "Ctrl+S"))
-                .child(div().text_size(px(10.5)).child("save".to_string()))
+                .child(div().text_size(px(11.)).child("save".to_string()))
                 .child(kbd(&ui, "F1"))
-                .child(div().text_size(px(10.5)).child("shortcuts".to_string()))
+                .child(div().text_size(px(11.)).child("shortcuts".to_string()))
                 .child(div().flex_1())
                 // FreeShow shows the time prominently; VP1.29 keeps it in the
                 // status area. Read-only view of the app's own clock widget
                 // (elapsed / countdown / stopwatch per clock mode).
                 .child(
                     div()
-                        .text_size(px(10.5))
+                        .text_size(px(11.))
                         .text_color(ui.fg)
-                        .child(format!("◷ {}", self.clock_display())),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(icon_el("ui-clock", 12.))
+                                .child(self.clock_display()),
+                        ),
                 ),
         )
+        // Menu-strip option list (Lang / Theme / Monitor / Ratio): floats
+        // under the menu row, above the panes.
+        .when(self.menu_popup.is_some(), |d| {
+            d.child(self.settings_menu(&ui, cx))
+        })
         // Settings modal paints last: topmost, over ribbon, panels and
         // the status line.
         .when(self.show_message_settings, |d| {
@@ -7017,7 +7507,7 @@ impl Root {
             .gap_2()
             .items_center()
             .p(px(6.))
-            .child(div().text_size(px(16.)).child(format!("{} v{}", self.t("app_title"), env!("CARGO_PKG_VERSION"))))
+            .child(div().text_size(px(15.)).child(format!("{} v{}", self.t("app_title"), env!("CARGO_PKG_VERSION"))))
             .child(btn(
                 ui,
                 cx,
@@ -7118,175 +7608,380 @@ impl Root {
     // (File|Agenda|Songs|Bibles|Media|Style|View) as a tab bar + grouped
     // action buttons. All buttons reuse the same handlers as the panels.
 
-    /// Slim signal-red title strip (position 1): brand + agenda name on
-    /// red, paper strips below. The old full-red ribbon band read as one
-    /// oversized block next to the sheet's paper strips (R3).
+    /// Slim signal strip (position 1): brand + agenda name on quiet deep
+    /// red, paper strips below. Bright signal red is spent on exactly two
+    /// things in this window: the live arm action and selected rows. The
+    /// old full-brightness band plus red group boxes read as one alarm.
     fn title_strip(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let ink = rgb(0xFDE7E9);
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
-            .px_2()
-            .py(px(0.))
-            .bg(ui.selection)
-            .text_color(rgb(0xFFFFFF))
-            .text_size(px(10.))
-            .font_weight(FontWeight::BOLD)
-            .child(format!("♪ Perez — {}", self.agenda.title))
+            .px_3()
+            .py(px(4.))
+            .bg(ui.selection_surface)
+            .text_color(ink)
+            .text_size(px(12.))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon_el("ui-music", 14.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Perez  ·  {}", self.agenda.title)),
+                    ),
+            )
             .child(div().flex_1())
-            .child(btn(ui, cx, "⛶ Go live", false, |this, _, _, cx| {
-                this.go_live(cx);
-            }))
+            .child({
+                // The one high-emphasis action, filled paper on the band so
+                // it reads against red instead of camouflaging into it.
+                div()
+                    .px(px(10.))
+                    .py(px(3.))
+                    .rounded(px(4.))
+                    .bg(ink)
+                    .text_color(ui.selection_surface)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon_el("ui-go-live", 13.))
+                            .child("Go live".to_string()),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.go_live(cx);
+                        }),
+                    )
+            })
+    }
+
+    /// The option list opened by a menu-strip setting chip.
+    fn settings_menu(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        let Some(kind) = self.menu_popup else {
+            return div();
+        };
+        let (title, options): (&str, Vec<(String, String, bool)>) = match kind {
+            MenuKind::Lang => (
+                "Language",
+                [("English", "en"), ("Français", "fr")]
+                    .into_iter()
+                    .map(|(label, value)| {
+                        (label.to_string(), value.to_string(), self.lang == value)
+                    })
+                    .collect(),
+            ),
+            MenuKind::Theme => {
+                let mut opts = Vec::new();
+                for t in vp_core::themes::builtin_themes() {
+                    opts.push((
+                        t.name.to_string(),
+                        t.id.to_string(),
+                        self.theme_id == t.id,
+                    ));
+                }
+                ("Theme", opts)
+            }
+            MenuKind::Monitor => ("Projector monitor", {
+                (0..3)
+                    .map(|i| {
+                        (
+                            format!("Display {}", i + 1),
+                            i.to_string(),
+                            self.projector_display == i,
+                        )
+                    })
+                    .collect()
+            }),
+            MenuKind::Ratio => (
+                "Aspect ratio",
+                ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"]
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            if r == "current" {
+                                "Window".to_string()
+                            } else {
+                                r.to_string()
+                            },
+                            r.to_string(),
+                            self.aspect_ratio == r,
+                        )
+                    })
+                    .collect(),
+            ),
+        };
+        let mut items: Vec<Div> = Vec::new();
+        for (label, value, selected) in options {
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(4.))
+                .text_size(px(12.))
+                .text_color(ui.fg)
+                .cursor_pointer()
+                .when(!selected, |d| d.hover(|s| s.bg(ui.hover)))
+                .when(selected, |d| d.bg(ui.hover).font_weight(FontWeight::SEMIBOLD))
+                .child(
+                    div()
+                        .w(px(12.))
+                        .text_size(px(11.))
+                        .text_color(ui.fg)
+                        .child(if selected { "●" } else { "" }),
+                )
+                .child(label);
+            row = row.on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.apply_menu_choice(kind, &value, cx);
+                }),
+            );
+            items.push(row);
+        }
+        let menu_left = match kind {
+            MenuKind::Lang => 350.0,
+            MenuKind::Theme => 432.0,
+            MenuKind::Monitor => 516.0,
+            MenuKind::Ratio => 600.0,
+        };
+        div()
+            .absolute()
+            .top(px(58.))
+            .left(px(menu_left))
+            .w(px(240.))
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .p(px(6.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel)
+            .shadow_lg()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(3.))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.muted)
+                    .child(title.to_string()),
+            )
+            .children(items)
+    }
+
+    /// Apply one choice from the option list, close it, and persist.
+    fn apply_menu_choice(&mut self, kind: MenuKind, value: &str, cx: &mut Context<Root>) {
+        match kind {
+            MenuKind::Lang => {
+                self.lang = value.to_string();
+                let hint = self.bible_search.placeholder(&self.lang).to_string();
+                let f = self.search_field.clone();
+                f.update(cx, |field, cx| field.set_placeholder(&hint, cx));
+            }
+            MenuKind::Theme => {
+                self.theme_id = value.to_string();
+            }
+            MenuKind::Monitor => {
+                if let Ok(i) = value.parse::<usize>() {
+                    self.set_projector_display(cx, i.min(2));
+                }
+            }
+            MenuKind::Ratio => {
+                self.aspect_ratio = value.to_string();
+            }
+        }
+        self.menu_popup = None;
+        self.persist_layout_quiet();
+        // Theme and ratio are wall content; republish also retunes the doc.
+        self.republish(cx);
+        cx.notify();
     }
 
     /// Sheet position contract: File/Agenda/Songs/Bibles/Media/Style/View
     /// menu row. Each item drives existing workspace state (ribbon tab,
     /// browser tab, disclosures, viewer mode) — no dead wires.
     fn menu_row(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+        // Menu-bar tabs: label, then a 2px rule under the open workspace.
+        // No red here; the active workspace is named by ink + weight +
+        // position, which survives grayscale and every skin.
+        let menu_tab = |ui: &UI,
+                        cx: &mut Context<Root>,
+                        text: &str,
+                        active: bool,
+                        f: fn(&mut Root, &mut Context<Root>)| {
+            let mut d = div()
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(4.))
+                .text_size(px(12.))
+                .text_color(if active { ui.fg } else { ui.muted })
+                .cursor_pointer()
+                .border_b_2()
+                .border_color(if active { ui.accent } else { rgba(0x00000000) })
+                .child(text.to_string());
+            if active {
+                d = d.font_weight(FontWeight::SEMIBOLD);
+            } else {
+                d = d.hover(|s| s.bg(ui.hover).text_color(ui.fg));
+            }
+            d.on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| f(this, cx)),
+            )
+        };
+        let divider = || div().w(px(1.)).h(px(15.)).bg(ui.border);
         div()
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_1()
+            .gap(px(1.))
             .items_center()
             .px_2()
-            .py(px(0.))
-            .text_size(px(11.))
-            .bg(ui.panel)
+            .py(px(1.))
+            .text_size(px(12.))
+            .bg(ui.sunken)
             .border_b_1()
             .border_color(ui.border)
-            .child(btn(ui, cx, "File", self.agenda_file_open, |this, _, _, cx| {
+            .child(menu_tab(ui, cx, "File", self.agenda_file_open, |this, cx| {
                 this.agenda_file_open = !this.agenda_file_open;
                 this.show_control(cx);
             }))
-            .child(btn(ui, cx, "Agenda", false, |this, _, _, cx| {
-                this.show_control(cx);
-                this.set_status(cx, "Agenda.");
-            }))
-            .child(btn(
+            .child(menu_tab(
+                ui,
+                cx,
+                "Agenda",
+                self.sel_item.is_some() && self.sel_song.is_none(),
+                |this, cx| {
+                    // Back to the agenda as the centre's source: drop the
+                    // transient library preview so the selected item drives
+                    // the slide panel again.
+                    this.sel_song = None;
+                    this.show_control(cx);
+                    this.set_status(cx, "Agenda.");
+                },
+            ))
+            .child(menu_tab(
                 ui,
                 cx,
                 "Songs",
                 self.left_tab == LeftTab::Songs,
-                |this, _, _, cx| {
+                |this, cx| {
                     this.left_tab = LeftTab::Songs;
                     this.show_control(cx);
                 },
             ))
-            .child(btn(
+            .child(menu_tab(
                 ui,
                 cx,
                 "Bibles",
                 self.left_tab == LeftTab::Bibles,
-                |this, _, _, cx| {
+                |this, cx| {
                     this.left_tab = LeftTab::Bibles;
                     this.show_control(cx);
                 },
             ))
-            .child(btn(
+            .child(menu_tab(
                 ui,
                 cx,
                 "Media",
                 self.ribbon == RibbonTab::Background,
-                |this, _, _, cx| {
+                |this, cx| {
                     this.ribbon = RibbonTab::Background;
                     this.show_control(cx);
                 },
             ))
-            .child(btn(
-                ui,
-                cx,
-                "Style",
-                self.show_style_explorer,
-                |this, _, _, cx| {
-                    this.show_style_explorer = !this.show_style_explorer;
-                    this.show_control(cx);
-                },
-            ))
-            .child(btn(ui, cx, "View", self.viewer_mode, |this, _, _, cx| {
+            .child(menu_tab(ui, cx, "Style", self.show_style_explorer, |this, cx| {
+                this.show_style_explorer = !this.show_style_explorer;
+                this.show_control(cx);
+            }))
+            .child(menu_tab(ui, cx, "View", self.viewer_mode, |this, cx| {
                 this.toggle_viewer_mode(cx);
             }))
             .child(div().w(px(8.)))
-            // Sheet menu-strip right cluster: Lang · Theme · Monitor · Ratio
-            // indicators (each one cycles on click) plus the primary
-            // Projector button, Stage view and Stop. All drive existing
-            // state — the same actions as the ribbon/settings, surfaced
-            // where the operator's hand already is.
+            .child(divider())
+            .child(div().w(px(6.)))
+            // Right cluster: live values that open a real option list. The
+            // old buttons silently cycled on click with no visible choices
+            // (R-REVIEW P1.8); `▾` now promises the list it delivers.
             .child({
-                let label = format!("Lang: {}", self.lang.to_uppercase());
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    this.lang = if this.lang == "fr" { "en".into() } else { "fr".into() };
-                    this.persist_layout_quiet();
-                    cx.notify();
-                })
+                let open = self.menu_popup == Some(MenuKind::Lang);
+                setting_trigger(
+                    ui,
+                    format!("Lang: {}", self.lang.to_uppercase()),
+                    open,
+                    MenuKind::Lang,
+                    cx,
+                )
             })
             .child({
-                // Current values ride in the label; the button cycles.
-                let label = format!(
-                    "{}: {}",
-                    "Theme",
-                    vp_core::themes::theme_by_id(&self.theme_id)
-                        .map(|t| t.name)
-                        .unwrap_or("Light")
-                );
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    let ids: Vec<&str> = vp_core::themes::builtin_themes()
-                        .iter()
-                        .map(|t| t.id)
-                        .collect();
-                    let next = ids
-                        .iter()
-                        .position(|id| **id == this.theme_id)
-                        .map(|i| ids[(i + 1) % ids.len()])
-                        .unwrap_or("light");
-                    this.theme_id = next.into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                })
+                let name = vp_core::themes::theme_by_id(&self.theme_id)
+                    .map(|t| t.name)
+                    .unwrap_or("Light");
+                let open = self.menu_popup == Some(MenuKind::Theme);
+                setting_trigger(ui, format!("Theme: {name}"), open, MenuKind::Theme, cx)
             })
             .child({
-                let label = format!("Monitor {}", self.projector_display + 1);
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    this.set_projector_display(cx, (this.projector_display + 1) % 3);
-                    cx.notify();
-                })
+                let open = self.menu_popup == Some(MenuKind::Monitor);
+                setting_trigger(
+                    ui,
+                    format!("Monitor {}", self.projector_display + 1),
+                    open,
+                    MenuKind::Monitor,
+                    cx,
+                )
             })
             .child({
-                let label = format!("Ratio {}", self.aspect_ratio);
-                btn(ui, cx, &label, false, |this, _, _, cx| {
-                    const RATIOS: [&str; 6] =
-                        ["current", "4x3.2", "4x3", "16x10", "16x9", "16x8"];
-                    let i = RATIOS
-                        .iter()
-                        .position(|r| *r == this.aspect_ratio)
-                        .map(|i| (i + 1) % RATIOS.len())
-                        .unwrap_or(0);
-                    this.aspect_ratio = RATIOS[i].into();
-                    this.persist_layout_quiet();
-                    this.republish(cx);
-                    cx.notify();
-                })
+                let open = self.menu_popup == Some(MenuKind::Ratio);
+                setting_trigger(
+                    ui,
+                    format!("Ratio {}", self.aspect_ratio),
+                    open,
+                    MenuKind::Ratio,
+                    cx,
+                )
             })
-            .child(div().w(px(8.)))
+            .child(div().w(px(6.)))
+            .child(divider())
+            .child(div().w(px(6.)))
             .child(btn(ui, cx, "Projector", self.projector_window.is_some(), |this, _, _, cx| {
                 this.toggle_projector(cx);
             }))
             .child({
                 let active = self.mode == Mode::Stage;
                 let mut b = div()
-                    .px(px(crate::ux::RIBBON_BTN_PX))
+                    .px(px(6.))
+                    .py(px(2.))
                     .min_h(px(crate::ux::RIBBON_LINE_PX))
-                    .rounded_sm()
-                    .bg(if active { ui.selection } else { ui.panel })
-                    .text_color(if active { ui.selection_ink } else { ui.fg })
-                    .cursor_pointer()
+                    .rounded(px(4.))
                     .border_1()
-                    .border_color(ui.border)
+                    .border_color(if active { ui.fg } else { rgba(0x00000000) })
+                    .bg(if active { ui.hover } else { rgba(0x00000000) })
+                    .text_color(ui.fg)
+                    .cursor_pointer()
+                    .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child("Stage view".to_string());
-                if active {
-                    b = b.border_2();
+                if !active {
+                    b = b.hover(|s| s.bg(ui.hover));
                 }
                 // Press-phase handler: in Stage mode a mouse-UP on this
                 // button never arrived (the stage tree owns the release),
@@ -7332,11 +8027,14 @@ impl Root {
                 .id("ribbon-collapsed-strip")
                 .flex()
                 .flex_row()
-                .gap_1()
-                .px(px(6.))
-                .py(px(2.))
+                .gap_2()
+                .px(px(8.))
+                .py(px(4.))
                 .items_center()
-                .bg(rgb(0x1E6CC8))
+                .bg(ui.sunken)
+                .border_b_1()
+                .border_color(ui.border)
+                .text_color(ui.muted)
                 .cursor_pointer()
                 // The whole strip is the affordance, not just the button:
                 // a hand cursor that only works on 120 px is a lie.
@@ -7374,26 +8072,23 @@ impl Root {
                 let id = tab.id();
                 let title = tab.title();
                 let active = self.ribbon == tab;
-                // Signal Room tabs (perez-sheet.html): paper tabs, the
-                // active tab filled ink. Primary actions are signal red
-                // buttons, not tabs — tabs never compete with them.
-                let (tab_bg, tab_ink, tab_border) = if active {
-                    (ui.fg, ui.bg, ui.fg)
-                } else {
-                    (ui.panel, ui.fg, ui.border)
-                };
-                div()
-                    .px(px(1.))
-                    .py(px(crate::ux::RIBBON_TAB_PY))
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(tab_border)
-                    .bg(tab_bg)
-                    .text_color(tab_ink)
+                // Ribbon tabs: quiet text until chosen, then an ink chip.
+                // Red stays off the tab row entirely — tabs name a workspace,
+                // they do not signal anything about the room.
+                let mut tab = div()
+                    .px(px(8.))
+                    .py(px(crate::ux::RIBBON_TAB_PY + 1.0))
+                    .border_b_2()
+                    .border_color(if active { ui.accent } else { rgba(0x00000000) })
+                    .text_color(if active { ui.fg } else { ui.muted })
                     .cursor_pointer()
-                    .when(active, |d| d.font_weight(FontWeight::BOLD))
-                    .child(title.to_string())
-                    .on_mouse_up(
+                    .child(title.to_string());
+                if active {
+                    tab = tab.font_weight(FontWeight::SEMIBOLD);
+                } else {
+                    tab = tab.hover(|s| s.bg(ui.hover).text_color(ui.fg));
+                }
+                tab.on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, ev: &MouseUpEvent, _, cx| {
                             if ev.click_count >= 2 {
@@ -7644,10 +8339,11 @@ impl Root {
             .max_w_full()
             .bg(ui.panel)
             .text_color(ui.fg)
-            .rounded_md()
-            .border_2()
-            .border_color(ui.accent)
-            .p(px(10.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(ui.border)
+            .shadow_lg()
+            .p(px(14.))
             .flex()
             .flex_col()
             .gap_2()
@@ -7688,6 +8384,15 @@ impl Root {
                     }),
                     btn(ui, cx, "whole-song stage", self.whole_song_stage, |this, _, _, cx| {
                         this.whole_song_stage = !this.whole_song_stage;
+                        cx.notify();
+                    }),
+                    btn(ui, cx, "reduce motion", self.reduced_motion, |this, _, _, cx| {
+                        this.reduced_motion = !this.reduced_motion;
+                        // Static carets (and any future UI motion) follow
+                        // immediately; the choice persists like every other
+                        // workspace preference.
+                        this.sync_doc_surface(cx);
+                        this.persist_layout_quiet();
                         cx.notify();
                     }),
                     btn(ui, cx, "ref header", self.whole_ref_header, |this, _, _, cx| {
@@ -7944,13 +8649,13 @@ impl Root {
             "paste a page URL, Set shows it behind the lyrics".to_string()
         };
         // Live web view: one toggle, invisible until wanted. Default off =
-        // today's offline tiles; on = website slides open in a hardened
-        // browser window on the projector display (loopback exempt, remote
-        // asks Allow first, dead servers keep the tile).
+        // remote offline tiles; loopback stage pages render regardless
+        // (FreeShow parity — no packet leaves the machine), remote asks
+        // Allow first, dead servers keep the tile.
         let live_on = self.live_web_on;
         let live_pending = self.live_web_pending.clone();
         let live_status = if !live_on {
-            "Live view off — tiles only (default).".to_string()
+            "Live view off — loopback stage pages still render, remote stays tiled.".to_string()
         } else if let Some(u) = live_pending.as_deref() {
             format!("Live view: remote page waiting — Allow: {u}")
         } else {
@@ -8109,21 +8814,9 @@ impl Root {
             .justify_center()
             .text_size(px(11.))
             .border_1()
-            .border_color(if dot_lit {
-                rgb(0x16A34A)
-            } else {
-                ui.border
-            })
-            .bg(if dot_lit {
-                rgb(0x22C55E)
-            } else {
-                ui.bg
-            })
-            .text_color(if dot_lit {
-                rgb(0xFFFFFF)
-            } else {
-                ui.border
-            })
+            .border_color(if dot_lit { ui.fg } else { ui.border })
+            .bg(if dot_lit { ui.fg } else { rgba(0x00000000) })
+            .text_color(if dot_lit { ui.bg } else { ui.muted })
             .child("●".to_string());
         style_kids.push(row(vec![
             btn_stop(
@@ -8138,18 +8831,8 @@ impl Root {
                 },
             ),
             dot,
-            btn(
-                ui,
-                cx,
-                "A✎",
-                self.show_style_explorer,
-                |this, _, _, cx| {
-                    this.show_style_explorer = !this.show_style_explorer;
-                    this.set_status(cx, "Style preset editor (Style explorer).");
-                    this.persist_layout_quiet();
-                    cx.notify();
-                },
-            ),
+            // No second launcher here: the preset row already ends with
+            // `Explorer`. Two buttons for one door was one too many.
         ]));
         // The 8 style levels live in the floating overlay menu
         // (`dropdown_overlay`), NOT inline here: inline expansion shoved
@@ -8161,14 +8844,7 @@ impl Root {
         let mut presets: Vec<Div> = Vec::new();
         for level in style_preset_levels() {
             let active = self.style_level == level;
-            let glyph = match level {
-                "Base" => "●",
-                "Songbooks" => "▤",
-                "Song" => "♪",
-                "Verse" => "◈",
-                _ => "▫",
-            };
-            let caption = format!("{glyph} {level}");
+            let caption = level.to_string();
             presets.push(btn(ui, cx, &caption, active, move |this, _, _, cx| {
                 this.style_level = level.into();
                 this.style_menu_open = false;
@@ -8177,14 +8853,9 @@ impl Root {
                 cx.notify();
             }));
         }
-        // Style Explorer launcher ends the preset row (not a third line of
-        // the group) — same handler; the tree still opens over whichever tab
-        // is active (UX-RESEARCH §5.3).
-        presets.push(btn(ui, cx, "Style explorer", self.show_style_explorer, |this, _, _, cx| {
-            this.show_style_explorer = !this.show_style_explorer;
-            this.persist_layout_quiet();
-            cx.notify();
-        }));
+        // No second Explorer launcher: the Style menu tab already opens the
+        // same tree, and this one was the width that forced the ribbon to
+        // wrap to a second band at 1366.
         style_kids.push(row(presets));
         // Font group: family + B/I/U + alignment + chord notation.
         // Font dropdown (WI-029): every installed family, searchable — eight
@@ -8195,7 +8866,7 @@ impl Root {
         font_kids.push(btn_stop(
             ui,
             cx,
-            &format!("▾ {}", self.font_family),
+            &format!("{} ▾", self.font_family),
             self.font_menu_open,
             |this, _, _, cx| {
                 if !this.font_menu_open {
@@ -8225,23 +8896,43 @@ impl Root {
         // steps (it read as a static caption hanging off the left before).
         // Same strip position, same handlers.
         let size_value = self.font_size.round() as i32;
-        font_kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
-            this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+        font_kids.push(btn_tip(
+            ui,
+            cx,
+            "A−",
+            "Projection lyric size: -2 px",
+            false,
+            |this, _, _, cx| {
+                this.font_size = (this.font_size - 2.0).clamp(18.0, 120.0);
+                this.mirror_font_to_style();
+                let sz = this.font_size;
+                this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                    v.size = Some(sz);
+                });
+            },
+        ));
+        font_kids.push(font_size_readout(ui, size_value, cx, |this, _, _, cx| {
+            this.font_size = 44.0;
             this.mirror_font_to_style();
-            let sz = this.font_size;
-            this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
-                v.size = Some(sz);
+            this.write_style_attr(cx, "Size 44", move |v| {
+                v.size = Some(44.0);
             });
         }));
-        font_kids.push(font_size_readout(ui, size_value));
-        font_kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
-            this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
-            this.mirror_font_to_style();
-            let sz = this.font_size;
-            this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
-                v.size = Some(sz);
-            });
-        }));
+        font_kids.push(btn_tip(
+            ui,
+            cx,
+            "A+",
+            "Projection lyric size: +2 px",
+            false,
+            |this, _, _, cx| {
+                this.font_size = (this.font_size + 2.0).clamp(18.0, 120.0);
+                this.mirror_font_to_style();
+                let sz = this.font_size;
+                this.write_style_attr(cx, &format!("Size {}", sz.round() as i32), move |v| {
+                    v.size = Some(sz);
+                });
+            },
+        ));
         font_kids.push(btn(ui, cx, "B", self.bold, |this, _, _, cx| {
             this.bold = !this.bold;
             let on = this.bold;
@@ -8265,10 +8956,13 @@ impl Root {
         }));
         // Glyph-only: the operator reads the alignment from the icon and the
         // hover tip names it (ribbon width is the chrome budget's currency).
-        for (glyph, want) in [
-            ("⇤", Align::Left),
-            ("⇔", Align::Center),
-            ("⇥", Align::Right),
+        // Alignment is a style-level setting (like vertical align), so it
+        // lives in `More`; the working Font row stays to one line.
+        let mut set_once_kids: Vec<Div> = Vec::new();
+        for (icon, want) in [
+            ("ui-align-left", Align::Left),
+            ("ui-align-center", Align::Center),
+            ("ui-align-right", Align::Right),
         ] {
             let active = self.align == want;
             let label = match want {
@@ -8276,15 +8970,16 @@ impl Root {
                 Align::Center => "Center",
                 Align::Right => "Right",
             };
-            font_kids.push(btn_tip(
+            set_once_kids.push(icon_button(
                 ui,
                 cx,
-                glyph,
+                icon,
                 match want {
                     Align::Left => "Align left",
                     Align::Center => "Center",
                     Align::Right => "Align right",
                 },
+                13.,
                 active,
                 move |this, _, _, cx| {
                     this.align = want;
@@ -8297,13 +8992,15 @@ impl Root {
         }
         // Vertical placement of the lyric block in its frame (WI-021):
         // top / center / bottom, same global-setting shape as horizontal.
+        // Set-once per style level, so it lives in `More` with the other
+        // style-wide knobs and keeps the working Font row to one line.
         for (glyph, want) in [
             ("↑", VAlign::Top),
             ("↕", VAlign::Center),
             ("↓", VAlign::Bottom),
         ] {
             let active = self.valign == want;
-            font_kids.push(btn_tip(
+            set_once_kids.push(btn_tip(
                 ui,
                 cx,
                 glyph,
@@ -8326,15 +9023,17 @@ impl Root {
                 },
             ));
         }
-        // Lyric text color (WI-024): preset swatches + Auto (theme). The
-        // Colors group next door drives the accent; this one drives the
-        // words on the screen — the vendor styles text color per level,
-        // v1 keeps one global setting like alignment.
+        // Lyric text colour (WI-024) and chord notation are set-once
+        // preferences, so they ride in the `More` disclosure with the other
+        // set-once groups. The working Font row keeps only controls an
+        // operator touches while a song is live; the ribbon loses the
+        // six-colour swatch rainbow that competed with the brand signal.
+        let mut more_kids: Vec<Div> = set_once_kids;
         for sw in [
             "#FFFFFF", "#FACC15", "#38BDF8", "#22C55E", "#F97316", "#000000",
         ] {
             let active = self.fg_override.as_deref() == Some(sw);
-            font_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
+            more_kids.push(swatch(ui, cx, sw, active, move |this, _, _, cx| {
                 this.fg_override = Some(sw.into());
                 this.mirror_font_to_style();
                 this.write_style_attr(cx, &format!("Colour {sw}"), move |v| {
@@ -8342,7 +9041,7 @@ impl Root {
                 });
             }));
         }
-        font_kids.push(btn(
+        more_kids.push(btn(
             ui,
             cx,
             "◌ Auto",
@@ -8356,16 +9055,16 @@ impl Root {
                 });
             },
         ));
-        font_kids.push(btn(
+        more_kids.push(btn(
             ui,
             cx,
-            "C-D-E",
+            "Chords C-D-E",
             self.notation == ChordNotation::Abc,
             |this, _, _, cx| {
                 this.apply_transpose(cx, 0, Some(ChordNotation::Abc));
             },
         ));
-        font_kids.push(btn(
+        more_kids.push(btn(
             ui,
             cx,
             "Do-Re-Mi",
@@ -8485,9 +9184,27 @@ impl Root {
             .child(group(ui, "Song", song_kids))
             .child(group(ui, &self.t("styles"), style_kids))
             .child(group(ui, &self.t("font"), font_kids))
-            .child(group(ui, "Slide layout", layout_kids))
-            .child(group(ui, &self.t("colors"), color_kids))
-            .child(group(ui, &self.t("animation"), anim_kids));
+            // Set-once groups fold behind ONE disclosure control (RESEARCH
+            // P-15). It is deliberately a bare button, not a group with a
+            // "More" caption and a "More" label inside it.
+            .child(icon_button(
+                ui,
+                cx,
+                "ui-more",
+                "More controls — colors, slide layout, animation, chords, text colour",
+                16.,
+                self.ribbon_more_open,
+                |this, _, _, cx| {
+                    this.ribbon_more_open = !this.ribbon_more_open;
+                    cx.notify();
+                },
+            ))
+            .when(self.ribbon_more_open, |d| {
+                d.child(group(ui, "Chord notation", more_kids))
+                    .child(group(ui, "Slide layout", layout_kids))
+                    .child(group(ui, &self.t("colors"), color_kids))
+                    .child(group(ui, &self.t("animation"), anim_kids))
+            });
         ribbon_groups
     }
 
@@ -8593,10 +9310,10 @@ impl Root {
                     .flex_col()
                     .gap_1()
                     .p(px(6.))
-                    .rounded_md()
+                    .rounded(px(6.))
                     .bg(ui.panel)
                     .border_1()
-                    .border_color(ui.engaged)
+                    .border_color(ui.border)
                     .shadow_lg()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -8668,10 +9385,10 @@ impl Root {
                     .flex_col()
                     .gap_1()
                     .p(px(6.))
-                    .rounded_md()
+                    .rounded(px(6.))
                     .bg(ui.panel)
                     .border_1()
-                    .border_color(ui.engaged)
+                    .border_color(ui.border)
                     .shadow_lg()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -8726,7 +9443,7 @@ impl Root {
             // window was two rows tall). A short agenda fits content; a long
             // one scrolls inside the cap. Dragging the divider below pins a
             // fixed height instead (`agenda_h`), persisted like the widths.
-            .child(self.agenda_wrap(ui, cx))
+            .child(self.agenda_wrap(ui, cx, vh))
             .child(self.hdivider(ui, cx, 0))
             .child(
                 div()
@@ -8826,6 +9543,9 @@ impl Root {
             )
             // Right: slides above, preview below (split by a draggable
             // divider), command strip full-height at the panel's edge.
+            // The divider belongs BETWEEN centre and right, not after the
+            // right column at the window edge.
+            .child(self.divider(ui, cx, 1))
             .child(
                 div()
                     .flex()
@@ -8852,8 +9572,7 @@ impl Root {
                             .when(self.show_shortcuts, |d| d.child(self.shortcut_panel(ui))),
                     )
                     .child(tool_strip)
-            )
-            .child(self.divider(ui, cx, 1));
+            );
         if let Some(layer) = self.dropdown_overlay(ui, cx) {
             root = root.child(layer);
         }
@@ -8870,11 +9589,30 @@ impl Root {
                 Some(song) => {
                     let verses = song.ordered_verses().len();
                     let slides = self.item_slides(idx).len();
-                    format!("{verses} verses · {slides} slides")
+                    let mut bits: Vec<String> = Vec::new();
+                    if self.show_abbrev {
+                        let ab = self.songbook_abbrev(&song.songbook_id);
+                        if !ab.is_empty() {
+                            bits.push(ab);
+                        }
+                    }
+                    if self.show_number && !song.ccli.is_empty() {
+                        bits.push(song.ccli.clone());
+                    }
+                    let prefix = if bits.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} · ", bits.join(" "))
+                    };
+                    format!(
+                        "{prefix}{verses} {} · {slides} {}",
+                        if verses == 1 { "verse" } else { "verses" },
+                        if slides == 1 { "slide" } else { "slides" }
+                    )
                 }
                 None => "Song · missing from library".to_string(),
             },
-            ItemRef::Bible { bible_ref } => format_header(bible_ref),
+            ItemRef::Bible { bible_ref: _ } => "Bible verses".to_string(),
             ItemRef::File { file } => {
                 // `Path::extension` (not `rsplit('.')`, which returns the
                 // whole path for extensionless files like `/home/op/README`).
@@ -8965,7 +9703,7 @@ impl Root {
             } else {
                 format!("Chords in these lyrics: {}", chords.join(" – "))
             };
-            body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar [chord] key inserts one at the cursor); transpose lives with the song chords.");
+            body.push_str("\n\nAdd markers like [C] [G] [Am] in the Lyrics tab (the toolbar Chord key inserts one at the cursor); transpose lives with the song chords.");
             if text.contains("[]") {
                 body.push_str("\nEmpty [] markers are ignored until a chord letter is typed inside them.");
             }
@@ -8975,7 +9713,7 @@ impl Root {
                 .min_h(px(340.))
                 .overflow_hidden()
                 .p(px(10.))
-                .text_size(px(12.5))
+                .text_size(px(12.))
                 .text_color(ui.fg)
                 .child(body);
         }
@@ -9047,15 +9785,23 @@ impl Root {
                     .child(btn(ui, cx, "Open", false, move |this, _, _, cx| {
                         this.open_path_with_os(&open_path, cx);
                     }))
-                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
-                        if let Some(si) = this.sel_song {
-                            if let Some(song) = this.songs.get_mut(si) {
-                                song.files.retain(|f| f != &drop_path);
-                                this.song_dirty = true;
+                    .child(icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Detach this file",
+                        11.,
+                        false,
+                        move |this, _, _, cx| {
+                            if let Some(si) = this.sel_song {
+                                if let Some(song) = this.songs.get_mut(si) {
+                                    song.files.retain(|f| f != &drop_path);
+                                    this.song_dirty = true;
+                                }
                             }
-                        }
-                        cx.notify();
-                    })),
+                            cx.notify();
+                        },
+                    )),
             );
         }
         col.child(
@@ -9080,20 +9826,17 @@ impl Root {
             .flex()
             .flex_row()
             .flex_wrap()
-            .gap_1()
+            .gap(px(2.))
             .items_center()
             .px_2()
-            .py(px(0.))
-            .text_size(px(10.))
+            .py(px(1.))
+            .text_size(px(12.))
             .bg(ui.panel)
             .border_b_1()
             .border_color(ui.border)
             .child(row_wrap(vec![
             btn(ui, cx, "New", false, |this, _, _, cx| {
-                this.agenda = Agenda::new("New agenda");
-                this.sel_item = None;
-                this.live_item = None;
-                cx.notify();
+                this.new_agenda(cx);
             }),
             btn(ui, cx, "Open…", false, |this, _, _, cx| {
                 this.open_agenda(cx)
@@ -9101,17 +9844,21 @@ impl Root {
             btn(ui, cx, "Save", false, |this, _, _, cx| {
                 this.save_agenda(cx)
             }),
+            div().w(px(1.)).h(px(14.)).bg(ui.border),
             btn(ui, cx, "Open VP plan…", false, |this, _, _, cx| {
                 this.import_native_plan(cx)
             }),
             btn(ui, cx, "Save VP plan…", false, |this, _, _, cx| {
                 this.export_native_plan(cx)
             }),
+            div().w(px(1.)).h(px(14.)).bg(ui.border),
+            // A starter, not a toggle: it is a one-shot load, so it must not
+            // sit permanently "on" (the old `true` made it a red block).
             btn(
                 ui,
                 cx,
                 "Load sample agenda",
-                true,
+                false,
                 |this, _, _, cx| {
                     this.load_sample_agenda(cx)
                 },
@@ -9124,11 +9871,15 @@ impl Root {
 
     /// Agenda wrapper: automatic (content up to the 360 px cap) until the
     /// operator drags the divider below it, then the pinned height.
-    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
+    fn agenda_wrap(&mut self, ui: &UI, cx: &mut Context<Root>, vh: f32) -> Div {
         let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
+        // Height-aware cap: a fixed 260px left the library browser with no
+        // list on a 768px booth laptop. 30% of the window keeps ~5 agenda
+        // rows while guaranteeing the song list below stays visible.
+        let cap = (vh * 0.32).clamp(240., 320.);
         wrap = match self.agenda_h {
             Some(h) => wrap.h(px(h)),
-            None => wrap.flex_none().max_h(px(360.)),
+            None => wrap.flex_none().max_h(px(cap)),
         };
         wrap.child(self.agenda_panel(ui, cx))
     }
@@ -9138,8 +9889,16 @@ impl Root {
     fn preview_wrap(&mut self, ui: &UI, cx: &mut Context<Root>, vw: f32, vh: f32) -> Div {
         let mut wrap = div().flex().flex_col().min_h_0().overflow_hidden();
         wrap = match self.preview_h {
-            Some(h) => wrap.h(px(h)),
-            None => wrap.flex_none(),
+            // A persisted preview height must not squeeze the slide list
+            // into a slit when the window shrinks: cap it at 34% of the
+            // window (220px floor), never below the slide list's needs.
+            Some(h) => wrap.h(px(h.min((vh * 0.34).max(220.)))),
+            // Slides and preview share the column (the slide list is the
+            // working surface, not a footnote). A 220px floor keeps the
+            // picture usable; flex_1 stops the preview from claiming its
+            // intrinsic height and squeezing the rows into a 170px slit at
+            // 1366x768 (R1-05).
+            None => wrap.flex_1().min_h(px(220.)).max_h(px(420.)),
         };
         wrap.child(self.preview_big_panel(ui, cx, vw, vh))
     }
@@ -9169,46 +9928,14 @@ impl Root {
             // Row shape: songbook ABBREV, song NUMBER, title — then the
             // status dot. `show_abbrev` / `show_number` (1.27b toggles)
             // hide their column.
-            let row_title = match &item.reference {
-                ItemRef::Song { song_id } => {
-                    let song = self.songs.iter().find(|s| &s.id == song_id);
-                    let ab = if self.show_abbrev {
-                        song.map(|s| self.songbook_abbrev(&s.songbook_id))
-                            .filter(|a| !a.is_empty())
-                            .map(|a| format!(" {a}"))
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    let num = if self.show_number {
-                        song.map(|s| {
-                            if !s.song_id.is_empty() {
-                                s.song_id.clone()
-                            } else {
-                                s.ccli.clone()
-                            }
-                        })
-                        .filter(|n| !n.is_empty())
-                        .map(|n| format!(" {n}"))
-                        .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    format!("{}{}", ab, format!("{num} {}", item.title).trim_start())
-                        .trim_start()
-                        .to_string()
-                }
-                _ => item.title.clone(),
-            };
-            let title = row_title;
-            // A filled signal-red dot at the right edge of every row is the
-            // per-item status indicator the original shows.
-            let status_dot = div()
-                .flex_none()
-                .w(px(8.))
-                .h(px(8.))
-                .rounded_full()
-                .bg(ui.selection);
+            // Title at full voice; songbook abbreviation and number are
+            // metadata, so they join the muted subline instead of gluing
+            // themselves to the title (`M2762838 Amazing Grace`).
+            let title = item.title.clone();
+            // Selection is an outline + tinted surface, never a solid red
+            // block (RESEARCH P-04): the row keeps its readable body text and
+            // the red edge does the pointing. Live keeps its lime fill.
+            let row_ink = if live { ui.live_ink } else { ui.fg };
             // The row being renamed renders its title as an editable field
             // (double-click → rename in place); every other row is plain text.
             let title_cell: Div = if self.renaming_item == Some(idx) {
@@ -9219,23 +9946,52 @@ impl Root {
                     .items_center()
                     .flex_1()
                     .child(div().flex_1().child(self.rename_field.clone()))
-                    .child(btn(ui, cx, "✓", false, move |this, _, _, cx| {
-                        this.commit_agenda_rename(cx);
-                    }))
-                    .child(btn(ui, cx, "✕", false, move |this, _, _, cx| {
-                        this.cancel_agenda_rename(cx);
-                    }))
+                    .child(icon_button(
+                        ui,
+                        cx,
+                        "ui-check",
+                        "Apply the new name",
+                        12.,
+                        false,
+                        move |this, _, _, cx| {
+                            this.commit_agenda_rename(cx);
+                        },
+                    ))
+                    .child(icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Cancel renaming",
+                        12.,
+                        false,
+                        move |this, _, _, cx| {
+                            this.cancel_agenda_rename(cx);
+                        },
+                    ))
             } else {
                 // Sheet rows pair the title with a small meta line
                 // ("4 verses · key G", "Image · Cover"). It inherits
                 // the row ink, so live/selected coloring still reads.
                 let meta = self.agenda_meta(item, idx);
-                div()
+                let mut cell = div()
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .child(title)
-                    .child(div().text_size(px(10.5)).child(meta))
+                    .child(
+                        div()
+                            .text_size(px(13.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    );
+                if !meta.is_empty() {
+                    cell = cell.child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(if live { row_ink } else { ui.muted })
+                            .child(meta),
+                    );
+                }
+                cell
             };
             rows.push(
                 div()
@@ -9243,29 +9999,31 @@ impl Root {
                     .flex_row()
                     .gap_1()
                     .items_center()
-                    .px_1()
-                    .rounded_sm()
+                    .px(px(5.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if live {
+                        ui.live
+                    } else if selected {
+                        ui.accent
+                    } else {
+                        rgba(0x00000000)
+                    })
                     .bg(if live {
                         ui.live
                     } else if selected {
-                        ui.selection
+                        ui.hover
                     } else {
-                        ui.panel
+                        rgba(0x00000000)
                     })
-                    .text_color(if live {
-                        ui.live_ink
-                    } else if selected {
-                        ui.selection_ink
-                    } else {
-                        ui.fg
-                    })
+                    .text_color(row_ink)
                     .cursor_pointer()
+                    .when(!live && !selected, |d| d.hover(|s| s.bg(ui.hover)))
                     .child(title_cell)
                     .when(live, |d| d.child(live_tag(ui)))
-                    .child(status_dot)
-                    // Lime (live) and red (selected) fills never read as one
-                    // state; the engaged outline marks the keyboard cursor.
-                    .when(selected, |d| d.border_1().border_color(ui.engaged))
+                    // Lime (live) and deep red (selected) fills never read
+                    // as one state; no third outline on top of either.
                     // A single click respects the shield; a **double-click
                     // renames the row in place** (UX-RESEARCH §3.1: items are
                     // renamable meaningful names) and still punches through
@@ -9286,27 +10044,48 @@ impl Root {
             );
         }
         if rows.is_empty() {
-            // The original's empty-state copy names every document kind the
-            // agenda accepts, which doubles as its drag-and-drop contract
-            // (`SCREENSHOT-1.29-LAYOUT.md`).
-            // Wrapped, not clipped: these are sentences, and the pane is
-            // narrower than they are (R-Compression: text ran off the edge).
-            for line in [
-                "The agenda is empty.",
-                "Open one or drag songs and Bible verses here to add them to the agenda, or press Load sample agenda in the strip above to start from a bundled service.",
-                "Drag documents from your desktop:",
-                "Slideshow images, standalone videos, Audio files, PDFs, PowerPoints, MS-Words, MS-Excels, Open Office documents, CCLI songs, web sites, YouTube, Vimeo",
-            ] {
-                rows.push(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .whitespace_normal()
-                        .text_size(px(12.))
-                        .text_color(ui.fg)
-                        .child(line.to_string()),
-                );
-            }
+            // Empty state teaches the accepted inputs (RESEARCH P-12):
+            // one heading, one sentence, then the full drop list at meta
+            // size. Wrapped, never clipped, inside the panel cap.
+            rows.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_size(px(15.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("The agenda is empty."),
+            );
+            rows.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_size(px(12.))
+                    .text_color(ui.muted)
+                    .child(
+                        "Open one, or drag songs and Bible verses here. Load sample agenda in the strip above starts from a bundled service.",
+                    ),
+            );
+            rows.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .pt(px(2.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Drag documents from your desktop:"),
+            );
+            rows.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .child("Images, videos, audio, PDFs, PowerPoints, Word/Excel/Open Office documents, CCLI songs, websites, YouTube, Vimeo."),
+            );
         }
         let recents = library::list_recents(&self.db, 3)
             .unwrap_or_default()
@@ -9323,30 +10102,41 @@ impl Root {
         let empty = self.agenda.items.is_empty();
         let icon_btn = |ui: &UI,
                         cx: &mut Context<Root>,
-                        glyph: &str,
+                        icon: &'static str,
                         tip: &str,
                         enabled: bool,
                         f: fn(&mut Root, &mut Context<Root>)| {
-            let _ = tip;
+            let tip_text: String = match tip {
+                "add" => "Add the selected document to the agenda",
+                "save" => "Save the agenda",
+                "delete" => "Remove the selected agenda item",
+                "move up" => "Move the selected item up",
+                "move down" => "Move the selected item down",
+                other => other,
+            }
+            .to_string();
             let mut b = div()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
                 .w(px(30.))
-                .h(px(24.))
-                .rounded_sm()
-                .border_1()
-                .border_color(if enabled { ui.border } else { ui.bg })
-                .bg(if enabled { ui.panel } else { ui.bg })
-                .text_color(if enabled { ui.fg } else { ui.border })
-                .text_size(px(13.))
-                .child(glyph.to_string());
+                .h(px(22.))
+                .rounded(px(4.))
+                .bg(rgba(0x00000000))
+                .text_color(if enabled { ui.fg } else { ui.muted })
+                .child(icon_el(icon, 14.));
             if enabled {
-                b = b.cursor_pointer().on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _w, cx| f(this, cx)),
-                );
+                b = b
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ui.hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _w, cx| f(this, cx)),
+                    );
+                b.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+                    cx.new(|_| TooltipLabel(tip_text.clone())).into()
+                });
             }
             b
         };
@@ -9366,22 +10156,21 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .w(px(18.))
-                .h(px(24.))
-                .rounded_sm()
-                .border_1()
-                .border_color(if enabled {
-                    if open {
-                        ui.engaged
-                    } else {
-                        ui.border
-                    }
+                .h(px(22.))
+                .rounded(px(4.))
+                .bg(if open {
+                    ui.fg
                 } else {
-                    ui.bg
+                    rgba(0x00000000)
                 })
-                .bg(if enabled { ui.panel } else { ui.bg })
-                .text_color(if enabled { ui.fg } else { ui.border })
-                .text_size(px(11.))
-                .child("▾".to_string());
+                .text_color(if open {
+                    ui.bg
+                } else if enabled {
+                    ui.muted
+                } else {
+                    ui.muted
+                })
+                .child(icon_el("ui-chevron-down", 10.));
             if enabled {
                 b = b
                     .cursor_pointer()
@@ -9405,8 +10194,12 @@ impl Root {
                 );
             }
             if open {
-                b = b.border_2().border_color(ui.engaged);
+                b = b.font_weight(FontWeight::SEMIBOLD);
             }
+            let menu_tip = format!("More {action} options");
+            b.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+                cx.new(|_| TooltipLabel(menu_tip.clone())).into()
+            });
             b
         };
         fn rail_row(main: Div, menu: Div) -> Div {
@@ -9416,35 +10209,35 @@ impl Root {
         debug_assert_eq!(agenda_rail_buttons().len(), 5);
         let rail = vec![
             rail_row(
-                icon_btn(ui, cx, "+", "add", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-plus", "add", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.add_current_to_agenda(cx);
                 }),
                 menu_btn(ui, cx, true, "add"),
             ),
             rail_row(
-                icon_btn(ui, cx, "S", "save", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-save", "save", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.save_agenda(cx);
                 }),
                 menu_btn(ui, cx, true, "save"),
             ),
             rail_row(
-                icon_btn(ui, cx, "✕", "delete", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-trash", "delete", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.remove_selected_agenda_item(cx);
                 }),
                 menu_btn(ui, cx, true, "delete"),
             ),
             rail_row(
-                icon_btn(ui, cx, "⬆", "move up", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-arrow-up", "move up", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.nudge_selected_agenda(cx, -1, false);
                 }),
                 menu_btn(ui, cx, true, "move up"),
             ),
             rail_row(
-                icon_btn(ui, cx, "⬇", "move down", !empty, |this, cx| {
+                icon_btn(ui, cx, "ui-arrow-down", "move down", !empty, |this, cx| {
                     this.rail_menu = None;
                     this.nudge_selected_agenda(cx, 1, false);
                 }),
@@ -9520,10 +10313,7 @@ impl Root {
                         }
                     }),
                     btn(ui, cx, &self.t("new"), false, |this, _, _, cx| {
-                        this.agenda = Agenda::new("New agenda");
-                        this.sel_item = None;
-                        this.live_item = None;
-                        cx.notify();
+                        this.new_agenda(cx);
                     }),
                     btn(ui, cx, &self.t("open"), false, |this, _, _, cx| {
                         this.open_agenda(cx)
@@ -9552,16 +10342,35 @@ impl Root {
         } else {
             Vec::new()
         };
-        let mut agenda_header = vec![file_disclosure];
+        // Keep the File row one line even with a long recents list: the
+        // agenda's height is worth more than the tail of a path.
+        let recents = {
+            let mut s: String = recents.chars().take(42).collect();
+            if s.chars().count() < recents.chars().count() {
+                s.push('…');
+            }
+            s
+        };
+        let file_row = row_wrap(vec![
+            file_disclosure,
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(11.))
+                .text_color(ui.muted)
+                .child(format!("Recent: {recents}")),
+        ]);
+        let mut agenda_header = vec![file_row];
         agenda_header.extend(file_controls);
-        agenda_header.push(label(ui, &format!("Recent: {recents}"), 12.));
         let section = section_scrolled_with_rail(
             ui,
-            // Header per `agenda-panel.png`: a circle-chevron, a dropdown, then
-            // the agenda name. The old `✎` prefix was the *mode* pencil being
-            // reused as decoration, which is why the header never matched.
+            // The panel title is the agenda's name, nothing more. The old
+            // `⊙ ∨` glyph pair was decorative chrome the operator had to
+            // decode; the dirty `*` stays because it carries state.
             &format!(
-                "⊙ ∨ {}{}",
+                "{}{}",
                 // The `*` marks unsaved changes (UX-RESEARCH §3.1, §10.9).
                 if self.agenda_dirty { "*" } else { "" },
                 self.agenda.title
@@ -9603,10 +10412,13 @@ impl Root {
     fn browser_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
         let songs_active = self.left_tab == LeftTab::Songs;
         let mut kids: Vec<Div> = vec![row_wrap(vec![
-            btn(
+            icon_text_button(
                 ui,
                 cx,
+                "ui-book",
                 &self.t("songbooks"),
+                "Songbooks and their songs",
+                13.,
                 songs_active,
                 |this, _, _, cx| {
                     this.left_tab = LeftTab::Songs;
@@ -9616,10 +10428,13 @@ impl Root {
                     cx.notify();
                 },
             ),
-            btn(
+            icon_text_button(
                 ui,
                 cx,
+                "kind-bible",
                 &self.t("bibles_tab"),
+                "Bible translations and references",
+                13.,
                 !songs_active,
                 |this, _, _, cx| {
                     this.left_tab = LeftTab::Bibles;
@@ -9629,11 +10444,11 @@ impl Root {
                     cx.notify();
                 },
             ),
-            btn(
+            text_action(
                 ui,
                 cx,
                 &format!("+ {}", self.t("add")),
-                false,
+                "Add the current document to the agenda",
                 |this, _, _, cx| {
                     this.add_current_to_agenda(cx);
                 },
@@ -9644,17 +10459,37 @@ impl Root {
             // LAYOUT.md / song-search-box.png: magnifier + scope `▾` at the
             // LEFT inside the box, clear `✕` at the right.
             kids.push(row_wrap(vec![
-                label(ui, "⌕", 14.),
-                btn(ui, cx, "▾", self.show_scope_grid, |this, _, _, cx| {
-                    this.show_scope_grid = !this.show_scope_grid;
-                    cx.notify();
-                }),
+                icon_el("ui-search", 13.),
+                icon_button(
+                    ui,
+                    cx,
+                    "ui-chevron-down",
+                    "Search scope: title, lyrics, author, CCLI…",
+                    11.,
+                    self.show_scope_grid,
+                    |this, _, _, cx| {
+                        this.show_scope_grid = !this.show_scope_grid;
+                        cx.notify();
+                    },
+                ),
                 div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
-                btn(ui, cx, "×", false, |this, _, _, cx| {
-                    this.search_field
-                        .update(cx, |field, cx| field.set_text("", cx));
-                    this.refresh_search("", cx);
-                }),
+                if !self.search_field.read(cx).text().is_empty() {
+                    icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Clear the search",
+                        11.,
+                        false,
+                        |this, _, _, cx| {
+                            this.search_field
+                                .update(cx, |field, cx| field.set_text("", cx));
+                            this.refresh_search("", cx);
+                        },
+                    )
+                } else {
+                    div().w(px(0.))
+                },
             ]));
             if self.show_scope_grid {
                 kids.push(self.search_scope_panel(ui, cx));
@@ -9699,22 +10534,36 @@ impl Root {
                 "Select verses by their reference"
             };
             kids.push(row_wrap(vec![
-                btn_tip(
+                icon_el("ui-search", 13.),
+                icon_button(
                     ui,
                     cx,
-                    "⌕",
+                    "ui-chevron-down",
                     mode_tip,
+                    11.,
                     self.bible_search == BibleSearch::Keyword,
                     |this, _, _, cx| {
                         this.cycle_bible_search(cx);
                     },
                 ),
                 div().flex_1().min_w_0().overflow_hidden().child(self.search_field.clone()),
-                btn(ui, cx, "×", false, |this, _, _, cx| {
-                    this.search_field
-                        .update(cx, |field, cx| field.set_text("", cx));
-                    this.apply_bible_search("", cx);
-                }),
+                if !self.search_field.read(cx).text().is_empty() {
+                    icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Clear the search",
+                        11.,
+                        false,
+                        |this, _, _, cx| {
+                            this.search_field
+                                .update(cx, |field, cx| field.set_text("", cx));
+                            this.apply_bible_search("", cx);
+                        },
+                    )
+                } else {
+                    div().w(px(0.))
+                },
             ]));
             // The whole picker (translations + import + books/chapters +
             // verses) is taller than the panel: it scrolls as one, like the
@@ -9741,7 +10590,24 @@ impl Root {
                     ),
             );
         }
-        section(ui, &self.t("browser"), kids)
+        // No "Browser" title row: the tabs name the pane. Removing that
+        // header is one of the five stacked chrome rows the audit flagged.
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .p(px(8.))
+            .min_h_0()
+            .flex_1()
+            .overflow_hidden()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(ui.border)
+            .bg(ui.panel);
+        for k in kids {
+            card = card.child(k);
+        }
+        card
     }
 
     fn search_scope_panel(&mut self, ui: &UI, cx: &mut Context<Root>) -> Div {
@@ -9799,16 +10665,16 @@ impl Root {
         div()
             .flex()
             .flex_col()
-            .p_2()
-            .rounded_md()
+            .p(px(8.))
+            .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
-            .bg(ui.panel)
+            .bg(ui.sunken)
             .child(
                 div()
                     .text_size(px(11.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(ui.accent)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.muted)
                     .child("Find words in:"),
             )
             .child(
@@ -9830,6 +10696,7 @@ impl Root {
         let mut rows: Vec<Div> = Vec::new();
         let all_excluded =
             !self.excluded_books.is_empty() && self.excluded_books.iter().all(|b| b == "book-main");
+        let books_open = self.songbooks_open;
         let mut header = div()
             .flex()
             .flex_row()
@@ -9838,54 +10705,77 @@ impl Root {
             .items_center()
             .px_1()
             .min_w_0()
-            .text_size(px(12.))
-            .text_color(ui.accent)
-            .child("▤ songbooks")
-            .child(btn_tip(
+            .text_size(px(11.))
+            .child(icon_text_button(
                 ui,
                 cx,
-                "+ Songbook",
-                "Create an empty songbook to group new songs",
-                false,
+                "ui-book",
+                "Songbooks",
+                "Show or hide the songbook tree",
+                12.,
+                books_open,
                 |this, _, _, cx| {
-                    this.create_songbook(cx);
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                "all",
-                self.excluded_books.is_empty(),
-                |this, _, _, cx| {
-                    this.excluded_books.clear();
-                    let q = this.search_field.read(cx).text();
-                    this.refresh_search(&q, cx);
-                    this.persist_layout_quiet();
-                },
-            ))
-            .child(btn(
-                ui,
-                cx,
-                if all_excluded { "⊘ none" } else { "⊘ off" },
-                !self.excluded_books.is_empty(),
-                |this, _, _, cx| {
-                    if this.excluded_books.len() == 1 && this.excluded_books.contains("book-main") {
-                        this.excluded_books.clear();
-                    } else {
-                        this.excluded_books.clear();
-                        this.excluded_books.insert("book-main".into());
-                    }
-                    let q = this.search_field.read(cx).text();
-                    this.refresh_search(&q, cx);
-                    this.persist_layout_quiet();
+                    this.songbooks_open = !this.songbooks_open;
+                    cx.notify();
                 },
             ));
+        if books_open {
+            header = header
+                .child(text_action(
+                    ui,
+                    cx,
+                    "+ Songbook",
+                    "Create an empty songbook to group new songs",
+                    |this, _, _, cx| {
+                        this.create_songbook(cx);
+                    },
+                ))
+                .child(text_toggle(
+                    ui,
+                    cx,
+                    "all",
+                    self.excluded_books.is_empty(),
+                    "Include every songbook in instant find",
+                    |this, _, _, cx| {
+                        this.excluded_books.clear();
+                        let q = this.search_field.read(cx).text();
+                        this.refresh_search(&q, cx);
+                        this.persist_layout_quiet();
+                    },
+                ))
+                .child(text_toggle(
+                    ui,
+                    cx,
+                    if all_excluded { "none" } else { "off" },
+                    !self.excluded_books.is_empty(),
+                    "Exclude the main songbook from instant find",
+                    |this, _, _, cx| {
+                        if this.excluded_books.len() == 1
+                            && this.excluded_books.contains("book-main")
+                        {
+                            this.excluded_books.clear();
+                        } else {
+                            this.excluded_books.clear();
+                            this.excluded_books.insert("book-main".into());
+                        }
+                        let q = this.search_field.read(cx).text();
+                        this.refresh_search(&q, cx);
+                        this.persist_layout_quiet();
+                    },
+                ));
+        }
         if !self.hidden_books.is_empty() {
             header = header.child(btn(ui, cx, "👁 show all", false, |this, _, _, cx| {
                 this.hidden_books.clear();
                 this.persist_layout_quiet();
                 cx.notify();
             }));
+        }
+        if !books_open {
+            // Collapsed tree: the toggle lives in the Songs header, so this
+            // pane spends its height on songs, not on a book list nobody
+            // asked to see.
+            return Vec::new();
         }
         rows.push(header);
 
@@ -9910,14 +10800,11 @@ impl Root {
                     .and_then(|si| self.songs.get(si))
                     .is_some_and(|s| s.songbook_id == book.id);
             let name = format!(
-                "{} {} {}{} ({} {})",
-                if scoped { "▾" } else { "▸" },
-                "▤",
+                "{}{}",
                 if book_dirty { "*" } else { "" },
-                book.name,
-                count,
-                unit
+                book.name
             );
+            let meta = format!("{count} {unit}");
             let id_toggle = book.id.clone();
             let id_scope = book.id.clone();
             let id_hide = book.id.clone();
@@ -9925,32 +10812,87 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
+                    .gap(px(3.))
                     .items_center()
-                    .px_1()
-                    .text_size(px(12.))
+                    .px(px(4.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if scoped { ui.accent } else { rgba(0x00000000) })
+                    .bg(if scoped { ui.hover } else { rgba(0x00000000) })
                     // Excluded books gray out, exactly like the original.
-                    .text_color(if excluded { hex("#777777") } else { ui.fg })
-                    .child(btn(
+                    .text_color(if excluded { ui.muted } else { ui.fg })
+                    .cursor_pointer()
+                    .when(!scoped, |d| d.hover(|s| s.bg(ui.hover)))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.songbook_filter = if scoped { None } else { Some(id_scope.clone()) };
+                            let q = this.search_field.read(cx).text();
+                            this.refresh_search(&q, cx);
+                            this.persist_layout_quiet();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(10.))
+                            .text_size(px(11.))
+                            .text_color(ui.muted)
+                            .child(if scoped { "▾" } else { "▸" }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(1.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(ui.muted)
+                                    .child(meta),
+                            ),
+                    )
+                    .child(btn_tip(
                         ui,
                         cx,
-                        if excluded { "⊘" } else { "◉" },
-                        excluded,
+                        if excluded { "☐" } else { "☑" },
+                        if excluded {
+                            "Enable this songbook in instant find"
+                        } else {
+                            "Exclude this songbook from instant find"
+                        },
+                        false,
                         move |this, _, _, cx| {
                             this.toggle_book_excluded(&id_toggle, cx);
                         },
                     ))
-                    .child(btn(ui, cx, &name, scoped, move |this, _, _, cx| {
-                        this.songbook_filter = if scoped { None } else { Some(id_scope.clone()) };
-                        let q = this.search_field.read(cx).text();
-                        this.refresh_search(&q, cx);
-                        this.persist_layout_quiet();
-                    }))
-                    .child(btn(ui, cx, "👁", false, move |this, _, _, cx| {
-                        this.hidden_books.insert(id_hide.clone());
-                        this.persist_layout_quiet();
-                        cx.notify();
-                    })),
+                    .child(
+                        icon_button(
+                            ui,
+                            cx,
+                            "ui-close",
+                            "Hide this songbook (Show all restores it)",
+                            11.,
+                            false,
+                            move |this, _, _, cx| {
+                                this.hidden_books.insert(id_hide.clone());
+                                this.persist_layout_quiet();
+                                cx.notify();
+                            },
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        ),
+                    ),
             );
         }
         vec![div().flex().flex_col().gap(px(2.)).children(rows)]
@@ -9960,14 +10902,24 @@ impl Root {
     fn song_row_div(&mut self, ui: &UI, cx: &mut Context<Root>, i: usize) -> Option<Div> {
         let song = self.songs.get(i)?;
         let selected = self.sel_song == Some(i);
-        let title = format!("♪ {}", self.song_row_title(song));
+        let title = self.song_row_title(song);
         Some(
             div()
-                .px_1()
-                .rounded_sm()
-                .bg(if selected { ui.selection } else { ui.panel })
-                .text_color(if selected { ui.selection_ink } else { ui.fg })
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(4.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if selected { ui.accent } else { rgba(0x00000000) })
+                .bg(if selected { ui.hover } else { rgba(0x00000000) })
+                .text_size(px(12.))
+                .text_color(ui.fg)
                 .cursor_pointer()
+                .when(!selected, |d| d.hover(|s| s.bg(ui.hover)))
+                .child(icon_el("ui-music", 12.))
                 .child(title)
                 .on_mouse_up(
                     MouseButton::Left,
@@ -10022,14 +10974,30 @@ impl Root {
                 let unit = if self.lang == "fr" { "chants" } else { "songs" };
                 rows.push(
                     div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(4.))
+                        .pt(px(3.))
                         .text_size(px(12.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(ui.accent)
-                        .child(format!("▤ {} ({} {})", book.name, mine.len(), unit)),
+                        .text_color(ui.fg)
+                        .child(icon_el("ui-book", 12.))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(book.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(ui.muted)
+                                .child(format!("{} {}", mine.len(), unit)),
+                        ),
                 );
                 for i in mine {
                     if let Some(d) = self.song_row_div(ui, cx, i) {
-                        rows.push(div().pl(px(14.)).child(d));
+                        rows.push(div().pl(px(6.)).child(d));
                     }
                 }
             }
@@ -10047,116 +11015,107 @@ impl Root {
         // A hint that explains the search, the way the original's box does.
         let hint = match self.results.len() {
             0 => self.t("no_results"),
-            n => format!("{} match(es)", n),
+            1 => "1 match".to_string(),
+            n => format!("{n} matches"),
         };
         // Flat rows: the caller (`browser_panel`) puts these in the single
         // books+songs scroller, so everything stays reachable on short
         // windows (no nested fixed header squeezing the list to zero).
+        let title_row = div()
+            .flex()
+            .flex_row()
+            .gap(px(6.))
+            .items_center()
+            .min_w_0()
+            .child(
+                div()
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ui.fg)
+                    .child(self.t("songs")),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .child(hint),
+            )
+            .child(div().flex_1())
+            .child(icon_text_button(
+                ui,
+                cx,
+                "ui-book",
+                "Books",
+                "Show or hide the songbook tree",
+                12.,
+                self.songbooks_open,
+                |this, _, _, cx| {
+                    this.songbooks_open = !this.songbooks_open;
+                    cx.notify();
+                },
+            ));
+        // Flat filter/action row: no boxes, no heavy pills. Abbr/Num/sort
+        // are toggles (accent rule when on); + Agenda / + New are actions.
         let mut out = vec![
-            div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(ui.accent)
-                .child(format!("▤ {} ▤", self.t("songs"))),
-            label(ui, &hint, 12.),
-                row_wrap(vec![
-                    btn_tip(
-                        ui,
-                        cx,
-                        &self.t("abbrev"),
-                        "Show the songbook abbreviation before each title",
-                        self.show_abbrev,
-                        |this, _, _, cx| {
-                            this.show_abbrev = !this.show_abbrev;
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        &self.t("numbers"),
-                        "Show the song number (or CCLI id) before each title",
-                        self.show_number,
-                        |this, _, _, cx| {
-                            this.show_number = !this.show_number;
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        },
-                    ),
-                    btn(
-                        ui,
-                        cx,
-                        if self.sort_by_number {
-                            "№ Sort"
-                        } else {
-                            "A-Z Sort"
-                        },
-                        self.sort_by_number,
-                        |this, _, _, cx| {
-                            this.sort_by_number = !this.sort_by_number;
-                            let q = this.search_field.read(cx).text();
-                            this.refresh_search(&q, cx);
-                            this.persist_layout_quiet();
-                            cx.notify();
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "+Agenda",
-                        "Add the selected song to the agenda",
-                        false,
-                        |this, _, _, cx| {
-                            this.add_song_to_agenda(cx);
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "＋ New",
-                        "Create a new song in the selected songbook",
-                        false,
-                        |this, _, _, cx| {
-                            this.create_song(cx);
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "＋ Book",
-                        "Import a songbook file (.json or .vpc) into the library",
-                        false,
-                        |this, _, _, cx| {
-                            this.import_songbook_file(cx);
-                        },
-                    ),
-                    // Pager (WI-031): wheel scrolls, but nothing on screen says so.
-                    btn_tip(
-                        ui,
-                        cx,
-                        "▲",
-                        "Scroll the song list up",
-                        false,
-                        |this, _, _, cx| {
-                            let h = this.scroll_songs.clone();
-                            h.scroll_to_item(h.top_item().saturating_sub(8));
-                            cx.notify();
-                        },
-                    ),
-                    btn_tip(
-                        ui,
-                        cx,
-                        "▼",
-                        "Scroll the song list down",
-                        false,
-                        |this, _, _, cx| {
-                            let h = this.scroll_songs.clone();
-                            h.scroll_to_item(h.top_item().saturating_add(8));
-                            cx.notify();
-                        },
-                    ),
-                ]),
+            title_row,
+            row_wrap(vec![
+                text_toggle(
+                    ui,
+                    cx,
+                    &self.t("abbrev"),
+                    self.show_abbrev,
+                    "Show the songbook abbreviation before each title",
+                    |this, _, _, cx| {
+                        this.show_abbrev = !this.show_abbrev;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
+                text_toggle(
+                    ui,
+                    cx,
+                    &self.t("numbers"),
+                    self.show_number,
+                    "Show the song number (or CCLI id) before each title",
+                    |this, _, _, cx| {
+                        this.show_number = !this.show_number;
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
+                text_toggle(
+                    ui,
+                    cx,
+                    if self.sort_by_number { "№" } else { "A–Z" },
+                    self.sort_by_number,
+                    "Sort by song number instead of title",
+                    |this, _, _, cx| {
+                        this.sort_by_number = !this.sort_by_number;
+                        let q = this.search_field.read(cx).text();
+                        this.refresh_search(&q, cx);
+                        this.persist_layout_quiet();
+                        cx.notify();
+                    },
+                ),
+                text_action(
+                    ui,
+                    cx,
+                    "+ Agenda",
+                    "Add the selected song to the agenda",
+                    |this, _, _, cx| {
+                        this.add_song_to_agenda(cx);
+                    },
+                ),
+                text_action(
+                    ui,
+                    cx,
+                    "+ New",
+                    "Create a new song in the selected songbook",
+                    |this, _, _, cx| {
+                        this.create_song(cx);
+                    },
+                ),
+            ]),
         ];
         out.extend(rows);
         out
@@ -10213,8 +11172,9 @@ impl Root {
         let mut list = vec![label(
             ui,
             &format!(
-                "🔍 {} keyword match(es) — click one, or 🔍 to go back",
-                self.bible_hits.len()
+                "🔍 {} keyword {} — click one, or 🔍 to go back",
+                self.bible_hits.len(),
+                if self.bible_hits.len() == 1 { "match" } else { "matches" }
             ),
             12.,
         )];
@@ -10230,7 +11190,12 @@ impl Root {
                     .rounded_sm()
                     .text_size(px(12.))
                     .bg(ui.panel)
-                    .child(div().text_color(ui.accent).child(reference))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui.fg)
+                            .child(reference),
+                    )
                     .child(div().flex_1().child(snippet))
                     .cursor_pointer()
                     .on_mouse_up(
@@ -10294,14 +11259,14 @@ impl Root {
                     .cursor_pointer()
                     .text_size(px(11.))
                     .font_weight(if is_cur {
-                        FontWeight::BOLD
+                        FontWeight::SEMIBOLD
                     } else {
                         FontWeight::NORMAL
                     })
-                    .bg(if is_cur { hex("#f97327") } else { ui.panel })
-                    .text_color(if is_cur { rgb(0xffffff) } else { ui.fg })
+                    .bg(if is_cur { ui.hover } else { ui.panel })
+                    .text_color(ui.fg)
                     .border_1()
-                    .border_color(if is_cur { hex("#f97327") } else { ui.border })
+                    .border_color(if is_cur { ui.fg } else { ui.border })
                     .child(tab_title)
                     .on_mouse_up(
                         MouseButton::Left,
@@ -10366,10 +11331,14 @@ impl Root {
             book_rows.push(
                 div()
                     .px_1()
-                    .rounded_sm()
-                    .bg(if active { ui.selection } else { ui.panel })
-                    .text_color(if active { ui.selection_ink } else { ui.fg })
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(if active { ui.accent } else { rgba(0x00000000) })
+                    .bg(if active { ui.hover } else { rgba(0x00000000) })
+                    .text_size(px(12.))
+                    .text_color(ui.fg)
                     .cursor_pointer()
+                    .when(!active, |d| d.hover(|s| s.bg(ui.hover)))
                     .child(title)
                     .on_mouse_up(
                         MouseButton::Left,
@@ -10673,7 +11642,7 @@ impl Root {
                         .unwrap_or_default(),
                     _ => String::new(),
                 };
-                format!("♪ {}{}", it.title, book)
+                format!("{}{}", it.title, book)
             })
             .unwrap_or_else(|| self.t("slides"));
         let kind = self.agenda.items.get(item_idx).map(|it| it.kind);
@@ -10709,7 +11678,7 @@ impl Root {
                 .child(
                     div()
                         .w(px(190.))
-                        .text_color(ui.accent)
+                        .text_color(ui.muted)
                         .child(keys.to_string()),
                 )
                 .child(div().flex_1().text_color(ui.fg).child(what.to_string()));
@@ -10814,7 +11783,7 @@ impl Root {
             .filter(|n| !n.is_empty())
             .map(|n| format!(" ({n})"))
             .unwrap_or_default();
-        let title = format!("♪ {}{}", song.title, book);
+        let title = format!("{}{}", song.title, book);
         let tags: std::collections::HashMap<String, String> = song
             .verses
             .iter()
@@ -10864,26 +11833,20 @@ impl Root {
             let preview: String = slide.lines.join(" / ");
             let live_now = live_here && live_content.as_ref() == Some(slide);
             let selected = self.sel_block.as_deref() == Some(vid.as_str());
-            // Brand layer: the projecting row is lime, the keyboard
-            // cursor row is signal red, everything else is the panel.
-            // Lime wins when a row is both (mid-service the cursor often
-            // sits on the live slide).
+            // Brand layer: the projecting row is lime (fill + LIVE word),
+            // the keyboard cursor gets a signal-red edge, everything else is
+            // a neutral panel row. Lime wins when a row is both (mid-service
+            // the cursor often sits on the live slide).
             let row_bg = if live_now {
                 ui.live
             } else if selected {
-                ui.selection
+                ui.hover
             } else {
                 ui.panel
             };
-            let row_ink = if live_now {
-                ui.live_ink
-            } else if selected {
-                ui.selection_ink
-            } else {
-                ui.fg
-            };
+            let row_ink = if live_now { ui.live_ink } else { ui.fg };
             let border_c = if selected && !live_now {
-                ui.engaged
+                ui.accent
             } else {
                 row_bg
             };
@@ -10901,9 +11864,13 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .px_1()
+                    // Top-align: a wrapped 3-line slide would otherwise float
+                    // its checkbox and `V1` badge in the middle of the block,
+                    // reading like a row that lost its first line.
+                    .items_start()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(3.))
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
@@ -10917,8 +11884,8 @@ impl Root {
                     }))
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .text_size(px(13.5))
+                            .text_color(if live_now { row_ink } else { ui.muted })
                             .child(badge),
                     )
                     // DESIGN.md signature: the live cue is lime PLUS the
@@ -10928,7 +11895,7 @@ impl Root {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(13.))
+                            .text_size(px(13.5))
                             .whitespace_normal()
                             .child(preview),
                     )
@@ -11027,26 +11994,20 @@ impl Root {
             // The row currently projecting is filled lime, always (sheet
             // LIVE = lime only, on every skin). The selected row is filled
             // signal red so the two never read as one.
-            // Brand layer: the projecting row is lime, the keyboard
-            // cursor row is signal red, everything else is the panel.
-            // Lime wins when a row is both (mid-service the cursor often
-            // sits on the live slide).
+            // Brand layer: the projecting row is lime (fill + LIVE word),
+            // the keyboard cursor gets a signal-red edge, everything else is
+            // a neutral panel row. Lime wins when a row is both (mid-service
+            // the cursor often sits on the live slide).
             let row_bg = if live_now {
                 ui.live
             } else if selected {
-                ui.selection
+                ui.hover
             } else {
                 ui.panel
             };
-            let row_ink = if live_now {
-                ui.live_ink
-            } else if selected {
-                ui.selection_ink
-            } else {
-                ui.fg
-            };
+            let row_ink = if live_now { ui.live_ink } else { ui.fg };
             let border_c = if selected && !live_now {
-                ui.engaged
+                ui.accent
             } else {
                 row_bg
             };
@@ -11064,9 +12025,13 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .px_1()
+                    // Top-align: a wrapped 3-line slide would otherwise float
+                    // its checkbox and `V1` badge in the middle of the block,
+                    // reading like a row that lost its first line.
+                    .items_start()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(3.))
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
@@ -11083,8 +12048,8 @@ impl Root {
                     // it falls back to the id when no tag was typed.
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .text_size(px(13.5))
+                            .text_color(if live_now { row_ink } else { ui.muted })
                             .child(badge),
                     )
                     // DESIGN.md signature: the live cue is lime PLUS the
@@ -11099,7 +12064,7 @@ impl Root {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(13.))
+                            .text_size(px(13.5))
                             .whitespace_normal()
                             .child(preview),
                     )
@@ -11168,26 +12133,20 @@ impl Root {
             let live_now = live_here && self.live_slide == i;
             let selected = self.sel_block.as_deref() == Some(badge.as_str());
             // Plain panel rows; color carries state, not chrome.
-            // Brand layer: the projecting row is lime, the keyboard
-            // cursor row is signal red, everything else is the panel.
-            // Lime wins when a row is both (mid-service the cursor often
-            // sits on the live slide).
+            // Brand layer: the projecting row is lime (fill + LIVE word),
+            // the keyboard cursor gets a signal-red edge, everything else is
+            // a neutral panel row. Lime wins when a row is both (mid-service
+            // the cursor often sits on the live slide).
             let row_bg = if live_now {
                 ui.live
             } else if selected {
-                ui.selection
+                ui.hover
             } else {
                 ui.panel
             };
-            let row_ink = if live_now {
-                ui.live_ink
-            } else if selected {
-                ui.selection_ink
-            } else {
-                ui.fg
-            };
+            let row_ink = if live_now { ui.live_ink } else { ui.fg };
             let border_c = if selected && !live_now {
-                ui.engaged
+                ui.accent
             } else {
                 row_bg
             };
@@ -11201,9 +12160,13 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .px_1()
+                    // Top-align: a wrapped 3-line slide would otherwise float
+                    // its checkbox and `V1` badge in the middle of the block,
+                    // reading like a row that lost its first line.
+                    .items_start()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(3.))
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
@@ -11223,8 +12186,8 @@ impl Root {
                     }))
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(if live_now { row_ink } else { ui.accent })
+                            .text_size(px(13.5))
+                            .text_color(if live_now { row_ink } else { ui.muted })
                             .child(badge.clone()),
                     )
                     // Full slide text, wrapped — never truncated (R-6). No
@@ -11234,7 +12197,7 @@ impl Root {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(13.))
+                            .text_size(px(13.5))
                             .whitespace_normal()
                             .child(preview.clone()),
                     )
@@ -11307,7 +12270,6 @@ impl Root {
         win_h: f32,
     ) -> Div {
         let slides = self.projector_slides();
-        let n = slides.len();
         let cur = self.projector_slide_index();
         // Room mirror: the same background stack the projector renders, so
         // an assigned image shows here too (WI-023) — not just on a second
@@ -11363,11 +12325,10 @@ impl Root {
                 .relative()
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(px(13.5))
                         .text_color(hex("#BBBBBB"))
                         .child("(base screen — press ● Go live)".to_string()),
                 )
-                .child(card_caption("OUTPUT"))
         } else if snap.frame.item.is_none() {
             // No slide live: background still shows, with a note naming
             // the way back.
@@ -11382,11 +12343,10 @@ impl Root {
                     .justify_center()
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(px(13.5))
                             .text_color(hex("#BBBBBB"))
-                            .child("(nothing live — press Show)".to_string()),
-                    )
-                    .child(card_caption("OUTPUT")),
+                            .child("(nothing live — press Go live)".to_string()),
+                    ),
             )
         } else {
             // The projector render itself, in an output-ratio box sized to
@@ -11396,7 +12356,9 @@ impl Root {
             // cannot disagree with the projector by construction (WI-028)
             // AND fits. "current" follows the window glass; a set preset
             // letterboxes exactly like the projector does.
-            let panel_w = (self.right_w.min((win_w * 0.32).max(220.0)) - 12.0).max(120.0);
+            // Right column minus its own padding, the 44px command strip and
+            // the gap: the old -12 let the output box overflow under the rail.
+            let panel_w = (self.right_w.min((win_w * 0.32).max(220.0)) - 64.0).max(120.0);
             let aspect = AspectRatio::from_label(&self.aspect_ratio)
                 .map(|r| r.aspect() as f32)
                 .unwrap_or((win_w / win_h.max(1.0)).clamp(0.5, 4.0));
@@ -11417,13 +12379,8 @@ impl Root {
                         .child(projector_window::render_snapshot(
                             snap.danger, &snap, panel_w, bh, None,
                         ))
-                        .child(card_caption("OUTPUT")),
+                        .child(card_caption("Output")),
                 )
-        };
-        let count = if n == 0 {
-            "0/0".to_string()
-        } else {
-            format!("{}/{}", cur + 1, n)
         };
         // Header per preview-area.png: the panel is the picture plus its
         // caption — no style-level badge, no frame tabs. The caption (song /
@@ -11440,8 +12397,8 @@ impl Root {
             .flex_col()
             .gap_1()
             .flex_1()
-            .p(px(6.))
-            .rounded_sm()
+            .p(px(8.))
+            .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
             .bg(ui.panel)
@@ -11451,26 +12408,33 @@ impl Root {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px(px(6.))
-                    .py(px(3.))
-                    .rounded_sm()
-                    .bg(ui.panel)
+                    .pb(px(3.))
                     .text_color(ui.fg)
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(format!(
-                        "{} — {} {count}",
-                        self.t("preview"),
-                        head_short
-                    ))
+                    .text_size(px(12.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.t("preview")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_color(ui.muted)
+                            .child(head_short),
+                    )
                     .children(self.state_chips(ui))
                     .when(self.aspect_ratio != "current", |d| {
                         d.child(
                             div()
-                                .px_1()
-                                .rounded_sm()
-                                .bg(rgb(0x3B82F6))
-                                .text_color(rgb(0xFFFFFF))
+                                .px(px(5.))
+                                .py(px(1.))
+                                .rounded(px(3.))
+                                .border_1()
+                                .border_color(ui.border)
+                                .bg(ui.sunken)
+                                .text_color(ui.muted)
                                 .text_size(px(11.))
                                 .child(format!("↗ {}", self.aspect_ratio)),
                         )
@@ -11488,62 +12452,37 @@ impl Root {
         // must see at a glance that the room is looking at a browser, not
         // the tile (a windowed browser can hide behind the control window
         // and otherwise read as broken).
+        // Badges, not a rainbow: one neutral chip shape for every state,
+        // with red kept for the shield (load-bearing: browsing cannot move
+        // the wall) and ink for the base screen. The label always spells the
+        // state out, so the cue survives grayscale.
+        let chip = |text: &str, bg: Rgba, ink: Rgba| {
+            div()
+                .px(px(5.))
+                .py(px(1.))
+                .rounded(px(3.))
+                .border_1()
+                .border_color(ui.border)
+                .bg(bg)
+                .text_color(ink)
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text.to_string())
+        };
         if self.live_view_url.is_some() {
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(rgb(0x2E7D32))
-                    .text_color(rgb(0xFFFFFF))
-                    .text_size(px(11.))
-                    .child("\u{1F310} LIVE WEB"),
-            );
+            chips.push(chip("Live web", ui.sunken, ui.fg));
         }
         if self.shield {
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(SHIELD_ARMED)
-                    .text_color(ink_on(SHIELD_ARMED))
-                    .text_size(px(11.))
-                    .child("🛡 SHIELD"),
-            );
+            chips.push(chip("Shield", SHIELD_ARMED, ink_on(SHIELD_ARMED)));
         }
         if self.frozen_slide.is_some() {
-            let cyan = rgb(0x00ACC1);
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(cyan)
-                    .text_color(ink_on(cyan))
-                    .text_size(px(11.))
-                    .child("❄ FROZEN"),
-            );
+            chips.push(chip("Frozen", ui.sunken, ui.fg));
         }
         if self.text_hidden {
-            let orange = rgb(0xF57C00);
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(orange)
-                    .text_color(ink_on(orange))
-                    .text_size(px(11.))
-                    .child("📄 TEXT HIDDEN"),
-            );
+            chips.push(chip("Text hidden", ui.sunken, ui.fg));
         }
         if self.blank {
-            chips.push(
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .bg(ui.selection)
-                    .text_color(ui.selection_ink)
-                    .text_size(px(11.))
-                    .child("● BASE SCREEN"),
-            );
+            chips.push(chip("Base screen", ui.fg, ui.bg));
         }
         chips
     }
@@ -11572,11 +12511,10 @@ impl Root {
         let bg = if armed { ui.selection } else { ui.panel };
         let ink = if armed { ui.selection_ink } else { ui.fg };
         let outline = engaged_outline(active, armed);
-        let _ = icon;
-        div()
-            .w(px(30.))
-            .h(px(30.))
-            .rounded_sm()
+        let mut d = div()
+            .w(px(32.))
+            .h(px(32.))
+            .rounded(px(5.))
             .flex()
             .items_center()
             .justify_center()
@@ -11584,10 +12522,29 @@ impl Root {
             .border_1()
             .border_color(if armed { ui.selection } else { ui.border })
             .text_color(ink)
-            .text_size(px(14.))
+            .text_size(px(15.))
             .cursor_pointer()
-            .when(outline, |d| d.border_2().border_color(ui.selection))
-            .child(crate::ux::strip_glyph(action).to_string())
+            .child(crate::icons::art(icon).grayscale(true));
+        if outline {
+            // Engaged: a 2px accent edge, drawn inside the existing border
+            // box so the column never reflows mid-service.
+            d = d.border_2().border_color(ui.selection);
+        } else if !armed {
+            d = d.hover(|s| s.bg(ui.hover));
+        }
+        let tip: &'static str = match action {
+            "next" => "Next slide (X)",
+            "base" => "Base screen — blank the wall (B)",
+            "text" => "Hide the lyrics, keep the background (T)",
+            "shield" => "Shield — browsing cannot move the live slide",
+            "freeze" => "Freeze — hold this slide while you browse",
+            "project" => "Project the selected item now",
+            _ => "Edit mode / viewer mode (Ctrl+E)",
+        };
+        d.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+            cx.new(|_| TooltipLabel(tip.to_string())).into()
+        });
+        d
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, _w, cx| match action {
@@ -11628,36 +12585,12 @@ impl Root {
             };
             // The shield is the one state the original colours red.
             let armed = active && action == "shield";
-            let strip = UI {
-                bg: ui.bg,
-                fg: ui.fg,
-                panel: ui.panel,
-                border: ui.border,
-                accent: if armed { SHIELD_ARMED } else { ui.accent },
-                accent_ink: ink_on(if armed { SHIELD_ARMED } else { ui.accent }),
-                danger: ui.danger,
-                selection: ui.selection,
-                selection_ink: ui.selection_ink,
-                engaged: ui.engaged,
-                live: ui.live,
-                live_ink: ui.live_ink,
-            };
-            let button = Self::round_command(ui, &strip, cx, icon, active, armed, action, i);
-            // Dropdown affordance under the commands that have one.
-            let has_menu = !matches!(action, "project" | "mode");
-            col.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(button)
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(if has_menu { ui.fg } else { ui.bg })
-                            .child(if has_menu { "▾" } else { " " }),
-                    ),
-            );
+            let button = Self::round_command(ui, ui, cx, icon, active, armed, action, i);
+            // No dangling `▾` under every chip: the previous code drew an
+            // arrow that opened nothing. Each command now carries a hover
+            // tooltip instead, so the rail reads as seven commands, not
+            // seven dropdowns.
+            col.push(div().flex().flex_col().items_center().child(button));
         }
         div()
             .flex()
@@ -11782,11 +12715,11 @@ impl Root {
                 doc.update(cx, |d, cx| d.insert_at_cursor(&tag, cx));
             }));
         }
-        kids.push(btn(ui, cx, "[chord]", false, |this, _, _, cx| {
+        kids.push(btn(ui, cx, "Chord", false, |this, _, _, cx| {
             let doc = this.lyrics_doc.clone();
             doc.update(cx, |d, cx| d.insert_at_cursor("[]", cx));
         }));
-        kids.push(btn(ui, cx, "split", false, |this, _, _, cx| {
+        kids.push(btn(ui, cx, "Split", false, |this, _, _, cx| {
             let doc = this.lyrics_doc.clone();
             doc.update(cx, |d, cx| d.insert_at_cursor("\n\n", cx));
         }));
@@ -11801,31 +12734,119 @@ impl Root {
                 doc.update(cx, |d, cx| d.wrap_selection(before, after, cx));
             }));
         }
-        for (label, prefix) in [("H1", "# "), ("H2", "## "), ("list", "- ")] {
+        for (label, prefix) in [("H1", "# "), ("H2", "## "), ("List", "- ")] {
             kids.push(btn(ui, cx, label, false, move |this, _, _, cx| {
                 let doc = this.lyrics_doc.clone();
                 doc.update(cx, |d, cx| d.prefix_current_line(prefix, cx));
             }));
         }
-        kids.push(btn(ui, cx, "A+", false, |this, _, _, cx| {
-            this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
-            let size = this.lyrics_text_size;
-            this.lyrics_doc.update(cx, |d, cx| {
-                d.text_px = size;
-                cx.notify();
+        // Editor zoom travels as ONE unit: stepper, readout, stepper, and it
+        // is pinned to the right edge of the toolbar rather than joining the
+        // wrap. Letting it ride the wrap put `A− 15 px A+` alone on a second
+        // line at 1366, which read as a broken control instead of a stepper.
+        let zoom = {
+            let mut d = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(1.))
+                // Two steppers with the same `A− N px A+` shape are on screen
+                // at once: the ribbon's Font group sets the *projected* lyric
+                // size, this one is only the document's view zoom. Naming the
+                // view one `Zoom` is what keeps the operator from reading the
+                // 15 px / 44 px pair as a disagreement.
+                .child(
+                    div()
+                        .pr(px(3.))
+                        .text_size(px(11.))
+                        .text_color(ui.muted)
+                        .child("Zoom".to_string()),
+                );
+            d = d.child(btn_tip(
+                ui,
+                cx,
+                "A−",
+                "Editor text size: -1 px (does not change projection)",
+                false,
+                |this, _, _, cx| {
+                    this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
+                    let size = this.lyrics_text_size;
+                    this.lyrics_doc.update(cx, |d, cx| {
+                        d.text_px = size;
+                        cx.notify();
+                    });
+                    cx.notify();
+                },
+            ));
+            d = d.child({
+                let mut chip = div()
+                    .min_w(px(40.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .text_size(px(11.))
+                    .text_color(ui.muted)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(ui.hover))
+                    .child(format!("{} px", self.lyrics_text_size.round() as i32))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.lyrics_text_size = 15.0;
+                            this.lyrics_doc.update(cx, |d, cx| {
+                                d.text_px = 15.0;
+                                cx.notify();
+                            });
+                            cx.notify();
+                        }),
+                    );
+                chip.interactivity().tooltip(move |_w: &mut Window, cx: &mut App| {
+                    cx.new(|_| {
+                        TooltipLabel("Editor text size; click to reset to 15 px".to_string())
+                    })
+                    .into()
+                });
+                chip
             });
-            cx.notify();
-        }));
-        kids.push(btn(ui, cx, "A−", false, |this, _, _, cx| {
-            this.lyrics_text_size = (this.lyrics_text_size - 1.0).max(10.0);
-            let size = this.lyrics_text_size;
-            this.lyrics_doc.update(cx, |d, cx| {
-                d.text_px = size;
-                cx.notify();
-            });
-            cx.notify();
-        }));
-        row_wrap(kids)
+            d = d.child(btn_tip(
+                ui,
+                cx,
+                "A+",
+                "Editor text size: +1 px (does not change projection)",
+                false,
+                |this, _, _, cx| {
+                    this.lyrics_text_size = (this.lyrics_text_size + 1.0).min(24.0);
+                    let size = this.lyrics_text_size;
+                    this.lyrics_doc.update(cx, |d, cx| {
+                        d.text_px = size;
+                        cx.notify();
+                    });
+                    cx.notify();
+                },
+            ));
+            d
+        };
+        div()
+            .flex()
+            .flex_row()
+            // Top-aligned: when the document chips need a second line, the
+            // stepper stays anchored to the first line instead of drifting to
+            // the vertical middle of a taller row.
+            .items_start()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .flex_1()
+                    .min_w_0()
+                    .children(kids),
+            )
+            .child(zoom)
     }
 
     /// Theme picker buttons, one per built-in skin (Light/Dark/Gray/Blue/
@@ -11913,12 +12934,12 @@ impl Root {
             .flex()
             .flex_col()
             .gap_1()
-            .p(px(6.))
+            .p(px(8.))
             .min_w_0()
             .min_h_0()
             .flex_1()
             .overflow_hidden()
-            .rounded_sm()
+            .rounded(px(6.))
             .border_1()
             .border_color(ui.border)
             .bg(ui.panel)
@@ -11932,15 +12953,15 @@ impl Root {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px(px(6.))
-                    .py(px(3.))
-                    .rounded_sm()
-                    .bg(ui.panel)
+                    .px(px(2.))
+                    .pb(px(3.))
+                    .border_b_1()
+                    .border_color(ui.border)
                     .text_color(ui.fg)
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(div().flex_1().child(format!(
-                        "♪ {}{}",
+                        "{}{}",
                         if self.song_dirty { "*" } else { "" },
                         song.title
                     )))
@@ -12118,7 +13139,7 @@ impl Root {
                                             cx.notify();
                                         },
                                     ))
-                                    .child(metadata_box(&summary)),
+                                    .child(metadata_box(ui, &summary)),
                             );
                         if open {
                             // Overlay, not in-flow: the editor panel clips at
@@ -12143,22 +13164,30 @@ impl Root {
                                     .border_1()
                                     .border_color(ui.border)
                                     .bg(ui.panel)
-                                    .child(metadata_box(&full)),
+                                    .child(metadata_box(ui, &full)),
                             );
                         }
                         col
                     },
-                    btn(ui, cx, "×", false, move |this, _, _, cx| {
-                        if let Some(id) = owner_clear.clone() {
-                            if let Some(it) =
-                                this.agenda.items.iter_mut().find(|it| it.id == id)
-                            {
-                                it.overrides.verse_order = None;
-                                this.agenda_dirty = true;
-                                cx.notify();
+                    icon_button(
+                        ui,
+                        cx,
+                        "ui-close",
+                        "Clear the custom verse order",
+                        11.,
+                        false,
+                        move |this, _, _, cx| {
+                            if let Some(id) = owner_clear.clone() {
+                                if let Some(it) =
+                                    this.agenda.items.iter_mut().find(|it| it.id == id)
+                                {
+                                    it.overrides.verse_order = None;
+                                    this.agenda_dirty = true;
+                                    cx.notify();
+                                }
                             }
-                        }
-                    }),
+                        },
+                    ),
                     btn(ui, cx, "⌃", false, move |this, _, _, cx| {
                         if let Some(id) = owner_up.clone() {
                             if let Some(it) =
@@ -12722,6 +13751,9 @@ impl Root {
         self.bg_kind = BackgroundKind::Color;
         self.bg_website = None;
         self.bg_file = None;
+        if self.live_item.is_none() {
+            self.stop_motion();
+        }
         self.persist_layout_quiet();
         crate::presentation::publish(self, cx);
         self.set_status(cx, "Website background removed — plain color.");
@@ -12729,25 +13761,42 @@ impl Root {
     }
 
     /// Live web view toggle: one click on, one click off. Persisted like
-    /// every other layout choice; default off so the offline tiles rule
-    /// until the operator asks for more.
+    /// every other layout choice; default off so remote offline tiles rule
+    /// until the operator asks for more. Loopback stage pages render
+    /// regardless (FreeShow parity) — the toggle never governed them.
     fn toggle_live_web(&mut self, cx: &mut Context<Self>) {
         self.live_web_on = !self.live_web_on;
         if !self.live_web_on {
-            self.live_view.hide();
-            self.live_web_pending = None;
-            self.live_web_confirmed.clear();
-            self.set_status(cx, "Live web view off — website slides are offline tiles again.");
+            // Remote pages go dark at once; loopback stage pages re-sync
+            // instead of hiding — killing their browser here would blank
+            // the wall until the next push resurrects it, contradicting the
+            // panel copy. Sync first so the published snapshot below
+            // already reflects the outcome (no tile flash either way).
+            let loopback_live = self
+                .projected_slides
+                .get(self.projected_slide)
+                .and_then(live_web::live_url_for_slide)
+                .is_some_and(|u| live_web::is_loopback(&u));
+            if loopback_live {
+                self.sync_live_web(cx);
+            } else {
+                self.live_view.hide();
+                // Drop the stale showing too, or the published snapshot
+                // keeps suppressing a tile no browser paints.
+                self.live_view_url = None;
+                self.live_web_pending = None;
+                self.live_web_confirmed.clear();
+            }
+            self.set_status(cx, "Live web view off — remote pages are offline tiles again (loopback stage pages still render).");
         } else {
             self.set_status(cx, "Live web view on — website slides open in a browser window on the projector display.");
+            // Toggling on while a website slide is already live must take
+            // effect at once, not on the next navigation — and the published
+            // snapshot must already carry the suppression (no tile flash).
+            self.sync_live_web(cx);
         }
         self.persist_layout_quiet();
         crate::presentation::publish(self, cx);
-        // Toggling on while a website slide is already live must take
-        // effect at once, not on the next navigation.
-        if self.live_web_on {
-            self.sync_live_web(cx);
-        }
         cx.notify();
     }
 
@@ -12769,6 +13818,10 @@ impl Root {
                 self.set_status(cx, format!("Live web view allowed for this show: {url}"));
                 self.sync_live_web(cx);
             }
+            // The browser may be live now while the published snapshot still
+            // carries the tile — republish at once, like every other path
+            // that changes the showing state.
+            crate::presentation::publish(self, cx);
         }
         cx.notify();
     }
@@ -12794,6 +13847,19 @@ impl Root {
         }
     }
 
+    /// Reap a browser the operator closed (or that crashed) outside the app:
+    /// liveness only, never a spawn or probe — so render-adjacent ticks may
+    /// call it. Clears the stale showing so the next repaint re-tiles
+    /// instead of holding a blank wall under a lit LIVE WEB chip. Spawning
+    /// stays push-gated (see `sync_live_web`): the next push respawns.
+    fn reap_dead_browser(&mut self, cx: &mut Context<Self>) {
+        if self.live_view_url.is_some() && !self.live_view.is_alive() {
+            self.live_view.hide();
+            self.live_view_url = None;
+            self.set_status(cx, "Live web view: the browser window closed — tile stays.");
+        }
+    }
+
     /// Keep the live browser window in step with the pushed slide. Runs at
     /// the end of every [`Self::push_projection`]: spawn on website slides,
     /// die the moment they leave, never fetch anything itself.
@@ -12803,16 +13869,23 @@ impl Root {
             .get(self.projected_slide)
             .and_then(live_web::live_url_for_slide);
         if desired.is_none() {
-            // Not a website slide: make sure nothing lingers, quietly.
+            // Not a website slide: make sure nothing lingers, quietly. The
+            // Allow offer clears unconditionally — a blocked remote (never
+            // shown, `live_view_url` empty) must not linger as an offer for
+            // a slide that is already gone.
             if self.live_view_url.is_some() {
                 self.live_view.hide();
                 self.live_view_url = None;
-                self.live_web_pending = None;
             }
+            self.live_web_pending = None;
             return;
         }
         let url = desired.unwrap();
-        if !self.live_web_on {
+        // FreeShow parity for the safe subset (`live_effective`): a loopback
+        // stage page renders even with the toggle off — like FreeShow's
+        // unconditional webview — while remote pages keep the Live gate and
+        // the per-session Allow below.
+        if !live_effective(self.live_web_on, &url) {
             self.live_view.hide();
             self.live_view_url = None;
             self.live_web_pending = None;
@@ -13277,20 +14350,10 @@ fn main() {
                 .unwrap_or((1500., 950.));
             let (boot_w, boot_h) = clamp_boot_size((1500., 950.), avail);
             let bounds = Bounds::centered(None, size(px(boot_w), px(boot_h)), cx);
-            // OS chrome carries the agenda name, like the original's
-            // `Empty agenda - VideoPsalm 1.29` title bar (LAYOUT.md §Window).
-            // Same agenda Root::build opens, so the two can never disagree.
-            let boot_title: String = {
-                let db = open_boot_db();
-                let (agenda, _) = boot_agenda_from_lib(&db);
-                if agenda.title.trim().is_empty() {
-                    "New agenda".to_string()
-                } else {
-                    agenda.title
-                }
-            };
-            let window_title: gpui::SharedString =
-                format!("{boot_title} - Perez RS").into();
+            // The OS title names the app only: the agenda name lives in the
+            // in-app signal strip, and printing it twice was the duplicate
+            // the review flagged. No boot DB read is needed for chrome.
+            let window_title: gpui::SharedString = "Perez RS".into();
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -13310,6 +14373,98 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_samples_cover_every_song_referenced_by_the_sample_agenda() {
+        // Regression: "Website Demo" was in the sample agenda but not seeded
+        // at boot, so the row read "Song · missing from library".
+        let songs: Vec<Song> = [SONG_A, SONG_B, SONG_WEB]
+            .iter()
+            .map(|s| serde_json::from_str(s).expect("sample song parses"))
+            .collect();
+        let agenda = Agenda::from_json(AGENDA_SAMPLE).expect("sample agenda parses");
+        for item in &agenda.items {
+            if let ItemRef::Song { song_id } = &item.reference {
+                assert!(
+                    songs.iter().any(|s| &s.id == song_id),
+                    "agenda references {song_id} but no bundled sample provides it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_song_payload_round_trips_through_the_editor() {
+        // The create path: empty verse -> document -> back to verses, then
+        // index resolution by id (never by `len - 1`). Guards the Windows
+        // "create crashed" report against a data/panic regression.
+        let song = Song {
+            id: "local:1".to_string(),
+            title: "New song".to_string(),
+            songbook_id: "local-book:my-songs".to_string(),
+            verses: vec![vp_core::schema::SongVerse {
+                id: "V1".to_string(),
+                lines: vec![String::new()],
+                order: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let doc = lyrics_doc::document_from_verses(&song.verses);
+        // A brand-new song opens an EMPTY document (placeholder visible);
+        // the first keystroke creates verse 1 with the existing id.
+        assert!(doc.is_empty());
+        let back = lyrics_doc::verses_from_document("Amazing grace", &song.verses);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, "V1");
+        let songs = vec![song];
+        let idx = songs
+            .iter()
+            .position(|s| s.id == "local:1")
+            .expect("new song must resolve by id");
+        assert_eq!(idx, 0);
+        assert!(songs.get(1).is_none(), "out-of-range guard stays quiet");
+    }
+
+    #[test]
+    fn chrome_type_scale_holds_only_the_four_agreed_steps() {
+        // R-REVIEW R1-07: a 14-rung ladder reads as indecision. Every chrome
+        // `text_size(px(<literal>))` must be one of the four steps; the 52px
+        // clock face and user-scaled document text are content, not chrome.
+        const STEPS: [f32; 4] = [11.0, 12.0, 13.5, 15.0];
+        let sources = [
+            include_str!("main.rs"),
+            include_str!("ux.rs"),
+            include_str!("preview_resize.rs"),
+            include_str!("text_field.rs"),
+            include_str!("doc_field.rs"),
+            include_str!("media_gallery.rs"),
+            include_str!("style_explorer.rs"),
+        ];
+        let mut seen: Vec<f32> = Vec::new();
+        for src in sources {
+            let mut rest = src;
+            while let Some(i) = rest.find("text_size(px(") {
+                rest = &rest[i + "text_size(px(".len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+                    .unwrap_or(rest.len());
+                let tok = rest[..end].trim_end_matches('.');
+                if let Ok(v) = tok.parse::<f32>() {
+                    if (v - 52.0).abs() > f32::EPSILON {
+                        seen.push(v);
+                    }
+                }
+                rest = &rest[end..];
+            }
+        }
+        seen.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        seen.dedup();
+        assert!(
+            seen.iter().all(|v| STEPS.contains(v)),
+            "off-scale chrome type: {seen:?}; allowed {STEPS:?}"
+        );
+    }
 
     #[test]
     fn default_ui_theme_carries_the_brand_tokens() {
@@ -13360,6 +14515,18 @@ mod tests {
             ),
             "a different page showing must not blank this slide"
         );
+    }
+
+    #[test]
+    fn loopback_pages_render_without_the_live_gate() {
+        // FreeShow ports its unconditional `<webview>` for the safe subset
+        // only: loopback is our own stage server, so the toggle never gates
+        // it; remote pages follow the toggle exactly.
+        assert!(live_effective(false, "http://localhost:4000/#/output1"));
+        assert!(live_effective(false, "http://127.0.0.1:4000/x"));
+        assert!(!live_effective(false, "https://example.com/live"));
+        assert!(live_effective(true, "https://example.com/live"));
+        assert!(live_effective(true, "http://localhost:4000/#/output1"));
     }
 
     #[test]

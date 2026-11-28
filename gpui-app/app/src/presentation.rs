@@ -59,6 +59,7 @@ impl PresentationState {
                 blank: false,
                 header: String::new(),
                 lines: Vec::new(),
+                display_lines: Vec::new(),
                 footer: String::new(),
                 alert_visible: false,
                 alert_text: String::new(),

@@ -253,6 +253,7 @@ mod tests {
             blank: false,
             header: "Amazing Grace".into(),
             lines: vec!["Amazing grace".into(), "the sound".into()],
+            display_lines: vec!["Amazing grace".into(), "the sound".into()],
             footer: "v1".into(),
             alert_visible: false,
             alert_text: String::new(),

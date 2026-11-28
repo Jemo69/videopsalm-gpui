@@ -306,6 +306,37 @@ pub fn live_url_for_slide(slide: &Slide) -> Option<String> {
     vp_core::schema::normalize_website_url(url.trim())
 }
 
+/// Display form of a website URL for tiles and operator notes (pure,
+/// tested): FreeShow's `formatUrl` (`Website.svelte`) — the second `://`
+/// segment (scheme stripped, empty rest keeps the original), the first
+/// `www.`, and one trailing slash. Display-only: the live view, the
+/// reachability probe and the slide URL itself always keep the full form,
+/// so a tile can never corrupt the page it names.
+pub fn format_url_for_display(url: &str) -> String {
+    let s = match url.split("://").nth(1) {
+        Some(rest) if !rest.is_empty() => rest,
+        _ => url,
+    };
+    let s = s.replacen("www.", "", 1);
+    s.strip_suffix('/').unwrap_or(&s).to_string()
+}
+
+/// Tile lines for a website slide (pure, tested): FreeShow formats the
+/// whole URL once (`formatUrl`) and CSS wraps the result visually. Our tile
+/// wraps at a fixed width, so this joins, formats whole, and rewraps at
+/// the same width the slide was wrapped with — scheme/`www.` handling is
+/// exact in every case (interior `www.`, narrow splits, multi-`://` junk)
+/// because the transform always sees the complete URL. Display-only: the
+/// live view, probes and slide URLs keep the full form.
+pub fn format_tile_text(lines: &[String], max_chars: usize) -> Vec<String> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let joined: String = lines.concat();
+    let formatted = format_url_for_display(&joined);
+    vp_core::verse_splitter::wrap_caption(&formatted, max_chars)
+}
+
 /// Chromium-family launch: incognito app window in a throwaway profile.
 /// `geometry` positions the window on a non-primary projector output;
 /// `fullscreen` takes over the screen (kiosk-style): set when our own
@@ -316,6 +347,7 @@ pub fn live_url_for_slide(slide: &Slide) -> Option<String> {
 /// nothing else.
 /// `profile` stays an `OsString` end to end: a lossy `String` round-trip
 /// could point Chrome at a mangled dir while `hide()` cleans the real one.
+#[allow(dead_code)] // kept as the plain-name variant of the `_with` knobs
 pub fn chromium_args(
     url: &str,
     geometry: Option<(i32, i32, i32, i32)>,
@@ -430,6 +462,7 @@ pub fn has_compositor() -> bool {
 /// black field it expects: our own document paints black and frames the
 /// page, so the result is white verse over black with no browser chrome,
 /// with or without a compositor.
+#[allow(dead_code)] // kept as the plain-name variant of the `_with` knobs
 pub fn overlay_wrapper_html(target: &str) -> String {
     overlay_wrapper_html_with_bg(target, "background:#000")
 }
@@ -496,6 +529,7 @@ pub fn overlay_background() -> &'static str {
 }
 
 /// [`chromium_args`] with the transparency decision explicit (pure, tested).
+#[allow(dead_code)] // kept as the plain-name variant of the `_with` knobs
 pub fn chromium_args_with(
     url: &str,
     geometry: Option<(i32, i32, i32, i32)>,
@@ -626,6 +660,16 @@ impl LiveView {
         match self.child.as_mut() {
             // `try_wait` reaps a dead child as a side effect. An error
             // counts as down (fail closed, respawn) — never pin a phantom.
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
+    }
+
+    /// True while the browser child is still running (pure liveness: no
+    /// spawn, no probe, no network) — so render-adjacent ticks may poll it.
+    /// A missing child, a reaped one, or a `try_wait` error reads as down.
+    pub fn is_alive(&mut self) -> bool {
+        match self.child.as_mut() {
             Some(child) => matches!(child.try_wait(), Ok(None)),
             None => false,
         }
@@ -1180,6 +1224,61 @@ mod tests {
         // Alpha + wrapper-off go together: no black document covering the
         // presentation when the compositor can show through.
         assert!(wrapper_off_for(false, overlay_field(true, None)));
+    }
+
+    #[test]
+    fn tile_shows_the_address_without_the_scheme() {
+        // FreeShow's `formatUrl`: the scheme, the first `www.` and one
+        // trailing slash are display noise — the tile names the page the
+        // way the hover controls do, never `http://...` as wall prose.
+        assert_eq!(
+            format_url_for_display("http://localhost:4000/#/output1"),
+            "localhost:4000/#/output1"
+        );
+        assert_eq!(
+            format_url_for_display("https://www.example.com/"),
+            "example.com"
+        );
+        assert_eq!(
+            format_url_for_display("https://www.example.com/live"),
+            "example.com/live"
+        );
+        assert_eq!(format_url_for_display("example.com"), "example.com");
+        // Degenerate input follows FreeShow exactly: `http://` has an empty
+        // post-scheme rest, so the original is kept, then the trailing-slash
+        // strip applies — `"http:/"`, quirk included, never invented.
+        assert_eq!(format_url_for_display("http://"), "http:/");
+        // Multiple `://`: FreeShow takes the second segment, not everything
+        // after the first separator.
+        assert_eq!(format_url_for_display("http://foo://bar"), "foo");
+    }
+
+    #[test]
+    fn tile_text_formats_whole_then_rewraps() {
+        // One line behaves exactly like the whole-URL form.
+        assert_eq!(
+            format_tile_text(&["http://localhost:4000/#/output1".to_string()], 40),
+            vec!["localhost:4000/#/output1".to_string()]
+        );
+        // A wrapped long URL merges back when the formatted form fits — the
+        // wall reads the single-line form, not shed slashes mid-tile.
+        assert_eq!(
+            format_tile_text(&["https://www.youtube.com/watch?v=abcdefghijk".to_string()], 40),
+            vec!["youtube.com/watch?v=abcdefghijk".to_string()]
+        );
+        // Interior `www.` strips (whole-URL semantics, not prefix-only).
+        assert_eq!(
+            format_tile_text(&["https://foo.www.example.com/x".to_string()], 40),
+            vec!["foo.example.com/x".to_string()]
+        );
+        // Narrow widths that split the scheme itself still hide it: the
+        // transform sees the complete URL before rewrapping (the trailing
+        // slash strips first, so the short tail is just `"m"`).
+        assert_eq!(
+            format_tile_text(&["https://".to_string(), "www.exampl".to_string(), "e.com/".to_string()], 10),
+            vec!["example.co".to_string(), "m".to_string()]
+        );
+        assert!(format_tile_text(&[], 40).is_empty());
     }
 
     #[test]
