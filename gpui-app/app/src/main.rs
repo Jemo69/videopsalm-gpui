@@ -976,6 +976,9 @@ impl Root {
         let ghost = self.drag_ghost.clone();
         let default_w = if col == 0 { 320.0 } else { 300.0 };
         let grabbed = self.col_drag.is_some_and(|(c, _, _)| c == col);
+        // A divider is a *seam*, not a control: a 14px transparent hit strip
+        // carrying one hairline rule. The old bordered box read as an empty
+        // panel wedged between two real ones on every skin.
         let strip = div()
             .w(px(14.))
             .h_full()
@@ -983,18 +986,19 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .cursor(gpui::CursorStyle::ResizeColumn)
-            .rounded_sm()
-            .border_1()
-            .border_color(ui.border);
+            .cursor(gpui::CursorStyle::ResizeColumn);
         let strip = if grabbed {
-            strip.bg(ui.hover).border_color(ui.fg)
+            strip.bg(ui.hover)
         } else {
-            strip.bg(ui.panel).hover(|s| s.bg(ui.hover))
+            strip.hover(|s| s.bg(ui.hover))
         };
         strip
             .id(if col == 0 { "vp-col-split-l" } else { "vp-col-split-r" })
-            .child(icon_el("ui-grip", 12.))
+            .child(div().w(px(2.)).h(px(28.)).rounded_full().bg(if grabbed {
+                ui.fg
+            } else {
+                ui.border
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
@@ -1075,24 +1079,28 @@ impl Root {
     fn hdivider(&mut self, ui: &UI, cx: &mut Context<Self>, which: u8) -> impl gpui::IntoElement {
         let ghost = self.drag_ghost.clone();
         let grabbed = self.row_drag.is_some_and(|(w, _, _)| w == which);
+        // Same seam rule as [`Self::divider`]: a hairline, not a boxed pill
+        // with a glyph in it (the `⋯` box read as a stray empty card between
+        // the agenda and the browser, and between the slides and preview).
         let strip = div()
             .w_full()
             .h(px(14.))
             .flex()
             .items_center()
             .justify_center()
-            .cursor(gpui::CursorStyle::ResizeRow)
-            .rounded_sm()
-            .border_1()
-            .border_color(ui.border);
+            .cursor(gpui::CursorStyle::ResizeRow);
         let strip = if grabbed {
-            strip.bg(ui.hover).border_color(ui.fg)
+            strip.bg(ui.hover)
         } else {
-            strip.bg(ui.panel).hover(|s| s.bg(ui.hover))
+            strip.hover(|s| s.bg(ui.hover))
         };
         strip
             .id(if which == 0 { "vp-row-split-agenda" } else { "vp-row-split-preview" })
-            .child(icon_el("ui-more", 12.))
+            .child(div().w(px(28.)).h(px(2.)).rounded_full().bg(if grabbed {
+                ui.fg
+            } else {
+                ui.border
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _win, cx| {
@@ -3376,14 +3384,26 @@ impl Root {
             Ok(pump) => {
                 self.motion = Some(pump);
                 self.ensure_motion_tick(cx);
-                self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                self.set_status(
+                    cx,
+                    format!(
+                        "Playing in-app — {}.",
+                        ux::shorten_path(&path.display().to_string(), 58)
+                    ),
+                );
                 true
             }
             Err(e) => match crate::loop_video::LoopRun::start(path, loop_play) {
                 Some(run) => {
                     self.loop_player = Some(run);
                     self.ensure_motion_tick(cx);
-                    self.set_status(cx, format!("Playing in-app — {}.", path.display()));
+                    self.set_status(
+                        cx,
+                        format!(
+                            "Playing in-app — {}.",
+                            ux::shorten_path(&path.display().to_string(), 58)
+                        ),
+                    );
                     true
                 }
                 None => {
@@ -6956,7 +6976,7 @@ fn section_scrolled_with_rail(
     let list = div()
         .flex()
         .flex_col()
-        .gap(px(2.))
+        .gap(px(3.))
         .flex_1()
         .min_h_0()
         .min_w_0()
@@ -6986,7 +7006,24 @@ fn section_scrolled_with_rail(
             .min_w_0()
             .overflow_hidden()
             .child(list)
-            .child(div().flex().flex_col().gap_1().flex_none().children(rail))
+            // The rail is ONE tonal cluster, not five free-floating pairs of
+            // chips: on the panel surface the individual chips read as a
+            // scattered keypad beside the rows they act on. The outer column
+            // exists only to defeat the row's cross-axis stretch — painted
+            // on the cluster itself, the tonal block grew to the whole panel
+            // height instead of hugging its five buttons.
+            .child(
+                div().flex().flex_col().flex_none().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .p(px(2.))
+                        .rounded(px(6.))
+                        .bg(ui.sunken)
+                        .children(rail),
+                ),
+            )
     };
 
     let mut col = div()
@@ -10086,7 +10123,7 @@ impl Root {
                 .w(px(30.))
                 .h(px(22.))
                 .rounded(px(4.))
-                .bg(if enabled { ui.sunken } else { rgba(0x00000000) })
+                .bg(rgba(0x00000000))
                 .text_color(if enabled { ui.fg } else { ui.muted })
                 .child(icon_el(icon, 14.));
             if enabled {
@@ -10123,8 +10160,6 @@ impl Root {
                 .rounded(px(4.))
                 .bg(if open {
                     ui.fg
-                } else if enabled {
-                    ui.sunken
                 } else {
                     rgba(0x00000000)
                 })
@@ -11829,9 +11864,13 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .px_1()
+                    // Top-align: a wrapped 3-line slide would otherwise float
+                    // its checkbox and `V1` badge in the middle of the block,
+                    // reading like a row that lost its first line.
+                    .items_start()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(3.))
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
@@ -11986,9 +12025,13 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .px_1()
+                    // Top-align: a wrapped 3-line slide would otherwise float
+                    // its checkbox and `V1` badge in the middle of the block,
+                    // reading like a row that lost its first line.
+                    .items_start()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(3.))
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
@@ -12117,9 +12160,13 @@ impl Root {
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
-                    .items_center()
-                    .px_1()
+                    // Top-align: a wrapped 3-line slide would otherwise float
+                    // its checkbox and `V1` badge in the middle of the block,
+                    // reading like a row that lost its first line.
+                    .items_start()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(3.))
                     .rounded_sm()
                     .bg(row_bg)
                     .text_color(row_ink)
@@ -12693,10 +12740,28 @@ impl Root {
                 doc.update(cx, |d, cx| d.prefix_current_line(prefix, cx));
             }));
         }
-        // Editor zoom travels as ONE unit: stepper, readout, stepper. Wrapping
-        // the row must never orphan A+ on its own line.
-        kids.push({
-            let mut d = div().flex().flex_row().items_center().gap(px(1.));
+        // Editor zoom travels as ONE unit: stepper, readout, stepper, and it
+        // is pinned to the right edge of the toolbar rather than joining the
+        // wrap. Letting it ride the wrap put `A− 15 px A+` alone on a second
+        // line at 1366, which read as a broken control instead of a stepper.
+        let zoom = {
+            let mut d = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(1.))
+                // Two steppers with the same `A− N px A+` shape are on screen
+                // at once: the ribbon's Font group sets the *projected* lyric
+                // size, this one is only the document's view zoom. Naming the
+                // view one `Zoom` is what keeps the operator from reading the
+                // 15 px / 44 px pair as a disagreement.
+                .child(
+                    div()
+                        .pr(px(3.))
+                        .text_size(px(11.))
+                        .text_color(ui.muted)
+                        .child("Zoom".to_string()),
+                );
             d = d.child(btn_tip(
                 ui,
                 cx,
@@ -12761,8 +12826,27 @@ impl Root {
                 },
             ));
             d
-        });
-        row_wrap(kids)
+        };
+        div()
+            .flex()
+            .flex_row()
+            // Top-aligned: when the document chips need a second line, the
+            // stepper stays anchored to the first line instead of drifting to
+            // the vertical middle of a taller row.
+            .items_start()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .flex_1()
+                    .min_w_0()
+                    .children(kids),
+            )
+            .child(zoom)
     }
 
     /// Theme picker buttons, one per built-in skin (Light/Dark/Gray/Blue/

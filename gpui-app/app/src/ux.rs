@@ -259,6 +259,37 @@ pub fn video_item_file(item: &AgendaItem) -> Option<(String, PathBuf)> {
         _ => None,
     }
 }
+/// Status-line path: keep the end of the path and elide the middle, so a
+/// 60-character media path does not push the shortcut hints off a 1366px
+/// status bar (and does not wrap it onto a second line). Always keeps the
+/// file name whole; `…/parent/file.mp4` is the shape when the path is long.
+/// Pure, so the elision contract is testable.
+pub fn shorten_path(path: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    let Some(slash) = path.rfind('/') else {
+        return path.to_string();
+    };
+    if chars.len() <= max_chars || max_chars < 8 {
+        return path.to_string();
+    }
+    // Keep the file name and as much of its parent as fits after `…/`.
+    let name = &path[slash + 1..];
+    let parent = &path[..slash];
+    let budget = max_chars.saturating_sub(2 + name.chars().count() + 1); // "…/" + "/"
+    let parent: String = parent
+        .rsplit('/')
+        .next()
+        .unwrap_or(parent)
+        .chars()
+        .take(budget)
+        .collect();
+    if parent.is_empty() {
+        format!("…/{name}")
+    } else {
+        format!("…/{parent}/{name}")
+    }
+}
+
 /// One-line verse-order summary for the collapsed disclosure: the full
 /// list when it fits, `first 5 … (N verses)` for long medleys (pure so
 /// the collapse contract is unit-testable).
@@ -1335,6 +1366,23 @@ pub fn ribbon_chrome_budget(control_lines: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_path_keeps_the_file_name_and_elides_the_middle() {
+        // A long media path must not push the shortcut hints off the status
+        // bar. The file name always survives whole; the elision is `…/`.
+        let long = "/home/jemo/.local/share/videopsalm/Media/Videos/Egon_Cool_Rainbow_Lines_Plus_4k (2).mp4";
+        let short = shorten_path(long, 58);
+        assert!(short.chars().count() <= 58, "{short}");
+        assert!(short.contains("Egon_Cool_Rainbow_Lines_Plus_4k (2).mp4"));
+        assert!(short.starts_with("…/"));
+        assert!(!short.contains("/home/jemo/.local"));
+        // Short paths are untouched; a path with no separator is untouched.
+        assert_eq!(shorten_path("Egon.mp4", 58), "Egon.mp4");
+        assert_eq!(shorten_path("no-separator-here", 4), "no-separator-here");
+        // Non-ASCII parents must not panic on the byte slice.
+        let _ = shorten_path("/home/é/µsique/très_long_nom_de_fichier_à_lire.mp4", 20);
+    }
 
     #[test]
     fn ribbon_chrome_stays_inside_the_density_budget() {
